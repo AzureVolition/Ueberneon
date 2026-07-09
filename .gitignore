@@ -1,2 +1,4 @@
 /target
 src/llm/target/
+.reasonix/
+.codegraph/
