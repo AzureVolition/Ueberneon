@@ -4,7 +4,7 @@ use futures::stream::Stream;
 use serde::{Serialize, Deserialize};
 use std::pin::Pin;
 
-pub type ChunkStream = Pin<Box<dyn Stream<Item = Chunk> + Send>>;
+pub type ChunkStream = Pin<Box<dyn Stream<Item = Result<Chunk, ProviderError>> + Send>>;
 
 #[async_trait::async_trait]
 pub trait Provider: Send + Sync {
@@ -74,8 +74,6 @@ pub enum Chunk {
     ToolCallDelta { id: String, arguments: String },
     ToolCallComplete(ToolCall),
     Usage(Usage),
-    #[serde(skip)]
-    Error(ProviderError),
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

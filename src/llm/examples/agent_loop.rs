@@ -39,21 +39,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut output = String::new();
         let mut reasoning_content = String::new();
         
-        while let Some(chunk) = stream.next().await {
+        while let Some(result) = stream.next().await {
             let mut content: Option<String> = None;
-            match &chunk {
-                Chunk::Text(t)      => {output.push_str(&t); content = Some(t.clone()); }
-                Chunk::Reasoning { text, .. } => {
+            match &result {
+                Ok(Chunk::Text(t))      => {output.push_str(&t); content = Some(t.clone()); }
+                Ok(Chunk::Reasoning { text, .. }) => {
 
                     reasoning_content.push_str(&text);
                     // content = Some(text);
-                }  
-                Chunk::Usage(u)     => eprintln!("\n[tokens: {}/{}]", u.prompt_tokens, u.completion_tokens),
-                Chunk::Error(e)     => eprintln!("\n[error: {e}]"),
-                Chunk::ToolCallComplete(tool) => {
+                }
+                Ok(Chunk::Usage(u))     => eprintln!("\n[tokens: {}/{}]", u.prompt_tokens, u.completion_tokens),
+                Ok(Chunk::ToolCallComplete(tool)) => {
                     println!("\n[tool call complete: {tool:?}]");
                     have_tool_calls = true;
                 }
+                Err(e)     => eprintln!("\n[error: {e}]"),
                 _ => {}
             }
 

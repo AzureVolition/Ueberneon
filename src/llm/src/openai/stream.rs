@@ -31,7 +31,7 @@ pub async fn stream_with_reconnect(
     api_key: &str,
     body: &Value,
     resp: reqwest::Response,
-    tx: &Sender<Chunk>,
+    tx: &Sender<Result<Chunk, ProviderError>>,
     idle_timeout: Duration,
 ) {
     let mut resp = resp;
@@ -52,13 +52,13 @@ pub async fn stream_with_reconnect(
                     continue;
                 }
                 Err(e) => {
-                    let _ = tx.send(Chunk::Error(e)).await;
+                    let _ = tx.send(Err(e)).await;
                     return;
                 }
             }
         } else {
             // 已发出 token 或重连次数耗尽
-            let _ = tx.send(Chunk::Error(err)).await;
+            let _ = tx.send(Err(err)).await;
             return;
         }
     }
@@ -70,7 +70,7 @@ pub async fn stream_with_reconnect(
 /// 返回 (是否发出了 token, 错误)。
 async fn read_stream(
     resp: reqwest::Response,
-    tx: &Sender<Chunk>,
+    tx: &Sender<Result<Chunk, ProviderError>>,
     idle_timeout: Duration,
 ) -> (bool, Option<ProviderError>) {
     // 将 resp 的字节流转为 AsyncRead
@@ -130,7 +130,7 @@ async fn read_stream(
             if let Some(ref content) = choice.delta.content {
                 if !content.is_empty() {
                     emitted = true;
-                    let _ = tx.send(Chunk::Text(content.clone())).await;
+                    let _ = tx.send(Ok(Chunk::Text(content.clone()))).await;
                 }
             }
 
@@ -138,10 +138,10 @@ async fn read_stream(
             if let Some(ref reasoning) = choice.delta.reasoning_content {
                 if !reasoning.is_empty() {
                     emitted = true;
-                    let _ = tx.send(Chunk::Reasoning {
+                    let _ = tx.send(Ok(Chunk::Reasoning {
                         text: reasoning.clone(),
                         signature: None,
-                    }).await;
+                    })).await;
                 }
             }
 
@@ -157,20 +157,20 @@ async fn read_stream(
                         .and_then(|f| f.name.as_ref())
                         .cloned()
                         .unwrap_or_default();
-                    let _ = tx.send(Chunk::ToolCallStart {
+                    let _ = tx.send(Ok(Chunk::ToolCallStart {
                         id: acc.id.clone(),
                         name,
-                    }).await;
+                    })).await;
                 }
 
                 // 参数增量
                 if let Some(ref func) = sse_tc.function {
                     if let Some(ref args) = func.arguments {
                         acc.args.push_str(args);
-                        let _ = tx.send(Chunk::ToolCallDelta {
+                        let _ = tx.send(Ok(Chunk::ToolCallDelta {
                             id: acc.id.clone(),
                             arguments: args.clone(),
-                        }).await;
+                        })).await;
                     }
                 }
             }
@@ -197,7 +197,7 @@ async fn read_stream(
                 .and_then(|d| d.reasoning_tokens)
                 .unwrap_or(0);
 
-            let _ = tx.send(Chunk::Usage(Usage {
+            let _ = tx.send(Ok(Chunk::Usage(Usage {
                 prompt_tokens: u.prompt_tokens,
                 completion_tokens: u.completion_tokens,
                 total_tokens: u.total_tokens,
@@ -205,7 +205,7 @@ async fn read_stream(
                 cache_miss_tokens: cache_miss,
                 reasoning_tokens: reasoning,
                 finish_reason: finish_reason.clone(),
-            })).await;
+            }))).await;
         }
     }
 
@@ -219,14 +219,14 @@ async fn read_stream(
         if acc.id.is_empty() {
             continue;
         }
-        let _ = tx.send(Chunk::ToolCallComplete(ToolCall {
+        let _ = tx.send(Ok(Chunk::ToolCallComplete(ToolCall {
             id: acc.id.clone(),
             name: acc.name.clone(),
             arguments: acc.args.clone(),
             diff: String::new(),
             added: 0,
             removed: 0,
-        })).await;
+        }))).await;
     }
 
     (emitted, None)

@@ -33,12 +33,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut stream = provider.stream(&req).await?;
 
-    while let Some(chunk) = stream.next().await {
-        match chunk {
-            Chunk::Text(t)      => print!("{t}"),
-            Chunk::Reasoning { text, .. } => {} // 不打印 thinking
-            Chunk::Usage(u)     => eprintln!("\n[tokens: {}/{}]", u.prompt_tokens, u.completion_tokens),
-            Chunk::Error(e)     => eprintln!("\n[error: {e}]"),
+    while let Some(result) = stream.next().await {
+        match result {
+            Ok(Chunk::Text(t))      => print!("{t}"),
+            Ok(Chunk::Reasoning { text, .. }) => {} // 不打印 thinking
+            Ok(Chunk::Usage(u))     => eprintln!("\n[tokens: {}/{}]", u.prompt_tokens, u.completion_tokens),
+            Err(e)     => eprintln!("\n[error: {e}]"),
             _ => {}
         }
     }
