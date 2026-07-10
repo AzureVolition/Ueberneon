@@ -1,6 +1,7 @@
 pub mod provider;
 pub mod retry;
 pub mod repair;
+pub mod tool;
 
 #[cfg(feature = "openai")]
 pub mod openai;

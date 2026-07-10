@@ -8,13 +8,14 @@ name = "run_stream"
 path = "examples/run_stream.rs"
 
 [workspace]
-members = ["src/llm"]
+members = ["", "src/racpagent-macros"]
 
 [dependencies]
 ambassador = "0.5.1"
 anyhow = "1.0.102"
 async-openai = { version = "0.41.1", features = ["chat-completion"] }
 async-stream = "0.3.6"
+async-trait = "0.1"
 backon = "1.6.0"
 chrono = "0.4.45"
 dotenvy = "0.15.7"
@@ -25,3 +26,6 @@ serde_json = "1.0.150"
 tokio = { version = "1.52.3", features = ["full"] }
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
+encoding_rs = "0.8"
+llm = { path = "src/llm" }
+racpagent-macros = { path = "src/racpagent-macros" }

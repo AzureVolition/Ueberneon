@@ -157,14 +157,18 @@ async fn read_stream(
                         .and_then(|f| f.name.as_ref())
                         .cloned()
                         .unwrap_or_default();
+                    acc.name = name.clone();
                     let _ = tx.send(Ok(Chunk::ToolCallStart {
                         id: acc.id.clone(),
                         name,
                     })).await;
                 }
 
-                // 参数增量
+                // 参数增量（可能也带 name）
                 if let Some(ref func) = sse_tc.function {
+                    if let Some(ref name) = func.name {
+                        acc.name = name.clone();
+                    }
                     if let Some(ref args) = func.arguments {
                         acc.args.push_str(args);
                         let _ = tx.send(Ok(Chunk::ToolCallDelta {

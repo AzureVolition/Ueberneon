@@ -1,6 +1,7 @@
 use llm::{OpenAiProvider, Provider, Request, Message, Role, Chunk};
 use futures::StreamExt;
 
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let provider = OpenAiProvider::new(
