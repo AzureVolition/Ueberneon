@@ -36,7 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     while let Some(result) = stream.next().await {
         match result {
             Ok(Chunk::Text(t))      => print!("{t}"),
-            Ok(Chunk::Reasoning { text, .. }) => {} // 不打印 thinking
+            //Ok(Chunk::Reasoning { text, .. }) => {} // 不打印 thinking
             Ok(Chunk::Usage(u))     => eprintln!("\n[tokens: {}/{}]", u.prompt_tokens, u.completion_tokens),
             Err(e)     => eprintln!("\n[error: {e}]"),
             _ => {}

@@ -1,7 +1,7 @@
 // encoding 模块检测文件编码并将非 UTF-8 内容转换为 UTF-8。
 //
 // 检测级联：BOM → 严格 UTF-8 → GB18030 → 有损 UTF-8，
-// 与 Go 参考实现保持相同的行为，使得含 CJK 的 Windows 文件
+// 使得含 CJK 的 Windows 文件
 // 可正常编辑而不会静默损坏其字节。
 //
 // 使用 encoding_rs 处理 GB18030 的转换。

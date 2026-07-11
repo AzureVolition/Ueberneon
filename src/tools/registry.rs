@@ -6,8 +6,9 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
-use llm::tool::{Tool, ToolMeta};
+use llm::tool::Tool;
 use llm::ToolSchema;
+
 
 // ── Registry ─────────────────────────────────────────────────────────────────
 
@@ -167,8 +168,6 @@ pub fn split_mcp_name(name: &str) -> Option<(&str, &str)> {
 }
 
 // ── 预览 ─────────────────────────────────────────────────────────────────────
-
-use llm::tool::ToolContext;
 
 /// 写工具可选实现：预览文件变更而不真正写入。
 #[async_trait::async_trait]

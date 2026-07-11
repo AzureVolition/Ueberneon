@@ -6,6 +6,7 @@ use racpagent::tools::registry::Registry;
 use futures::StreamExt;
 use racpagent::tools::internal::read_file::ReadFile;
 
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let provider = OpenAiProvider::new(

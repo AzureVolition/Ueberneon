@@ -3,6 +3,7 @@ use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
 
+use racpagent::tools::internal::read_file::ReadFile;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

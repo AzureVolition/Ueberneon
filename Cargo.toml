@@ -3,12 +3,8 @@ name = "racpagent"
 version = "0.1.0"
 edition = "2024"
 
-[[example]]
-name = "run_stream"
-path = "examples/run_stream.rs"
-
 [workspace]
-members = ["", "src/racpagent-macros"]
+members = [""]
 
 [dependencies]
 ambassador = "0.5.1"
