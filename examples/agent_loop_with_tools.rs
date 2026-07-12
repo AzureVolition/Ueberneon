@@ -1,9 +1,13 @@
+
+use std::sync::Arc;
+use std::time::Duration;
+
 use llm::{
     Chunk, Message, OpenAiProvider, Provider, Request, Role, ToolCall,
 };
 use llm::tool::ToolContext;
-use racpagent::tools::registry::Registry;
 use futures::StreamExt;
+use racpagent::tools::{Bash, BashOutput, EditFile, KillShell, JobManager, MultiEdit, Registry, SandboxSpec, WriteFile};
 use racpagent::tools::internal::read_file::ReadFile;
 
 
@@ -22,6 +26,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let registry = Registry::new();
     registry.add(Box::new(ReadFile::new()));
 
+    let job_manager = Arc::new(JobManager::new());
+
+    let work_dir = std::env::current_dir().unwrap_or_else(|_| ".".into());
+
+    // 沙箱：默认基于工作目录创建沙箱配置
+    let sandbox = SandboxSpec::defaults(&work_dir);
+
+    registry.add(Box::new(Bash::new(
+        work_dir,
+        Duration::from_secs(120),
+        job_manager.clone(),
+        sandbox,
+    )));
+
+    registry.add(Box::new(BashOutput::new(job_manager.clone())));
+    registry.add(Box::new(KillShell::new(job_manager)));
+
     let mut req = Request {
         messages: vec![
             Message {
@@ -32,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Message {
                 role: Role::User,
                 content: Some(
-                    "/Users/linjiageng/code/rust/racpagent/Cargo.toml 里面是什么内容".into(),
+                    "你当前所在的文件系统路径是什么,这个文件夹有什么文件".into(),
                 ),
                 ..Default::default()
             },
@@ -105,14 +126,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 req.messages.push(Message {
                     role: Role::Tool,
                     content: Some(if let Some(ref err) = result.error {
+                        println!("tool call error: {err}");
                         format!("error: {err}")
                     } else {
+                        println!("tool call success: {}", &result.output);
                         result.output
                     }),
                     tool_call_id: Some(tool.id.clone()),
                     name: Some(tool.name.clone()),
                     ..Default::default()
                 });
+                
             } else {
                 eprintln!("\n[error: tool '{}' not found in registry]", tool.name);
             }

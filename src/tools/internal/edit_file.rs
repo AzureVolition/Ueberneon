@@ -1,0 +1,313 @@
+// edit_file 工具 —— 在文件中精确替换一段文本。
+//
+
+// 接收 path、old_string、new_string，在文件中找到唯一匹配并替换。
+// 匹配策略：精确匹配 → CRLF 归一化 → 模糊匹配（行号前缀剥离等）。
+// 支持编码保留（UTF-8/16/GB18030 无损往返）。写前通过 checkpoint 记录快照。
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use llm::tool::{Tool, ToolContext, ToolResult};
+use racpagent_macros::ToolMetaImpl;
+use serde_json::Value;
+
+use super::common::edit;
+use super::common::encoding;
+use crate::tools::snapshot::SnapshotStore;
+use crate::tools::diff::{self, Kind as DiffKind};
+
+// re-export for registry convenience
+pub use crate::tools::diff::FileChange;
+
+/// edit_file — 用精确字符串替换编辑文件。
+///
+/// old_string 必须在文件中唯一出现；添加周围上下文以消歧。
+/// 用于定向编辑而非重写整个文件。
+#[derive(ToolMetaImpl)]
+pub struct EditFile {
+    schema: Value,
+    read_only: bool,
+    /// 工作目录（相对路径在此目录下解析）。
+    work_dir: PathBuf,
+    /// 检查点存储（写前记录快照）。
+    checkpoint: Arc<SnapshotStore>,
+}
+
+impl EditFile {
+    pub fn new(work_dir: PathBuf, checkpoint: Arc<SnapshotStore>) -> Self {
+        Self {
+            schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File path"
+                    },
+                    "old_string": {
+                        "type": "string",
+                        "description": "Exact text to replace (must be unique in the file)"
+                    },
+                    "new_string": {
+                        "type": "string",
+                        "description": "Replacement text (may be empty to delete)"
+                    }
+                },
+                "required": ["path", "old_string", "new_string"]
+            }),
+            read_only: false,
+            work_dir,
+            checkpoint,
+        }
+    }
+
+    /// 将相对路径解析为绝对路径（基于 work_dir）。
+    fn resolve_path(&self, path: &str) -> Result<PathBuf, String> {
+        let p = std::path::Path::new(path);
+        let abs = if p.is_relative() {
+            let joined = self.work_dir.join(p);
+            // 规范化（去掉 ../ 等）
+            match std::fs::canonicalize(&joined) {
+                Ok(c) => c,
+                Err(_) => {
+                    // 文件可能还不存在，至少尝试 resolved 版本
+                    joined
+                }
+            }
+        } else {
+            p.to_path_buf()
+        };
+
+        // 安全检查：确保在 work_dir 内
+        if !abs.starts_with(&self.work_dir) {
+            return Err(format!(
+                "path '{}' is outside the workspace directory '{}'",
+                abs.display(),
+                self.work_dir.display()
+            ));
+        }
+
+        Ok(abs)
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for EditFile {
+    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> ToolResult {
+        // 1. 解析参数
+        let path_str = match args.get("path").and_then(|v| v.as_str()) {
+            Some(p) => p,
+            None => return ToolResult::err("edit_file: missing required argument 'path'"),
+        };
+        let old_string = match args.get("old_string").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => return ToolResult::err("edit_file: missing required argument 'old_string'"),
+        };
+        let new_string = match args.get("new_string").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => return ToolResult::err("edit_file: missing required argument 'new_string'"),
+        };
+
+        if old_string.is_empty() {
+            return ToolResult::err("edit_file: 'old_string' must not be empty");
+        }
+
+        // 2. 解析路径并检查范围
+        let path = match self.resolve_path(path_str) {
+            Ok(p) => p,
+            Err(e) => return ToolResult::err(format!("edit_file: {}", e)),
+        };
+
+        // 3. 读取文件
+        let data = match std::fs::read(&path) {
+            Ok(d) => d,
+            Err(e) => return ToolResult::err(format!("edit_file: failed to read '{}': {}", path_str, e)),
+        };
+
+        let (enc, _) = encoding::detect(&data);
+        let content = encoding::decode(&data, enc);
+
+        // 4. 应用编辑
+        let result = edit::apply_edit(&content, old_string, new_string, false);
+
+        match result.applied {
+            0 if result.matches == 0 => {
+                // 模糊匹配也失败了
+                if result.fuzzy {
+                    return ToolResult::err(edit::old_string_not_found_error(path_str, old_string, &content));
+                }
+                // 精确匹配 0 次
+                return ToolResult::err(edit::old_string_not_found_error(path_str, old_string, &content));
+            }
+            0 if result.matches > 1 => {
+                return ToolResult::err(edit::old_string_not_unique_error(path_str, old_string, &content, result.matches));
+            }
+            _ => {} // applied >= 1
+        }
+
+        // 5. 构建 diff（用于 checkpoint 和结果消息）
+        let file_change = diff::build_diff(path_str, &content, &result.updated, DiffKind::Modify);
+
+        // 6. 记录 checkpoint 快照（写前）
+        self.checkpoint.snapshot(path_str, &content, 0);
+
+        // 7. 回写文件（保持原始编码）
+        let output_bytes = encoding::encode(&result.updated, enc);
+        if let Err(e) = std::fs::write(&path, &output_bytes) {
+            return ToolResult::err(format!("edit_file: failed to write '{}': {}", path_str, e));
+        }
+
+        // 8. 返回成功消息
+        let fuzzy_suffix = if result.fuzzy { " (fuzzy match)" } else { "" };
+        let summary = diff::change_summary(&file_change);
+        ToolResult::ok(format!("edited {}{}\n{}", path_str, fuzzy_suffix, summary))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use llm::tool::ToolMeta;
+
+    static TEST_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    fn temp_dir() -> PathBuf {
+        let dir = std::env::temp_dir();
+        let id = TEST_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        dir.join(format!("_test_edit_file_{}_{}", std::process::id(), id))
+    }
+
+    fn setup_test(content: &[u8], filename: &str) -> (PathBuf, EditFile) {
+        let work_dir = temp_dir();
+        std::fs::create_dir_all(&work_dir).unwrap();
+        let path = work_dir.join(filename);
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(content).unwrap();
+        let checkpoint = Arc::new(SnapshotStore::new());
+        let tool = EditFile::new(work_dir.clone(), checkpoint);
+        (path, tool)
+    }
+
+    use super::*;
+
+    fn test_ctx() -> ToolContext {
+        ToolContext {
+            call_id: "test".into(),
+            plan_mode: false,
+            progress: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn basic_replace() {
+        let (path, tool) = setup_test(b"hello\nworld\n", "test.txt");
+        let args = serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "old_string": "world",
+            "new_string": "there"
+        });
+        let result = tool.execute(&test_ctx(), &args).await;
+        assert!(result.error.is_none(), "error: {:?}", result.error);
+        assert!(result.output.contains("edited"), "output: {}", result.output);
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "hello\nthere\n");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn not_found_error() {
+        let (path, tool) = setup_test(b"hello\nworld\n", "test.txt");
+        let args = serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "old_string": "nonexistent",
+            "new_string": "replacement"
+        });
+        let result = tool.execute(&test_ctx(), &args).await;
+        assert!(result.error.is_some());
+        assert!(result.error.as_ref().unwrap().contains("not found"), "error: {:?}", result.error);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn not_unique_error() {
+        let (path, tool) = setup_test(b"hello\nhello\n", "test.txt");
+        let args = serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "old_string": "hello",
+            "new_string": "hi"
+        });
+        let result = tool.execute(&test_ctx(), &args).await;
+        assert!(result.error.is_some());
+        assert!(result.error.as_ref().unwrap().contains("not unique"), "error: {:?}", result.error);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn delete_text() {
+        let (path, tool) = setup_test(b"hello\nworld\nend\n", "test.txt");
+        let args = serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "old_string": "world\n",
+            "new_string": ""
+        });
+        let result = tool.execute(&test_ctx(), &args).await;
+        assert!(result.error.is_none(), "error: {:?}", result.error);
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "hello\nend\n");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn checkpoint_recorded() {
+        let work_dir = temp_dir();
+        std::fs::create_dir_all(&work_dir).unwrap();
+        let path = work_dir.join("test.txt");
+        std::fs::write(&path, b"original content\n").unwrap();
+        let checkpoint = Arc::new(SnapshotStore::new());
+        let tool = EditFile::new(work_dir, checkpoint.clone());
+
+        let args = serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "old_string": "original content",
+            "new_string": "modified content"
+        });
+        let result = tool.execute(&test_ctx(), &args).await;
+        assert!(result.error.is_none(), "error: {:?}", result.error);
+
+        // Check checkpoint was recorded
+        let snapshot = checkpoint.get_snapshot(path.to_str().unwrap());
+        assert!(snapshot.is_some(), "checkpoint should have been recorded");
+        assert_eq!(snapshot.unwrap().1, "original content\n");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn path_outside_workspace() {
+        let work_dir = temp_dir();
+        std::fs::create_dir_all(&work_dir).unwrap();
+        let checkpoint = Arc::new(SnapshotStore::new());
+        let tool = EditFile::new(work_dir, checkpoint);
+
+        let args = serde_json::json!({
+            "path": "/etc/passwd",
+            "old_string": "root",
+            "new_string": "user"
+        });
+        let result = tool.execute(&test_ctx(), &args).await;
+        assert!(result.error.is_some());
+        assert!(result.error.as_ref().unwrap().contains("outside"), "error: {:?}", result.error);
+    }
+
+    #[test]
+    fn schema_is_valid_json() {
+        let work_dir = temp_dir();
+        let checkpoint = Arc::new(SnapshotStore::new());
+        let tool = EditFile::new(work_dir, checkpoint);
+        let schema = tool.schema();
+        assert!(schema.is_object());
+        assert_eq!(schema["type"], "object");
+    }
+}

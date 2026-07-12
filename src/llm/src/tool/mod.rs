@@ -1,7 +1,7 @@
 
 // ── Tool trait ──────────────────────────────────────────────────────────────
 
-/// 模型可调用的工具。5 个方法对齐 Reasonix 的 tool.Tool 接口。
+/// 模型可调用的工具 
 pub trait ToolMeta: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
@@ -19,7 +19,7 @@ pub trait Tool: ToolMeta {
 
 // ── ToolContext ──────────────────────────────────────────────────────────────
 
-/// 工具执行上下文，对齐 Reasonix 中通过 context.WithValue 传递的 callID / sink 等。
+/// 工具执行上下文 
 pub struct ToolContext {
     /// 工具调用的唯一 ID（stream 中 LLM 返回的 tool_call_id）
     pub call_id: String,

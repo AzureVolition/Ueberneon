@@ -30,7 +30,6 @@ const SUBAGENT_JOB_TOOLS: &[&str] = &[
 /// - `names`: 白名单（空 = 所有父工具）
 /// - `exclude`: 额外排除的工具名
 ///
-/// 对齐 Reasonix `agent.FilterRegistry`。
 pub fn filter_registry(
     parent: &Registry,
     names: &[String],
@@ -67,7 +66,6 @@ pub fn filter_registry(
 /// - 去掉后台任务工具（wait/bash_output/kill_shell）
 /// - bash 降级为纯前台模式（如果在白名单中）
 ///
-/// 对齐 Reasonix `agent.SubagentToolRegistry`。
 pub fn subagent_tool_registry(parent: &Registry, names: &[String]) -> Registry {
     let mut exclude = Vec::from_iter(
         SUBAGENT_META_TOOLS.iter().map(|s| s.to_string())
@@ -94,7 +92,6 @@ const PLANNER_NON_RESEARCH_TOOLS: &[&str] = &[
 ];
 
 /// Planner 模型的只读研究工具集。
-/// 对齐 Reasonix `agent.PlannerToolRegistry`。
 pub fn planner_tool_registry(parent: &Registry) -> Registry {
     let read_only = filter_read_only_registry(parent);
     let exclude: Vec<String> = PLANNER_NON_RESEARCH_TOOLS.iter().map(|s| s.to_string()).collect();
@@ -104,7 +101,6 @@ pub fn planner_tool_registry(parent: &Registry) -> Registry {
 // ── FilterReadOnly ───────────────────────────────────────────────────────────
 
 /// 只保留 ReadOnly() == true 的工具。
-/// 对齐 Reasonix `agent.FilterReadOnlyRegistry`。
 pub fn filter_read_only_registry(parent: &Registry) -> Registry {
     let sub = Registry::new();
     for name in parent.names() {
@@ -138,7 +134,6 @@ const PLAN_MODE_BASH_ALLOWED_PREFIXES: &[&str] = &[
 ];
 
 /// 判断工具在 plan mode 下是否被阻止。
-/// 对齐 Reasonix `agent.planModeBlocked`。
 pub fn plan_mode_blocked(tool_name: &str, args: &serde_json::Value) -> Option<String> {
     // 写文件类工具硬禁止
     if PLAN_MODE_BLOCKED_TOOLS.contains(&tool_name) {
@@ -172,7 +167,6 @@ pub fn plan_mode_blocked(tool_name: &str, args: &serde_json::Value) -> Option<St
 /// - 连续的只读工具 → 可并行执行（最多 8 并发）
 /// - 写工具 → 必须串行执行
 ///
-/// 对齐 Reasonix `agent.partitionToolCalls`。
 #[derive(Debug)]
 pub enum ExecutionGroup {
     /// 可并行执行的只读工具组

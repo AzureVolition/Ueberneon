@@ -1,7 +1,6 @@
 // registry —— 工具注册表。
 //
 // 管理工具的生命周期：注册、查找、批量删除、Schema 缓存。
-// 对齐 Reasonix tool.Registry。
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
