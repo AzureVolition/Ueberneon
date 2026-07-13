@@ -1,4 +1,3 @@
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -7,9 +6,11 @@ use llm::{
 };
 use llm::tool::ToolContext;
 use futures::StreamExt;
-use racpagent::tools::{SnapshotStore, Bash, BashOutput, EditFile, KillShell, JobManager, MultiEdit, Registry, SandboxSpec, WriteFile};
+use racpagent::tools::{
+    Bash, BashOutput, EditFile, KillShell, JobManager, MultiEdit, Registry,
+    SandboxSpec, SnapshotStore, WriteFile,
+};
 use racpagent::tools::internal::read_file::ReadFile;
-
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -43,25 +44,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     registry.add(Box::new(BashOutput::new(job_manager.clone())));
     registry.add(Box::new(KillShell::new(job_manager)));
+
+    // 文件编辑工具（核心）
+    registry.add(Box::new(EditFile::new(work_dir.clone(), snapshot.clone())));
+    registry.add(Box::new(MultiEdit::new(work_dir.clone(), snapshot.clone())));
     registry.add(Box::new(WriteFile::new(work_dir, snapshot)));
 
     let mut req = Request {
         messages: vec![
             Message {
                 role: Role::System,
-                content: Some("You are a helpful assistant.".into()),
+                content: Some(
+                    "你是一个文件编辑助手。你可以使用以下工具来编辑文件：\n\
+                    - ReadFile：读取文件内容\n\
+                    - WriteFile：写入/覆盖文件\n\
+                    - EditFile：对文件做精确替换编辑（指定 old_str → new_str）\n\
+                    - MultiEdit：一次性对同一个文件做多个替换编辑\n\
+                    - Bash：执行 shell 命令（如编译、运行等）\n\
+                    - BashOutput：查看后台命令的输出\n\
+                    - KillShell：终止后台 shell 进程\n\n\
+                    请先使用 ReadFile 查看文件内容，再选择合适的编辑工具进行修改。\
+                    编辑完成后可以用 Bash 运行或编译来验证修改是否正确。"
+                        .into(),
+                ),
                 ..Default::default()
             },
             Message {
                 role: Role::User,
                 content: Some(
-                    "在example里加一个场景,是一个编辑文件的agent,参考agent_loop_with_tools".into(),
+                    "请帮我编辑当前项目中的文件。\n\
+                    1. 先读取 src/lib.rs 查看当前内容\n\
+                    2. 然后在文件末尾添加一个新的公共函数 `pub fn greet(name: &str) -> String`，\
+                    该函数返回 `format!(\"Hello, {}!\", name)`\n\
+                    3. 最后用 `cargo check` 验证修改是否通过编译"
+                        .into(),
                 ),
                 ..Default::default()
             },
         ],
         tools: registry.schemas(),
-        temperature: 0.7,
+        temperature: 0.3,
         max_tokens: 4096,
     };
 
@@ -71,7 +93,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let mut output = String::new();
         let mut reasoning_content = String::new();
-        // 先收完整个 stream，不急着执行工具
         let mut pending_tool_calls: Vec<ToolCall> = Vec::new();
 
         while let Some(result) = stream.next().await {
@@ -82,7 +103,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Ok(Chunk::Reasoning { text, .. }) => {
                     reasoning_content.push_str(text);
-                    print!("{text}")
                 }
                 Ok(Chunk::Usage(u)) => {
                     eprintln!(
@@ -139,7 +159,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     name: Some(tool.name.clone()),
                     ..Default::default()
                 });
-                
             } else {
                 eprintln!("\n[error: tool '{}' not found in registry]", tool.name);
             }

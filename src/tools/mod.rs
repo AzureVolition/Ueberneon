@@ -11,10 +11,16 @@ use std::time::Duration;
 
 pub use internal::bash::Bash;
 pub use internal::bash_output::BashOutput;
+pub use internal::code_index::CodeIndex;
 pub use internal::edit_file::EditFile;
+pub use internal::glob::Glob;
+pub use internal::grep::Grep;
 pub use internal::kill_shell::KillShell;
+pub use internal::ls::Ls;
 pub use internal::multi_edit::MultiEdit;
 pub use internal::read_file::ReadFile;
+pub use internal::read_only_bash::ReadOnlyBash;
+pub use internal::web_fetch::WebFetch;
 pub use internal::write_file::WriteFile;
 pub use snapshot::SnapshotStore;
 pub use jobs::JobManager;
@@ -38,7 +44,7 @@ pub fn register_builtins(registry: &Registry) {
         work_dir.clone(),
         Duration::from_secs(120),
         job_manager.clone(),
-        Some(sandbox),
+        Some(sandbox.clone()),
     )));
 
     registry.add(Box::new(BashOutput::new(job_manager.clone())));
@@ -48,4 +54,22 @@ pub fn register_builtins(registry: &Registry) {
     registry.add(Box::new(EditFile::new(work_dir.clone(), snapshot.clone())));
     registry.add(Box::new(MultiEdit::new(work_dir.clone(), snapshot.clone())));
     registry.add(Box::new(WriteFile::new(work_dir, snapshot)));
+
+    // 搜索工具
+    registry.add(Box::new(Grep::new()));
+
+    // 代码浏览与索引工具
+    registry.add(Box::new(Ls::new()));
+    registry.add(Box::new(Glob::new()));
+    registry.add(Box::new(CodeIndex::new()));
+
+    // 网络工具
+    registry.add(Box::new(WebFetch::new()));
+
+    // 只读 bash（用于 subagent / explore）
+    registry.add(Box::new(ReadOnlyBash::new(
+        std::env::current_dir().unwrap_or_else(|_| "..".into()),
+        Duration::from_secs(30),
+        Some(sandbox),
+    )));
 }
