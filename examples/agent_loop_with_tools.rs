@@ -37,7 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         work_dir,
         Duration::from_secs(120),
         job_manager.clone(),
-        sandbox,
+        Some(sandbox),
     )));
 
     registry.add(Box::new(BashOutput::new(job_manager.clone())));

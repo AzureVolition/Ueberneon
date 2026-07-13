@@ -33,8 +33,8 @@ pub struct Bash {
     timeout: Duration,
     /// 后台任务管理器（后台模式）。
     job_manager: Arc<JobManager>,
-    /// 沙箱配置（None 内部表示禁用，由 SandboxSpec.enforce 控制）。
-    sandbox: SandboxSpec,
+    /// 沙箱配置（None = 禁用沙箱，Some = 启用并由 SandboxSpec 定义策略）。
+    sandbox: Option<SandboxSpec>,
     /// 缓存的 shell 探测结果（首次探测后复用）。
     shell: std::sync::OnceLock<Shell>,
 }
@@ -58,7 +58,7 @@ impl Bash {
         work_dir: PathBuf,
         timeout: Duration,
         job_manager: Arc<JobManager>,
-        sandbox: SandboxSpec,
+        sandbox: Option<SandboxSpec>,
     ) -> Self {
         Self {
             schema: serde_json::json!({
@@ -147,9 +147,9 @@ impl Tool for Bash {
         let runner = ProcessRunner::new(self.work_dir.clone(), self.timeout)
             .with_env(env);
 
-        // 沙箱：只在 sandbox.enforce 时启用
-        let runner = if self.sandbox.enforce {
-            runner.with_sandbox(self.sandbox.clone())
+        // 沙箱：启用时传递给 ProcessRunner
+        let runner = if let Some(spec) = &self.sandbox {
+            runner.with_sandbox(spec.clone())
         } else {
             runner
         };
@@ -226,8 +226,8 @@ mod tests {
         Arc::new(JobManager::new())
     }
 
-    fn test_sandbox() -> SandboxSpec {
-        SandboxSpec::disabled()
+    fn test_sandbox() -> Option<SandboxSpec> {
+        None
     }
 
     fn test_bash() -> Bash {

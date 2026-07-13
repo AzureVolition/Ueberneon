@@ -17,11 +17,13 @@ use crate::tools::snapshot::SnapshotStore;
 use crate::tools::diff::{self, Kind as DiffKind};
 
 /// multi_edit — 对单个文件进行原子性批量替换。
+///
+/// `work_dir` 是工作目录的共享引用 —— 所有文件路径必须在此目录之下。
 #[derive(ToolMetaImpl)]
 pub struct MultiEdit {
     schema: Value,
     read_only: bool,
-    /// 工作目录（相对路径在此目录下解析）。
+    /// 工作目录（共享引用语义）。
     work_dir: PathBuf,
     /// 检查点存储（写前记录快照）。
     checkpoint: Arc<SnapshotStore>,
@@ -90,7 +92,9 @@ impl MultiEdit {
         }
     }
 
-    /// 将相对路径解析为绝对路径（基于 work_dir）。
+    /// 将路径解析为绝对路径：
+    /// - 相对路径拼接到 work_dir 下
+    /// - 绝对路径必须在 work_dir 内
     fn resolve_path(&self, path: &str) -> Result<PathBuf, String> {
         let p = std::path::Path::new(path);
         let abs = if p.is_relative() {
@@ -245,7 +249,7 @@ mod tests {
         let path = work_dir.join("test.txt");
         std::fs::write(&path, b"a\nb\nc\n").unwrap();
         let checkpoint = Arc::new(SnapshotStore::new());
-        let tool = MultiEdit::new(work_dir.clone(), checkpoint);
+        let tool = MultiEdit::new(work_dir, checkpoint);
 
         let args = serde_json::json!({
             "path": path.to_str().unwrap(),

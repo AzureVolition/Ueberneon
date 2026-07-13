@@ -29,7 +29,7 @@ pub fn register_builtins(registry: &Registry) {
     let job_manager = Arc::new(JobManager::new());
     let snapshot = Arc::new(SnapshotStore::new());
 
-    let work_dir = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    let work_dir = std::env::current_dir().unwrap_or_else(|_| "..".into());
 
     // 沙箱：默认基于工作目录创建沙箱配置
     let sandbox = SandboxSpec::defaults(&work_dir);
@@ -38,13 +38,13 @@ pub fn register_builtins(registry: &Registry) {
         work_dir.clone(),
         Duration::from_secs(120),
         job_manager.clone(),
-        sandbox,
+        Some(sandbox),
     )));
 
     registry.add(Box::new(BashOutput::new(job_manager.clone())));
     registry.add(Box::new(KillShell::new(job_manager)));
 
-    // 文件编辑工具（共享 work_dir + snapshot）
+    // 文件编辑工具
     registry.add(Box::new(EditFile::new(work_dir.clone(), snapshot.clone())));
     registry.add(Box::new(MultiEdit::new(work_dir.clone(), snapshot.clone())));
     registry.add(Box::new(WriteFile::new(work_dir, snapshot)));

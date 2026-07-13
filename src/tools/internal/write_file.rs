@@ -18,11 +18,13 @@ use crate::tools::diff::{self, Kind as DiffKind};
 ///
 /// 默认拒绝覆盖已有文件（使用 edit_file 进行定向编辑）；
 /// 设置 `overwrite: true` 可以覆盖。
+///
+/// `work_dir` 是工作目录的共享引用 —— 所有文件路径必须在此目录之下。
 #[derive(ToolMetaImpl)]
 pub struct WriteFile {
     schema: Value,
     read_only: bool,
-    /// 工作目录（相对路径在此目录下解析）。
+    /// 工作目录（共享引用语义）。
     work_dir: PathBuf,
     /// 检查点存储（写前记录快照）。
     checkpoint: Arc<SnapshotStore>,
@@ -55,13 +57,13 @@ impl WriteFile {
         }
     }
 
-    /// 将相对路径解析为绝对路径（基于 work_dir）。
+    /// 将路径解析为绝对路径：
+    /// - 相对路径拼接到 work_dir 下
+    /// - 绝对路径必须在 work_dir 内
     fn resolve_path(&self, path: &str) -> Result<PathBuf, String> {
         let p = std::path::Path::new(path);
         let abs = if p.is_relative() {
             let joined = self.work_dir.join(p);
-            // 使用 canonicalize 检查是否在 work_dir 内（如果文件存在）
-            // 如果文件尚未创建，用 work_dir.join 的 resolved 版本
             match std::fs::canonicalize(&joined) {
                 Ok(c) => {
                     if !c.starts_with(&self.work_dir) {
@@ -74,7 +76,6 @@ impl WriteFile {
                     c
                 }
                 Err(_) => {
-                    // 文件尚不存在，规范化路径中的 ../
                     let normalized = normalize_path(&joined);
                     if !normalized.starts_with(&self.work_dir) {
                         return Err(format!(

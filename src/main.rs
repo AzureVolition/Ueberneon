@@ -11,7 +11,9 @@ async fn main() -> anyhow::Result<()> {
         .finish(); // 完成构建，生成最终的 Subscriber 实例
     tracing::subscriber::set_global_default(subscriber)?; // 将该 Subscriber 设为全局默认，? 用于错误传播
 
- 
- 
+    let x: i32 = 66_000;
+
+
+    
     Ok(())
 }

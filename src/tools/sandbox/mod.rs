@@ -1,7 +1,9 @@
 // sandbox/mod.rs —— 操作系统级命令隔离。
 //
-//  对 macOS / Linux / Windows 分别提供
-// 沙箱包装策略。默认不启用，通过 SandboxSpec.enforce 显式开启。
+// 对 macOS / Linux / Windows 分别提供
+// 沙箱包装策略。启用与否由消费者通过 Option<SandboxSpec> 控制：
+// - None  = 禁用沙箱，直接透传
+// - Some  = 启用沙箱，wrap_command 始终包装
 //
 // ┌──────────┬──────────────────────────────────┐
 // │ 平台      │ 沙箱机制                          │
@@ -19,10 +21,13 @@
 use std::path::{Path, PathBuf};
 
 /// 沙箱隔离策略。
+///
+/// 纯策略描述，不包含启用/禁用开关。
+/// 消费者（Bash / ProcessRunner）通过 `Option<SandboxSpec>` 控制：
+/// - `None`  → 禁用沙箱，命令直接透传
+/// - `Some(spec)` → 启用沙箱，`wrap_command` 总是执行包装
 #[derive(Debug, Clone)]
 pub struct SandboxSpec {
-    /// 是否启用沙箱。false 时 wrap_command 直接返回原 argv。
-    pub enforce: bool,
     /// 允许写入的路径列表。
     pub write_roots: Vec<PathBuf>,
     /// 只读挂载的根路径（macOS/Linux 为 "/"，Windows 为 "C:\"）。
@@ -44,7 +49,10 @@ pub struct SandboxWrapped {
 impl SandboxSpec {
     /// 根据当前平台创建默认沙箱配置。
     ///
-    /// 默认不启用沙箱；设置 `enforce = true` 后根据平台选择对应机制。
+    /// 返回一个安全的默认策略：
+    /// - 只写 work_dir + 临时目录
+    /// - 只读系统根
+    /// - 禁止网络
     pub fn defaults(work_dir: &Path) -> Self {
         let roots = if cfg!(windows) {
             vec![PathBuf::from("C:\\")]
@@ -53,33 +61,17 @@ impl SandboxSpec {
         };
 
         Self {
-            enforce: true,
             write_roots: vec![work_dir.to_path_buf(), std::env::temp_dir()],
             read_only_roots: roots,
             allow_network: false,
         }
     }
 
-    /// 禁用沙箱。
-    pub fn disabled() -> Self {
-        Self {
-            enforce: false,
-            write_roots: vec![],
-            read_only_roots: vec![],
-            allow_network: true,
-        }
-    }
-
-    /// 将 argv 包装为沙箱命令。如果 enforce=false，直接返回原 argv。
+    /// 将 argv 包装为沙箱命令。
+    ///
+    /// 注意：仅当你有 `&SandboxSpec` 时调用此方法 ——
+    /// 即消费者已经决定启用沙箱。如果要禁用，消费者应使用 `None`。
     pub fn wrap_command(&self, program: &str, args: &[String]) -> SandboxWrapped {
-        if !self.enforce {
-            return SandboxWrapped {
-                program: program.to_string(),
-                args: args.to_vec(),
-                profile_path: None,
-            };
-        }
-
         let inner_cmd = Self::join_command(program, args);
 
         #[cfg(target_os = "macos")]
@@ -228,15 +220,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn disabled_sandbox_passthrough() {
-        let spec = SandboxSpec::disabled();
-        let w = spec.wrap_command("echo", &["hello".into()]);
-        assert_eq!(w.program, "echo");
-        assert_eq!(w.args, vec!["hello"]);
-        assert!(w.profile_path.is_none());
-    }
-
-    #[test]
     fn defaults_has_work_dir() {
         let spec = SandboxSpec::defaults(Path::new("/tmp/work"));
         assert!(spec.write_roots.contains(&PathBuf::from("/tmp/work")));
@@ -260,8 +243,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_wrap_uses_sandbox_exec() {
-        let mut spec = SandboxSpec::defaults(Path::new("/tmp/work"));
-        spec.enforce = true;
+        let spec = SandboxSpec::defaults(Path::new("/tmp/work"));
         let w = spec.wrap_command("bash", &["-c".into(), "echo hi".into()]);
         assert_eq!(w.program, "sandbox-exec");
         assert!(w.profile_path.is_some());
@@ -270,8 +252,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_wrap_uses_bwrap() {
-        let mut spec = SandboxSpec::defaults(Path::new("/tmp/work"));
-        spec.enforce = true;
+        let spec = SandboxSpec::defaults(Path::new("/tmp/work"));
         let w = spec.wrap_command("echo", &["hi".into()]);
         assert_eq!(w.program, "bwrap");
     }

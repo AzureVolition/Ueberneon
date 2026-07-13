@@ -289,10 +289,9 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn run_with_sandbox_enabled() {
-        let mut spec = crate::tools::sandbox::SandboxSpec::defaults(
+        let spec = crate::tools::sandbox::SandboxSpec::defaults(
             &std::env::current_dir().unwrap(),
         );
-        spec.enforce = true;
 
         let runner = ProcessRunner::new(
             std::env::current_dir().unwrap(),

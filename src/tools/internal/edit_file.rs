@@ -1,6 +1,5 @@
 // edit_file 工具 —— 在文件中精确替换一段文本。
 //
-
 // 接收 path、old_string、new_string，在文件中找到唯一匹配并替换。
 // 匹配策略：精确匹配 → CRLF 归一化 → 模糊匹配（行号前缀剥离等）。
 // 支持编码保留（UTF-8/16/GB18030 无损往返）。写前通过 checkpoint 记录快照。
@@ -24,11 +23,14 @@ pub use crate::tools::diff::FileChange;
 ///
 /// old_string 必须在文件中唯一出现；添加周围上下文以消歧。
 /// 用于定向编辑而非重写整个文件。
+///
+/// `work_dir` 是工作目录的共享引用 —— 所有文件路径必须在此目录之下，
+/// 相对路径会相对于 work_dir 解析。
 #[derive(ToolMetaImpl)]
 pub struct EditFile {
     schema: Value,
     read_only: bool,
-    /// 工作目录（相对路径在此目录下解析）。
+    /// 工作目录（共享引用语义）。路径限制 + 相对路径解析的基础。
     work_dir: PathBuf,
     /// 检查点存储（写前记录快照）。
     checkpoint: Arc<SnapshotStore>,
@@ -61,24 +63,22 @@ impl EditFile {
         }
     }
 
-    /// 将相对路径解析为绝对路径（基于 work_dir）。
+    /// 将路径解析为绝对路径：
+    /// - 相对路径拼接到 work_dir 下
+    /// - 绝对路径必须在 work_dir 内
+    /// - 不存在的文件尝试拼接后做路径规范检查
     fn resolve_path(&self, path: &str) -> Result<PathBuf, String> {
         let p = std::path::Path::new(path);
         let abs = if p.is_relative() {
             let joined = self.work_dir.join(p);
-            // 规范化（去掉 ../ 等）
             match std::fs::canonicalize(&joined) {
                 Ok(c) => c,
-                Err(_) => {
-                    // 文件可能还不存在，至少尝试 resolved 版本
-                    joined
-                }
+                Err(_) => joined,
             }
         } else {
             p.to_path_buf()
         };
 
-        // 安全检查：确保在 work_dir 内
         if !abs.starts_with(&self.work_dir) {
             return Err(format!(
                 "path '{}' is outside the workspace directory '{}'",
@@ -132,20 +132,15 @@ impl Tool for EditFile {
 
         match result.applied {
             0 if result.matches == 0 => {
-                // 模糊匹配也失败了
-                if result.fuzzy {
-                    return ToolResult::err(edit::old_string_not_found_error(path_str, old_string, &content));
-                }
-                // 精确匹配 0 次
                 return ToolResult::err(edit::old_string_not_found_error(path_str, old_string, &content));
             }
             0 if result.matches > 1 => {
                 return ToolResult::err(edit::old_string_not_unique_error(path_str, old_string, &content, result.matches));
             }
-            _ => {} // applied >= 1
+            _ => {}
         }
 
-        // 5. 构建 diff（用于 checkpoint 和结果消息）
+        // 5. 构建 diff
         let file_change = diff::build_diff(path_str, &content, &result.updated, DiffKind::Modify);
 
         // 6. 记录 checkpoint 快照（写前）
@@ -189,8 +184,6 @@ mod tests {
         (path, tool)
     }
 
-    use super::*;
-
     fn test_ctx() -> ToolContext {
         ToolContext {
             call_id: "test".into(),
@@ -210,7 +203,6 @@ mod tests {
         let result = tool.execute(&test_ctx(), &args).await;
         assert!(result.error.is_none(), "error: {:?}", result.error);
         assert!(result.output.contains("edited"), "output: {}", result.output);
-
         let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(content, "hello\nthere\n");
         let _ = std::fs::remove_file(&path);
@@ -226,7 +218,7 @@ mod tests {
         });
         let result = tool.execute(&test_ctx(), &args).await;
         assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("not found"), "error: {:?}", result.error);
+        assert!(result.error.as_ref().unwrap().contains("not found"));
         let _ = std::fs::remove_file(&path);
     }
 
@@ -240,7 +232,7 @@ mod tests {
         });
         let result = tool.execute(&test_ctx(), &args).await;
         assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("not unique"), "error: {:?}", result.error);
+        assert!(result.error.as_ref().unwrap().contains("not unique"));
         let _ = std::fs::remove_file(&path);
     }
 
@@ -253,8 +245,7 @@ mod tests {
             "new_string": ""
         });
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.error.is_none(), "error: {:?}", result.error);
-
+        assert!(result.error.is_none());
         let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(content, "hello\nend\n");
         let _ = std::fs::remove_file(&path);
@@ -275,11 +266,10 @@ mod tests {
             "new_string": "modified content"
         });
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.error.is_none(), "error: {:?}", result.error);
+        assert!(result.error.is_none());
 
-        // Check checkpoint was recorded
         let snapshot = checkpoint.get_snapshot(path.to_str().unwrap());
-        assert!(snapshot.is_some(), "checkpoint should have been recorded");
+        assert!(snapshot.is_some());
         assert_eq!(snapshot.unwrap().1, "original content\n");
         let _ = std::fs::remove_file(&path);
     }
@@ -298,14 +288,13 @@ mod tests {
         });
         let result = tool.execute(&test_ctx(), &args).await;
         assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("outside"), "error: {:?}", result.error);
+        assert!(result.error.as_ref().unwrap().contains("outside"));
     }
 
     #[test]
     fn schema_is_valid_json() {
-        let work_dir = temp_dir();
         let checkpoint = Arc::new(SnapshotStore::new());
-        let tool = EditFile::new(work_dir, checkpoint);
+        let tool = EditFile::new(PathBuf::from("/tmp"), checkpoint);
         let schema = tool.schema();
         assert!(schema.is_object());
         assert_eq!(schema["type"], "object");
