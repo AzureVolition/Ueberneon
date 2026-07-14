@@ -7,12 +7,14 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use llm::tool::{Tool, ToolContext, ToolResult};
+use llm::tool::{AgentMode, Tool, ToolContext, ToolResult};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
 
+use crate::tools::content_tracker::FileObserveTracker;
 use crate::tools::snapshot::SnapshotStore;
 use crate::tools::diff::{self, Kind as DiffKind};
+use crate::permission::{Check, gate::PermissionChecked};
 
 /// write_file — 创建新文件或覆盖已有文件。
 ///
@@ -28,10 +30,14 @@ pub struct WriteFile {
     work_dir: PathBuf,
     /// 检查点存储（写前记录快照）。
     checkpoint: Arc<SnapshotStore>,
+    /// 权限检查列表。
+    checks: Vec<Box<dyn Check>>,
+    /// 文件内容追踪器（陈旧锚点检查）。
+    tracker: Arc<FileObserveTracker>,
 }
 
 impl WriteFile {
-    pub fn new(work_dir: PathBuf, checkpoint: Arc<SnapshotStore>) -> Self {
+    pub fn new(work_dir: PathBuf, checkpoint: Arc<SnapshotStore>, checks: Vec<Box<dyn Check>>, tracker: Arc<FileObserveTracker>) -> Self {
         Self {
             schema: serde_json::json!({
                 "type": "object",
@@ -54,6 +60,8 @@ impl WriteFile {
             read_only: false,
             work_dir,
             checkpoint,
+            checks,
+            tracker,
         }
     }
 
@@ -124,9 +132,24 @@ fn normalize_path(path: &std::path::Path) -> PathBuf {
     result
 }
 
+impl PermissionChecked for WriteFile {
+    fn permission_checks(&self) -> &[Box<dyn Check>] {
+        &self.checks
+    }
+}
+
 #[async_trait::async_trait]
 impl Tool for WriteFile {
     async fn execute(&self, _ctx: &ToolContext, args: &Value) -> ToolResult {
+        // 0. 权限检查
+        if let Some(reason) = self.check_permission("write_file", args, _ctx.agent_mode) {
+            return ToolResult::blocked(reason);
+        }
+        // plan mode：写工具拒绝
+        if _ctx.plan_mode {
+            return ToolResult::blocked("write_file is not allowed in plan mode");
+        }
+
         // 1. 解析参数
         let path_str = match args.get("path").and_then(|v| v.as_str()) {
             Some(p) => p,
@@ -152,10 +175,14 @@ impl Tool for WriteFile {
             ));
         }
 
-        // 4. 记录 checkpoint 快照（如果文件已存在）
+        // 4. 记录 checkpoint 快照 + 陈旧锚点检查（如果文件已存在）
         let original_content = if path.exists() {
             match std::fs::read_to_string(&path) {
                 Ok(c) => {
+                    // 陈旧锚点检查：覆盖已有文件时验证内容是否一致
+                    if let Err(msg) = self.tracker.check_anchor(path_str, &c) {
+                        return ToolResult::err(msg);
+                    }
                     self.checkpoint.snapshot(path_str, &c, 0);
                     c
                 }
@@ -186,7 +213,10 @@ impl Tool for WriteFile {
             return ToolResult::err(format!("write_file: failed to write '{}': {}", path_str, e));
         }
 
-        // 8. 返回成功消息
+        // 8. 更新追踪器
+        self.tracker.record_write(path_str, content);
+
+        // 9. 返回成功消息
         let summary = diff::change_summary(&file_change);
         ToolResult::ok(format!("wrote {}\n{}", path_str, summary))
     }
@@ -209,6 +239,7 @@ mod tests {
         ToolContext {
             call_id: "test".into(),
             plan_mode: false,
+            agent_mode: AgentMode::Ask,
             progress: None,
         }
     }
@@ -218,7 +249,7 @@ mod tests {
         let work_dir = temp_dir();
         std::fs::create_dir_all(&work_dir).unwrap();
         let checkpoint = Arc::new(SnapshotStore::new());
-        let tool = WriteFile::new(work_dir.clone(), checkpoint);
+        let tool = WriteFile::new(work_dir.clone(), checkpoint, vec![], Arc::new(FileObserveTracker::new()));
 
         let path = work_dir.join("new_file.txt");
         let args = serde_json::json!({
@@ -226,8 +257,8 @@ mod tests {
             "content": "hello\nworld\n"
         });
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.error.is_none(), "error: {:?}", result.error);
-        assert!(result.output.contains("wrote"), "output: {}", result.output);
+        assert!(result.error().is_none(), "error: {:?}", result.error());
+        assert!(result.output().contains("wrote"), "output: {}", result.output());
 
         let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(content, "hello\nworld\n");
@@ -241,7 +272,7 @@ mod tests {
         let path = work_dir.join("existing.txt");
         std::fs::write(&path, b"old content").unwrap();
         let checkpoint = Arc::new(SnapshotStore::new());
-        let tool = WriteFile::new(work_dir, checkpoint);
+        let tool = WriteFile::new(work_dir, checkpoint, vec![], Arc::new(FileObserveTracker::new()));
 
         // Without overwrite flag — should be blocked
         let args = serde_json::json!({
@@ -249,7 +280,7 @@ mod tests {
             "content": "new content"
         });
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.blocked, "should be blocked without overwrite");
+        assert!(result.is_blocked(), "should be blocked without overwrite");
 
         // With overwrite flag — should succeed
         let args = serde_json::json!({
@@ -258,7 +289,7 @@ mod tests {
             "overwrite": true
         });
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.error.is_none(), "error: {:?}", result.error);
+        assert!(result.error().is_none(), "error: {:?}", result.error());
 
         let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(content, "new content");
@@ -270,7 +301,7 @@ mod tests {
         let work_dir = temp_dir();
         std::fs::create_dir_all(&work_dir).unwrap();
         let checkpoint = Arc::new(SnapshotStore::new());
-        let tool = WriteFile::new(work_dir.clone(), checkpoint);
+        let tool = WriteFile::new(work_dir.clone(), checkpoint, vec![], Arc::new(FileObserveTracker::new()));
 
         let nested = work_dir.join("subdir").join("nested").join("file.txt");
         let args = serde_json::json!({
@@ -278,7 +309,7 @@ mod tests {
             "content": "nested content"
         });
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.error.is_none(), "error: {:?}", result.error);
+        assert!(result.error().is_none(), "error: {:?}", result.error());
         assert!(nested.exists(), "file should have been created");
         let _ = std::fs::remove_dir_all(work_dir.join("subdir"));
     }
@@ -288,15 +319,15 @@ mod tests {
         let work_dir = temp_dir();
         std::fs::create_dir_all(&work_dir).unwrap();
         let checkpoint = Arc::new(SnapshotStore::new());
-        let tool = WriteFile::new(work_dir, checkpoint);
+        let tool = WriteFile::new(work_dir, checkpoint, vec![], Arc::new(FileObserveTracker::new()));
 
         let args = serde_json::json!({
             "path": "/tmp/outside.txt",
             "content": "test"
         });
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("outside"));
+        assert!(result.error().is_some());
+        assert!(result.error().unwrap().contains("outside"));
     }
 
     #[tokio::test]
@@ -306,7 +337,7 @@ mod tests {
         let path = work_dir.join("checkpoint_test.txt");
         std::fs::write(&path, b"original").unwrap();
         let checkpoint = Arc::new(SnapshotStore::new());
-        let tool = WriteFile::new(work_dir, checkpoint.clone());
+        let tool = WriteFile::new(work_dir, checkpoint.clone(), vec![], Arc::new(FileObserveTracker::new()));
 
         let args = serde_json::json!({
             "path": path.to_str().unwrap(),
@@ -314,7 +345,7 @@ mod tests {
             "overwrite": true
         });
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.error.is_none(), "error: {:?}", result.error);
+        assert!(result.error().is_none(), "error: {:?}", result.error());
 
         let snapshot = checkpoint.get_snapshot(path.to_str().unwrap());
         assert!(snapshot.is_some(), "checkpoint should exist");
@@ -327,7 +358,7 @@ mod tests {
         let work_dir = temp_dir();
         std::fs::create_dir_all(&work_dir).unwrap();
         let checkpoint = Arc::new(SnapshotStore::new());
-        let tool = WriteFile::new(work_dir, checkpoint);
+        let tool = WriteFile::new(work_dir, checkpoint, vec![], Arc::new(FileObserveTracker::new()));
         let schema = tool.schema();
         assert!(schema.is_object());
         assert_eq!(schema["type"], "object");

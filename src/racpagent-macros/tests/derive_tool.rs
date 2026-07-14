@@ -1,4 +1,4 @@
-use llm::tool::Tool;
+use llm::tool::{AgentMode, Tool};
 use llm::tool::ToolMeta as _;
 use racpagent_macros::ToolMetaImpl;
 
@@ -85,10 +85,11 @@ async fn execute_returns_ok() {
     let ctx = llm::tool::ToolContext {
         call_id: "test".into(),
         plan_mode: false,
+            agent_mode: AgentMode::Ask,
         progress: None,
     };
     let args = serde_json::json!({});
     let result = tool.execute(&ctx, &args).await;
-    assert!(result.error.is_none());
-    assert_eq!(result.output, "executed");
+    assert!(result.error().is_none());
+    assert_eq!(result.output(), "executed");
 }

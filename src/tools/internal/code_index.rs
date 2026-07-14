@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use llm::tool::{Tool, ToolContext, ToolResult};
+use llm::tool::{AgentMode, Tool, ToolContext, ToolResult};
 use racpagent_macros::ToolMetaImpl;
 use regex::Regex;
 use serde_json::Value;
@@ -567,6 +567,7 @@ mod tests {
         ToolContext {
             call_id: "test".into(),
             plan_mode: false,
+            agent_mode: AgentMode::Ask,
             progress: None,
         }
     }
@@ -589,12 +590,12 @@ macro_rules! my_macro {}\n").unwrap();
             "action": "outline", "path": dir.join("test.rs").to_str().unwrap()
         })).await;
 
-        assert!(result.error.is_none(), "error: {:?}", result.error);
-        assert!(result.output.contains("hello"));
-        assert!(result.output.contains("MyStruct"));
-        assert!(result.output.contains("MyEnum"));
-        assert!(result.output.contains("MyTrait"));
-        assert!(result.output.contains("MAX"));
+        assert!(result.error().is_none(), "error: {:?}", result.error());
+        assert!(result.output().contains("hello"));
+        assert!(result.output().contains("MyStruct"));
+        assert!(result.output().contains("MyEnum"));
+        assert!(result.output().contains("MyTrait"));
+        assert!(result.output().contains("MAX"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -612,9 +613,9 @@ struct Config {}\n").unwrap();
             "action": "search", "query": "add", "path": dir.to_str().unwrap()
         })).await;
 
-        assert!(result.error.is_none());
-        assert!(result.output.contains("add"), "output: {}", result.output);
-        assert!(!result.output.contains("subtract"), "output: {}", result.output);
+        assert!(result.error().is_none());
+        assert!(result.output().contains("add"), "output: {}", result.output());
+        assert!(!result.output().contains("subtract"), "output: {}", result.output());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -629,10 +630,10 @@ struct Config {}\n").unwrap();
             "action": "outline", "path": dir.to_str().unwrap(), "kind": "struct"
         })).await;
 
-        assert!(result.error.is_none());
-        assert!(result.output.contains("Data"));
-        assert!(!result.output.contains("do_something"));
-        assert!(!result.output.contains("Status"));
+        assert!(result.error().is_none());
+        assert!(result.output().contains("Data"));
+        assert!(!result.output().contains("do_something"));
+        assert!(!result.output().contains("Status"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -645,8 +646,8 @@ struct Config {}\n").unwrap();
         let result = tool.execute(&test_ctx(), &serde_json::json!({
             "action": "outline", "path": dir.to_str().unwrap()
         })).await;
-        assert!(result.error.is_none());
-        assert!(result.output.contains("no symbols found"));
+        assert!(result.error().is_none());
+        assert!(result.output().contains("no symbols found"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -654,7 +655,7 @@ struct Config {}\n").unwrap();
     async fn missing_action() {
         let tool = CodeIndex::new();
         let result = tool.execute(&test_ctx(), &serde_json::json!({})).await;
-        assert!(result.error.is_some());
+        assert!(result.error().is_some());
     }
 
     #[tokio::test]
@@ -666,9 +667,9 @@ struct Config {}\n").unwrap();
         let result = tool.execute(&test_ctx(), &serde_json::json!({
             "action": "outline", "path": dir.to_str().unwrap()
         })).await;
-        assert!(result.error.is_none());
-        assert!(result.output.contains("MyClass"));
-        assert!(result.output.contains("top_level"));
+        assert!(result.error().is_none());
+        assert!(result.output().contains("MyClass"));
+        assert!(result.output().contains("top_level"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -683,13 +684,13 @@ class App {}\ninterface Config {}\ntype Data = string;\nenum Color { Red }\ncons
         let result = tool.execute(&test_ctx(), &serde_json::json!({
             "action": "outline", "path": dir.to_str().unwrap()
         })).await;
-        assert!(result.error.is_none());
-        assert!(result.output.contains("greet"));
-        assert!(result.output.contains("App"));
-        assert!(result.output.contains("Config"));
-        assert!(result.output.contains("Data"));
-        assert!(result.output.contains("Color"));
-        assert!(result.output.contains("MAX"));
+        assert!(result.error().is_none());
+        assert!(result.output().contains("greet"));
+        assert!(result.output().contains("App"));
+        assert!(result.output().contains("Config"));
+        assert!(result.output().contains("Data"));
+        assert!(result.output().contains("Color"));
+        assert!(result.output().contains("MAX"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -702,10 +703,10 @@ class App {}\ninterface Config {}\ntype Data = string;\nenum Color { Red }\ncons
         let result = tool.execute(&test_ctx(), &serde_json::json!({
             "action": "outline", "path": dir.to_str().unwrap()
         })).await;
-        assert!(result.error.is_none());
-        assert!(result.output.contains("hello"));
-        assert!(result.output.contains("Config"));
-        assert!(result.output.contains("Reader"));
+        assert!(result.error().is_none());
+        assert!(result.output().contains("hello"));
+        assert!(result.output().contains("Config"));
+        assert!(result.output().contains("Reader"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -713,8 +714,8 @@ class App {}\ninterface Config {}\ntype Data = string;\nenum Color { Red }\ncons
     async fn search_requires_query() {
         let tool = CodeIndex::new();
         let result = tool.execute(&test_ctx(), &serde_json::json!({"action": "search"})).await;
-        assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("query"));
+        assert!(result.error().is_some());
+        assert!(result.error().unwrap().contains("query"));
     }
 
     #[test]

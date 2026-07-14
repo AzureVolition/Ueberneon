@@ -7,7 +7,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use llm::tool::{Tool, ToolContext, ToolResult};
+use llm::tool::{AgentMode, Tool, ToolContext, ToolResult};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
 
@@ -293,6 +293,7 @@ mod tests {
         ToolContext {
             call_id: "test".into(),
             plan_mode: false,
+            agent_mode: AgentMode::Ask,
             progress: None,
         }
     }
@@ -309,10 +310,10 @@ mod tests {
             "path": dir.to_str().unwrap(),
         });
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.error.is_none(), "error: {:?}", result.error);
-        assert!(result.output.contains("hello world"), "output: {}", result.output);
-        assert!(result.output.contains("baz hello"), "output: {}", result.output);
-        assert!(!result.output.contains("foo bar"), "output: {}", result.output);
+        assert!(result.error().is_none(), "error: {:?}", result.error());
+        assert!(result.output().contains("hello world"), "output: {}", result.output());
+        assert!(result.output().contains("baz hello"), "output: {}", result.output());
+        assert!(!result.output().contains("foo bar"), "output: {}", result.output());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -328,8 +329,8 @@ mod tests {
             "path": dir.to_str().unwrap(),
         });
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.error.is_none());
-        assert!(result.output.contains("no matches"), "output: {}", result.output);
+        assert!(result.error().is_none());
+        assert!(result.output().contains("no matches"), "output: {}", result.output());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -338,8 +339,8 @@ mod tests {
         let tool = Grep::new();
         let args = serde_json::json!({"path": "."});
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("pattern"));
+        assert!(result.error().is_some());
+        assert!(result.error().unwrap().contains("pattern"));
     }
 
     #[tokio::test]
@@ -347,8 +348,8 @@ mod tests {
         let tool = Grep::new();
         let args = serde_json::json!({"pattern": "[invalid"});
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("invalid"));
+        assert!(result.error().is_some());
+        assert!(result.error().unwrap().contains("invalid"));
     }
 
     #[tokio::test]
@@ -363,10 +364,10 @@ mod tests {
             "path": path.to_str().unwrap(),
         });
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.error.is_none());
+        assert!(result.error().is_none());
         // 应该匹配两行
-        let count = result.output.lines().filter(|l| l.contains("test.txt")).count();
-        assert_eq!(count, 2, "output: {}", result.output);
+        let count = result.output().lines().filter(|l| l.contains("test.txt")).count();
+        assert_eq!(count, 2, "output: {}", result.output());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -375,7 +376,7 @@ mod tests {
         let tool = Grep::new();
         let args = serde_json::json!({"pattern": "test", "path": "/tmp/repo/.git/config"});
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.blocked);
+        assert!(result.is_blocked());
     }
 
     #[tokio::test]
@@ -396,11 +397,11 @@ mod tests {
             "path": dir.to_str().unwrap(),
         });
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.error.is_none());
+        assert!(result.error().is_none());
         // 应该只匹配到 text.txt，不匹配 binary.bin
-        assert!(result.output.contains("text.txt"), "output: {}", result.output);
+        assert!(result.output().contains("text.txt"), "output: {}", result.output());
         // 不能包含 binary.bin 的匹配
-        assert!(!result.output.contains("binary.bin"), "output: {}", result.output);
+        assert!(!result.output().contains("binary.bin"), "output: {}", result.output());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -421,8 +422,8 @@ mod tests {
             "path": dir.to_str().unwrap(),
         });
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.error.is_none(), "error: {:?}", result.error);
-        assert!(result.output.contains("hello"), "output: {}", result.output);
+        assert!(result.error().is_none(), "error: {:?}", result.error());
+        assert!(result.output().contains("hello"), "output: {}", result.output());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -434,8 +435,8 @@ mod tests {
             "path": "/nonexistent/path",
         });
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("does not exist"));
+        assert!(result.error().is_some());
+        assert!(result.error().unwrap().contains("does not exist"));
     }
 
     #[test]
@@ -484,10 +485,10 @@ mod tests {
             "path": dir.to_str().unwrap(),
         });
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.error.is_none());
-        assert!(result.output.contains("a.rs"), "output: {}", result.output);
-        assert!(result.output.contains("b.rs"), "output: {}", result.output);
-        assert!(!result.output.contains("c.rs"), "output: {}", result.output);
+        assert!(result.error().is_none());
+        assert!(result.output().contains("a.rs"), "output: {}", result.output());
+        assert!(result.output().contains("b.rs"), "output: {}", result.output());
+        assert!(!result.output().contains("c.rs"), "output: {}", result.output());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -503,10 +504,10 @@ mod tests {
             "path": dir.to_str().unwrap(),
         });
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.error.is_none());
+        assert!(result.error().is_none());
         // 应只匹配 "Hello"（大小写敏感）
-        let count = result.output.matches("Hello").count();
-        assert!(count >= 1, "output: {}", result.output);
+        let count = result.output().matches("Hello").count();
+        assert!(count >= 1, "output: {}", result.output());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

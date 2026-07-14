@@ -6,15 +6,17 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use llm::tool::{Tool, ToolContext, ToolResult};
+use llm::tool::{AgentMode, Tool, ToolContext, ToolResult};
 use racpagent_macros::ToolMetaImpl;
 use serde::Deserialize;
 use serde_json::Value;
 
 use super::common::edit;
 use super::common::encoding;
+use crate::tools::content_tracker::FileObserveTracker;
 use crate::tools::snapshot::SnapshotStore;
 use crate::tools::diff::{self, Kind as DiffKind};
+use crate::permission::{Check, gate::PermissionChecked};
 
 /// multi_edit — 对单个文件进行原子性批量替换。
 ///
@@ -27,6 +29,10 @@ pub struct MultiEdit {
     work_dir: PathBuf,
     /// 检查点存储（写前记录快照）。
     checkpoint: Arc<SnapshotStore>,
+    /// 权限检查列表。
+    checks: Vec<Box<dyn Check>>,
+    /// 文件内容追踪器（陈旧锚点 + 循环守卫）。
+    tracker: Arc<FileObserveTracker>,
 }
 
 /// 单次编辑操作。
@@ -51,7 +57,7 @@ struct MultiEditParams {
 }
 
 impl MultiEdit {
-    pub fn new(work_dir: PathBuf, checkpoint: Arc<SnapshotStore>) -> Self {
+    pub fn new(work_dir: PathBuf, checkpoint: Arc<SnapshotStore>, checks: Vec<Box<dyn Check>>, tracker: Arc<FileObserveTracker>) -> Self {
         Self {
             schema: serde_json::json!({
                 "type": "object",
@@ -89,6 +95,8 @@ impl MultiEdit {
             read_only: false,
             work_dir,
             checkpoint,
+            checks,
+            tracker,
         }
     }
 
@@ -119,9 +127,24 @@ impl MultiEdit {
     }
 }
 
+impl PermissionChecked for MultiEdit {
+    fn permission_checks(&self) -> &[Box<dyn Check>] {
+        &self.checks
+    }
+}
+
 #[async_trait::async_trait]
 impl Tool for MultiEdit {
     async fn execute(&self, _ctx: &ToolContext, args: &Value) -> ToolResult {
+        // 0. 权限检查
+        if let Some(reason) = self.check_permission("multi_edit", args, _ctx.agent_mode) {
+            return ToolResult::blocked(reason);
+        }
+        // plan mode：写工具拒绝
+        if _ctx.plan_mode {
+            return ToolResult::blocked("multi_edit is not allowed in plan mode");
+        }
+
         // 1. 解析参数
         let params: MultiEditParams = match serde_json::from_value(args.clone()) {
             Ok(p) => p,
@@ -148,7 +171,19 @@ impl Tool for MultiEdit {
         let mut content = encoding::decode(&data, enc);
         let original_content = content.clone();
 
-        // 4. 在内存中顺序应用所有编辑
+        // 4. 陈旧锚点检查
+        if let Err(msg) = self.tracker.check_anchor(&params.path, &content) {
+            return ToolResult::err(msg);
+        }
+
+        // 5. 循环守卫：检查每项编辑是否重复
+        for (i, op) in params.edits.iter().enumerate() {
+            if let Err(msg) = self.tracker.check_loop(&params.path, &op.old_string, &op.new_string) {
+                return ToolResult::err(format!("multi_edit: edit {} — {}", i, msg));
+            }
+        }
+
+        // 6. 在内存中顺序应用所有编辑
         let mut _total_applied = 0usize;
         for (i, op) in params.edits.iter().enumerate() {
             if op.old_string.is_empty() {
@@ -191,7 +226,13 @@ impl Tool for MultiEdit {
             return ToolResult::err(format!("multi_edit: failed to write '{}': {}", params.path, e));
         }
 
-        // 7. 返回成功消息
+        // 7. 更新追踪器
+        self.tracker.record_write(&params.path, &content);
+        for op in &params.edits {
+            self.tracker.record_edit(&params.path, &op.old_string, &op.new_string);
+        }
+
+        // 8. 返回成功消息
         let summary = diff::change_summary(&file_change);
         ToolResult::ok(format!("edited {} ({} edits applied)\n{}", params.path, params.edits.len(), summary))
     }
@@ -214,6 +255,7 @@ mod tests {
         ToolContext {
             call_id: "test".into(),
             plan_mode: false,
+            agent_mode: AgentMode::Ask,
             progress: None,
         }
     }
@@ -225,7 +267,7 @@ mod tests {
         let path = work_dir.join("test.txt");
         std::fs::write(&path, b"a\nb\nc\n").unwrap();
         let checkpoint = Arc::new(SnapshotStore::new());
-        let tool = MultiEdit::new(work_dir, checkpoint);
+        let tool = MultiEdit::new(work_dir, checkpoint, vec![], Arc::new(FileObserveTracker::new()));
 
         let args = serde_json::json!({
             "path": path.to_str().unwrap(),
@@ -235,7 +277,7 @@ mod tests {
             ]
         });
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.error.is_none(), "error: {:?}", result.error);
+        assert!(result.error().is_none(), "error: {:?}", result.error());
 
         let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(content, "x\nb\nz\n");
@@ -249,7 +291,7 @@ mod tests {
         let path = work_dir.join("test.txt");
         std::fs::write(&path, b"a\nb\nc\n").unwrap();
         let checkpoint = Arc::new(SnapshotStore::new());
-        let tool = MultiEdit::new(work_dir, checkpoint);
+        let tool = MultiEdit::new(work_dir, checkpoint, vec![], Arc::new(FileObserveTracker::new()));
 
         let args = serde_json::json!({
             "path": path.to_str().unwrap(),
@@ -259,7 +301,7 @@ mod tests {
             ]
         });
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.error.is_some(), "should have failed");
+        assert!(result.error().is_some(), "should have failed");
 
         // File should remain unchanged
         let content = std::fs::read_to_string(&path).unwrap();
@@ -274,7 +316,7 @@ mod tests {
         let path = work_dir.join("test.txt");
         std::fs::write(&path, b"x\ny\nx\ny\n").unwrap();
         let checkpoint = Arc::new(SnapshotStore::new());
-        let tool = MultiEdit::new(work_dir, checkpoint);
+        let tool = MultiEdit::new(work_dir, checkpoint, vec![], Arc::new(FileObserveTracker::new()));
 
         let args = serde_json::json!({
             "path": path.to_str().unwrap(),
@@ -283,7 +325,7 @@ mod tests {
             ]
         });
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.error.is_none(), "error: {:?}", result.error);
+        assert!(result.error().is_none(), "error: {:?}", result.error());
 
         let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(content, "a\ny\na\ny\n");
@@ -295,22 +337,22 @@ mod tests {
         let work_dir = temp_dir();
         std::fs::create_dir_all(&work_dir).unwrap();
         let checkpoint = Arc::new(SnapshotStore::new());
-        let tool = MultiEdit::new(work_dir, checkpoint);
+        let tool = MultiEdit::new(work_dir, checkpoint, vec![], Arc::new(FileObserveTracker::new()));
 
         let args = serde_json::json!({
             "path": "/etc/passwd",
             "edits": [{"old_string": "root", "new_string": "user"}]
         });
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("outside"));
+        assert!(result.error().is_some());
+        assert!(result.error().unwrap().contains("outside"));
     }
 
     #[test]
     fn schema_is_valid_json() {
         let work_dir = temp_dir();
         let checkpoint = Arc::new(SnapshotStore::new());
-        let tool = MultiEdit::new(work_dir, checkpoint);
+        let tool = MultiEdit::new(work_dir, checkpoint, vec![], Arc::new(FileObserveTracker::new()));
         let schema = tool.schema();
         assert!(schema.is_object());
         assert_eq!(schema["type"], "object");

@@ -5,7 +5,7 @@
 // 前台：ProcessRunner 同步执行；后台：JobManager 异步 spawn，返回 job ID。
 // 支持沙箱隔离（macOS Seatbelt / Linux bubblewrap）和环境变量安全处理。
 
-use llm::tool::{Tool, ToolContext, ToolResult};
+use llm::tool::{AgentMode, Tool, ToolContext, ToolResult};
 use racpagent_macros::ToolMetaImpl;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,6 +18,7 @@ use super::common::process::{ProcessOutput, ProcessRunner};
 use super::common::shell::Shell;
 use crate::tools::jobs::JobManager;
 use crate::tools::sandbox::SandboxSpec;
+use crate::permission::{Check, gate::PermissionChecked};
 
 /// bash — 在子进程中执行 shell 命令，返回合并后的 stdout+stderr。
 ///
@@ -37,6 +38,8 @@ pub struct Bash {
     sandbox: Option<SandboxSpec>,
     /// 缓存的 shell 探测结果（首次探测后复用）。
     shell: std::sync::OnceLock<Shell>,
+    /// 权限检查列表（bash 专用：ForcePushGuard、DangerousPatternDetector 等）。
+    checks: Vec<Box<dyn Check>>,
 }
 
 /// bash 工具的输入参数。
@@ -59,6 +62,7 @@ impl Bash {
         timeout: Duration,
         job_manager: Arc<JobManager>,
         sandbox: Option<SandboxSpec>,
+        checks: Vec<Box<dyn Check>>,
     ) -> Self {
         Self {
             schema: serde_json::json!({
@@ -85,6 +89,7 @@ impl Bash {
             job_manager,
             sandbox,
             shell: std::sync::OnceLock::new(),
+            checks,
         }
     }
 
@@ -102,9 +107,20 @@ impl Bash {
     }
 }
 
+impl PermissionChecked for Bash {
+    fn permission_checks(&self) -> &[Box<dyn Check>] {
+        &self.checks
+    }
+}
+
 #[async_trait::async_trait]
 impl Tool for Bash {
     async fn execute(&self, ctx: &ToolContext, args: &Value) -> ToolResult {
+        // 0. 权限检查
+        if let Some(reason) = self.check_permission("bash", args, ctx.agent_mode) {
+            return ToolResult::blocked(reason);
+        }
+
         // 1. 解析参数
         let params: BashParams = match serde_json::from_value(args.clone()) {
             Ok(p) => p,
@@ -185,35 +201,32 @@ impl Bash {
 
     /// 将 ProcessOutput 转为 ToolResult。
     fn build_tool_result(output: ProcessOutput) -> ToolResult {
-        let mut result = ToolResult {
-            output: output.combined.clone(),
-            error: None,
-            blocked: false,
-            truncated: output.truncated,
-        };
-
         if output.exit_code != 0 {
-            // 把 output 内容也带进 error 消息中，方便排查
+            // 出错：将 output 和错误信息合并为 Error 消息
             let detail = if output.combined.is_empty() {
                 "(no output)".to_string()
             } else {
                 let preview: String = output.combined.lines().take(5).collect::<Vec<_>>().join("\n");
                 format!("output:\n{preview}")
             };
-            result.error = Some(format!(
-                "command exited with code {}\n{detail}",
-                output.exit_code
-            ));
+            let msg = if output.timed_out {
+                format!(
+                    "command timed out (exit code {})\n{detail}",
+                    output.exit_code
+                )
+            } else {
+                format!(
+                    "command exited with code {}\n{detail}",
+                    output.exit_code
+                )
+            };
+            return ToolResult::Error(msg);
         }
 
-        if output.timed_out {
-            result.error = Some(format!(
-                "command timed out (exit code {})",
-                output.exit_code
-            ));
+        ToolResult::Success {
+            output: output.combined,
+            truncated: output.truncated,
         }
-
-        result
     }
 }
 
@@ -236,6 +249,7 @@ mod tests {
             Duration::from_secs(10),
             test_job_manager(),
             test_sandbox(),
+            vec![],
         )
     }
 
@@ -246,13 +260,14 @@ mod tests {
         let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: false,
+            agent_mode: AgentMode::Ask,
             progress: None,
         };
 
         let result = bash.execute(&ctx, &args).await;
-        assert!(result.error.is_none(), "unexpected error: {:?}", result.error);
-        assert!(result.output.contains("hello"), "output: {}", result.output);
-        assert!(!result.blocked);
+        assert!(result.error().is_none(), "unexpected error: {:?}", result.error());
+        assert!(result.output().contains("hello"), "output: {}", result.output());
+        assert!(!result.is_blocked());
     }
 
     #[tokio::test]
@@ -262,11 +277,12 @@ mod tests {
         let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: false,
+            agent_mode: AgentMode::Ask,
             progress: None,
         };
 
         let result = bash.execute(&ctx, &args).await;
-        assert!(result.output.contains("to_stderr"), "output: {}", result.output);
+        assert!(result.output().contains("to_stderr"), "output: {}", result.output());
     }
 
     #[tokio::test]
@@ -276,12 +292,13 @@ mod tests {
         let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: false,
+            agent_mode: AgentMode::Ask,
             progress: None,
         };
 
         let result = bash.execute(&ctx, &args).await;
-        assert!(result.error.is_some(), "should have error for non-zero exit");
-        assert!(result.error.unwrap().contains("42"));
+        assert!(result.error().is_some(), "should have error for non-zero exit");
+        assert!(result.error().unwrap().contains("42"));
     }
 
     #[tokio::test]
@@ -291,11 +308,12 @@ mod tests {
         let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: false,
+            agent_mode: AgentMode::Ask,
             progress: None,
         };
 
         let result = bash.execute(&ctx, &args).await;
-        assert!(result.error.is_some());
+        assert!(result.error().is_some());
     }
 
     #[tokio::test]
@@ -305,13 +323,14 @@ mod tests {
         let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: false,
+            agent_mode: AgentMode::Ask,
             progress: None,
         };
 
         let result = bash.execute(&ctx, &args).await;
-        assert!(result.error.is_none(), "unexpected error: {:?}", result.error);
-        assert!(result.output.contains("bg-"), "output: {}", result.output);
-        assert!(result.output.contains("bash_output"), "output: {}", result.output);
+        assert!(result.error().is_none(), "unexpected error: {:?}", result.error());
+        assert!(result.output().contains("bg-"), "output: {}", result.output());
+        assert!(result.output().contains("bash_output"), "output: {}", result.output());
     }
 
     #[tokio::test]
@@ -321,11 +340,12 @@ mod tests {
         let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: true,
+            agent_mode: AgentMode::Ask,
             progress: None,
         };
 
         let result = bash.execute(&ctx, &args).await;
-        assert!(result.blocked, "rm should be blocked in plan mode");
+        assert!(result.is_blocked(), "rm should be blocked in plan mode");
     }
 
     #[tokio::test]
@@ -335,12 +355,13 @@ mod tests {
         let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: true,
+            agent_mode: AgentMode::Ask,
             progress: None,
         };
 
         let result = bash.execute(&ctx, &args).await;
-        assert!(!result.blocked, "ls should be allowed in plan mode");
-        assert!(result.error.is_none());
+        assert!(!result.is_blocked(), "ls should be allowed in plan mode");
+        assert!(result.error().is_none());
     }
 
     #[test]

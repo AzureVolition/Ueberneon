@@ -2,7 +2,7 @@
 //
 // 支持 ** 递归匹配，结果排序后输出，最多返回 1000 条。
 
-use llm::tool::{Tool, ToolContext, ToolResult};
+use llm::tool::{AgentMode, Tool, ToolContext, ToolResult};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
 
@@ -124,6 +124,7 @@ mod tests {
         ToolContext {
             call_id: "test".into(),
             plan_mode: false,
+            agent_mode: AgentMode::Ask,
             progress: None,
         }
     }
@@ -143,10 +144,10 @@ mod tests {
             &serde_json::json!({"pattern": pattern}),
         ).await;
 
-        assert!(result.error.is_none(), "error: {:?}", result.error);
-        assert!(result.output.contains("a.rs"), "output: {}", result.output);
-        assert!(result.output.contains("c.rs"), "output: {}", result.output);
-        assert!(!result.output.contains("b.py"), "output: {}", result.output);
+        assert!(result.error().is_none(), "error: {:?}", result.error());
+        assert!(result.output().contains("a.rs"), "output: {}", result.output());
+        assert!(result.output().contains("c.rs"), "output: {}", result.output());
+        assert!(!result.output().contains("b.py"), "output: {}", result.output());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -164,9 +165,9 @@ mod tests {
             &serde_json::json!({"pattern": pattern}),
         ).await;
 
-        assert!(result.error.is_none());
-        assert!(result.output.contains("Cargo.toml"), "output: {}", result.output);
-        assert!(!result.output.contains("README.md"), "output: {}", result.output);
+        assert!(result.error().is_none());
+        assert!(result.output().contains("Cargo.toml"), "output: {}", result.output());
+        assert!(!result.output().contains("README.md"), "output: {}", result.output());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -182,8 +183,8 @@ mod tests {
             &serde_json::json!({"pattern": pattern}),
         ).await;
 
-        assert!(result.error.is_none());
-        assert!(result.output.contains("no matches"), "output: {}", result.output);
+        assert!(result.error().is_none());
+        assert!(result.output().contains("no matches"), "output: {}", result.output());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -196,22 +197,22 @@ mod tests {
             &serde_json::json!({"pattern": "[\0"}),
         ).await;
         // 应该报错而非崩溃
-        assert!(result.error.is_some() || result.output.contains("no matches"));
+        assert!(result.error().is_some() || result.output().contains("no matches"));
     }
 
     #[tokio::test]
     async fn missing_pattern() {
         let tool = Glob::new();
         let result = tool.execute(&test_ctx(), &serde_json::json!({})).await;
-        assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("missing"));
+        assert!(result.error().is_some());
+        assert!(result.error().unwrap().contains("missing"));
     }
 
     #[tokio::test]
     async fn empty_pattern() {
         let tool = Glob::new();
         let result = tool.execute(&test_ctx(), &serde_json::json!({"pattern": ""})).await;
-        assert!(result.error.is_some());
+        assert!(result.error().is_some());
     }
 
     #[test]

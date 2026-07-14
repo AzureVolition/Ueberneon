@@ -7,12 +7,14 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use llm::tool::{Tool, ToolContext, ToolResult};
+use llm::tool::{AgentMode, Tool, ToolContext, ToolResult};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
+use crate::permission::{Check, gate::PermissionChecked};
 
 use super::common::edit;
 use super::common::encoding;
+use crate::tools::content_tracker::FileObserveTracker;
 use crate::tools::snapshot::SnapshotStore;
 use crate::tools::diff::{self, Kind as DiffKind};
 
@@ -34,10 +36,14 @@ pub struct EditFile {
     work_dir: PathBuf,
     /// 检查点存储（写前记录快照）。
     checkpoint: Arc<SnapshotStore>,
+    /// 权限检查列表（可复用 Check 组合）。
+    checks: Vec<Box<dyn Check>>,
+    /// 文件内容追踪器（陈旧锚点 + 循环守卫）。
+    tracker: Arc<FileObserveTracker>,
 }
 
 impl EditFile {
-    pub fn new(work_dir: PathBuf, checkpoint: Arc<SnapshotStore>) -> Self {
+    pub fn new(work_dir: PathBuf, checkpoint: Arc<SnapshotStore>, checks: Vec<Box<dyn Check>>, tracker: Arc<FileObserveTracker>) -> Self {
         Self {
             schema: serde_json::json!({
                 "type": "object",
@@ -60,6 +66,8 @@ impl EditFile {
             read_only: false,
             work_dir,
             checkpoint,
+            checks,
+            tracker,
         }
     }
 
@@ -91,9 +99,24 @@ impl EditFile {
     }
 }
 
+impl PermissionChecked for EditFile {
+    fn permission_checks(&self) -> &[Box<dyn Check>] {
+        &self.checks
+    }
+}
+
 #[async_trait::async_trait]
 impl Tool for EditFile {
     async fn execute(&self, _ctx: &ToolContext, args: &Value) -> ToolResult {
+        // 0. 权限检查
+        if let Some(reason) = self.check_permission("edit_file", args, _ctx.agent_mode) {
+            return ToolResult::blocked(reason);
+        }
+        // plan mode：写工具拒绝
+        if _ctx.plan_mode {
+            return ToolResult::blocked("edit_file is not allowed in plan mode");
+        }
+
         // 1. 解析参数
         let path_str = match args.get("path").and_then(|v| v.as_str()) {
             Some(p) => p,
@@ -127,7 +150,17 @@ impl Tool for EditFile {
         let (enc, _) = encoding::detect(&data);
         let content = encoding::decode(&data, enc);
 
-        // 4. 应用编辑
+        // 4. 陈旧锚点检查：文件内容自上次读取后是否被外部修改
+        if let Err(msg) = self.tracker.check_anchor(path_str, &content) {
+            return ToolResult::err(msg);
+        }
+
+        // 5. 循环守卫：检测重复编辑
+        if let Err(msg) = self.tracker.check_loop(path_str, old_string, new_string) {
+            return ToolResult::err(msg);
+        }
+
+        // 6. 应用编辑
         let result = edit::apply_edit(&content, old_string, new_string, false);
 
         match result.applied {
@@ -152,7 +185,11 @@ impl Tool for EditFile {
             return ToolResult::err(format!("edit_file: failed to write '{}': {}", path_str, e));
         }
 
-        // 8. 返回成功消息
+        // 8. 更新追踪器
+        self.tracker.record_write(path_str, &result.updated);
+        self.tracker.record_edit(path_str, old_string, new_string);
+
+        // 9. 返回成功消息
         let fuzzy_suffix = if result.fuzzy { " (fuzzy match)" } else { "" };
         let summary = diff::change_summary(&file_change);
         ToolResult::ok(format!("edited {}{}\n{}", path_str, fuzzy_suffix, summary))
@@ -180,7 +217,13 @@ mod tests {
         let mut file = std::fs::File::create(&path).unwrap();
         file.write_all(content).unwrap();
         let checkpoint = Arc::new(SnapshotStore::new());
-        let tool = EditFile::new(work_dir.clone(), checkpoint);
+        let tracker = Arc::new(FileObserveTracker::new());
+        // 模拟 read_file 后的 observe
+        if !content.is_empty() {
+            let decoded = String::from_utf8_lossy(content);
+            tracker.observe(&path.to_string_lossy(), &decoded);
+        }
+        let tool = EditFile::new(work_dir.clone(), checkpoint, vec![], tracker);
         (path, tool)
     }
 
@@ -188,6 +231,7 @@ mod tests {
         ToolContext {
             call_id: "test".into(),
             plan_mode: false,
+            agent_mode: AgentMode::Ask,
             progress: None,
         }
     }
@@ -201,8 +245,8 @@ mod tests {
             "new_string": "there"
         });
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.error.is_none(), "error: {:?}", result.error);
-        assert!(result.output.contains("edited"), "output: {}", result.output);
+        assert!(result.error().is_none(), "error: {:?}", result.error());
+        assert!(result.output().contains("edited"), "output: {}", result.output());
         let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(content, "hello\nthere\n");
         let _ = std::fs::remove_file(&path);
@@ -217,8 +261,8 @@ mod tests {
             "new_string": "replacement"
         });
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("not found"));
+        assert!(result.error().is_some());
+        assert!(result.error().unwrap().contains("not found"));
         let _ = std::fs::remove_file(&path);
     }
 
@@ -231,8 +275,8 @@ mod tests {
             "new_string": "hi"
         });
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("not unique"));
+        assert!(result.error().is_some());
+        assert!(result.error().unwrap().contains("not unique"));
         let _ = std::fs::remove_file(&path);
     }
 
@@ -245,7 +289,7 @@ mod tests {
             "new_string": ""
         });
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.error.is_none());
+        assert!(result.error().is_none());
         let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(content, "hello\nend\n");
         let _ = std::fs::remove_file(&path);
@@ -258,7 +302,7 @@ mod tests {
         let path = work_dir.join("test.txt");
         std::fs::write(&path, b"original content\n").unwrap();
         let checkpoint = Arc::new(SnapshotStore::new());
-        let tool = EditFile::new(work_dir, checkpoint.clone());
+        let tool = EditFile::new(work_dir, checkpoint.clone(), vec![], Arc::new(FileObserveTracker::new()));
 
         let args = serde_json::json!({
             "path": path.to_str().unwrap(),
@@ -266,7 +310,7 @@ mod tests {
             "new_string": "modified content"
         });
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.error.is_none());
+        assert!(result.error().is_none());
 
         let snapshot = checkpoint.get_snapshot(path.to_str().unwrap());
         assert!(snapshot.is_some());
@@ -279,7 +323,7 @@ mod tests {
         let work_dir = temp_dir();
         std::fs::create_dir_all(&work_dir).unwrap();
         let checkpoint = Arc::new(SnapshotStore::new());
-        let tool = EditFile::new(work_dir, checkpoint);
+        let tool = EditFile::new(work_dir, checkpoint, vec![], Arc::new(FileObserveTracker::new()));
 
         let args = serde_json::json!({
             "path": "/etc/passwd",
@@ -287,14 +331,14 @@ mod tests {
             "new_string": "user"
         });
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("outside"));
+        assert!(result.error().is_some());
+        assert!(result.error().unwrap().contains("outside"));
     }
 
     #[test]
     fn schema_is_valid_json() {
         let checkpoint = Arc::new(SnapshotStore::new());
-        let tool = EditFile::new(PathBuf::from("/tmp"), checkpoint);
+        let tool = EditFile::new(PathBuf::from("/tmp"), checkpoint, vec![], Arc::new(FileObserveTracker::new()));
         let schema = tool.schema();
         assert!(schema.is_object());
         assert_eq!(schema["type"], "object");

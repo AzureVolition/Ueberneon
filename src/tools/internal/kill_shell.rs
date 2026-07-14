@@ -2,7 +2,7 @@
 //
 // 通过 JobManager 终止后台任务，先 SIGTERM 后 SIGKILL。
 
-use llm::tool::{Tool, ToolContext, ToolResult};
+use llm::tool::{AgentMode, Tool, ToolContext, ToolResult};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
 use std::sync::Arc;
@@ -84,12 +84,13 @@ mod tests {
         let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: false,
+            agent_mode: AgentMode::Ask,
             progress: None,
         };
 
         let result = tool.execute(&ctx, &args).await;
-        assert!(result.error.is_none(), "error: {:?}", result.error);
-        assert!(result.output.contains("terminated"));
+        assert!(result.error().is_none(), "error: {:?}", result.error());
+        assert!(result.output().contains("terminated"));
 
         // 验证 job 已结束
         let handle = mgr.get(&job_id).unwrap();
@@ -104,11 +105,12 @@ mod tests {
         let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: false,
+            agent_mode: AgentMode::Ask,
             progress: None,
         };
 
         let result = tool.execute(&ctx, &args).await;
-        assert!(result.error.is_some());
-        assert!(result.error.unwrap().contains("not found"));
+        assert!(result.error().is_some());
+        assert!(result.error().unwrap().contains("not found"));
     }
 }

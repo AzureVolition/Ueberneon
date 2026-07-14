@@ -3,7 +3,7 @@
 // 通过 JobManager 读取后台任务的 stdout+stderr 增量。
 // 每次调用返回自上次读取以来的新内容。
 
-use llm::tool::{Tool, ToolContext, ToolResult};
+use llm::tool::{AgentMode, Tool, ToolContext, ToolResult};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
 use std::sync::Arc;
@@ -101,14 +101,15 @@ mod tests {
         let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: false,
+            agent_mode: AgentMode::Ask,
             progress: None,
         };
 
         let result = tool.execute(&ctx, &args).await;
         assert!(
-            result.output.contains("bg_test"),
+            result.output().contains("bg_test"),
             "output: {}",
-            result.output
+            result.output()
         );
     }
 
@@ -120,12 +121,13 @@ mod tests {
         let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: false,
+            agent_mode: AgentMode::Ask,
             progress: None,
         };
 
         let result = tool.execute(&ctx, &args).await;
-        assert!(result.error.is_some());
-        assert!(result.error.unwrap().contains("not found"));
+        assert!(result.error().is_some());
+        assert!(result.error().unwrap().contains("not found"));
     }
 
     #[tokio::test]
@@ -136,10 +138,11 @@ mod tests {
         let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: false,
+            agent_mode: AgentMode::Ask,
             progress: None,
         };
 
         let result = tool.execute(&ctx, &args).await;
-        assert!(result.error.is_some());
+        assert!(result.error().is_some());
     }
 }

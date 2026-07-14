@@ -4,11 +4,14 @@
 // 与 v1 的 encoding.rs 保持一致，使得含 CJK 的 Windows 文件
 // 可正常编辑而不会静默损坏其字节。
 
-use llm::tool::{Tool, ToolContext, ToolResult};
+use std::sync::Arc;
+
+use llm::tool::{AgentMode, Tool, ToolContext, ToolResult};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
 
 use super::common::encoding;
+use crate::tools::content_tracker::FileObserveTracker;
 
 ///  read file tool
 ///  Read a text file from the local filesystem. 
@@ -20,10 +23,12 @@ use super::common::encoding;
 pub struct ReadFile {
     schema: Value ,
     read_only: bool,
+    /// 文件内容追踪器（陈旧锚点检查）。
+    tracker: Arc<FileObserveTracker>,
 }
 
 impl ReadFile {
-    pub fn new() -> Self {
+    pub fn new(tracker: Arc<FileObserveTracker>) -> Self {
         Self {
             schema: serde_json::json!({
                     "type": "object",
@@ -57,6 +62,7 @@ impl ReadFile {
                     "required": ["path"]
                 }),
             read_only: true,
+            tracker,
         }
     }
 }
@@ -181,6 +187,9 @@ impl Tool for ReadFile {
             ));
         }
 
+        // 记录内容哈希用作陈旧锚点检查
+        self.tracker.observe(path_str, &content);
+
         ToolResult::ok(output)
     }
 }
@@ -189,7 +198,13 @@ impl Tool for ReadFile {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use crate::tools::content_tracker::FileObserveTracker;
+
+    fn make_tracker() -> Arc<FileObserveTracker> {
+        Arc::new(FileObserveTracker::new())
+    }
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -206,17 +221,18 @@ mod tests {
     async fn read_utf8_file() {
         let content = b"hello\nworld\nthird line\n";
         let (path, _file) = create_temp_file(content);
-        let tool = ReadFile::new();
+        let tool = ReadFile::new(make_tracker());
         let args = serde_json::json!({"path": path.to_str().unwrap()});
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: false,
+            agent_mode: AgentMode::Ask,
             progress: None,
         }, &args).await;
-        assert!(result.error.is_none());
-        assert!(result.output.contains("hello"));
-        assert!(result.output.contains("world"));
-        assert!(result.output.contains("third line"));
+        assert!(result.error().is_none());
+        assert!(result.output().contains("hello"));
+        assert!(result.output().contains("world"));
+        assert!(result.output().contains("third line"));
         let _ = std::fs::remove_file(&path);
     }
 
@@ -224,7 +240,7 @@ mod tests {
     async fn read_with_offset_limit() {
         let content = b"line1\nline2\nline3\nline4\nline5\n";
         let (path, _file) = create_temp_file(content);
-        let tool = ReadFile::new();
+        let tool = ReadFile::new(make_tracker());
         let args = serde_json::json!({
             "path": path.to_str().unwrap(),
             "offset": 1,
@@ -233,12 +249,13 @@ mod tests {
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: false,
+            agent_mode: AgentMode::Ask,
             progress: None,
         }, &args).await;
-        assert!(result.error.is_none());
-        assert!(result.output.contains("line2"));
-        assert!(result.output.contains("line3"));
-        assert!(!result.output.contains("line1"));
+        assert!(result.error().is_none());
+        assert!(result.output().contains("line2"));
+        assert!(result.output().contains("line3"));
+        assert!(!result.output().contains("line1"));
         let _ = std::fs::remove_file(&path);
     }
 
@@ -246,7 +263,7 @@ mod tests {
     async fn read_head() {
         let content = b"line1\nline2\nline3\nline4\nline5\n";
         let (path, _file) = create_temp_file(content);
-        let tool = ReadFile::new();
+        let tool = ReadFile::new(make_tracker());
         let args = serde_json::json!({
             "path": path.to_str().unwrap(),
             "head": 2
@@ -254,12 +271,13 @@ mod tests {
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: false,
+            agent_mode: AgentMode::Ask,
             progress: None,
         }, &args).await;
-        assert!(result.error.is_none());
-        assert!(result.output.contains("line1"));
-        assert!(result.output.contains("line2"));
-        assert!(!result.output.contains("line3"));
+        assert!(result.error().is_none());
+        assert!(result.output().contains("line1"));
+        assert!(result.output().contains("line2"));
+        assert!(!result.output().contains("line3"));
         let _ = std::fs::remove_file(&path);
     }
 
@@ -267,7 +285,7 @@ mod tests {
     async fn read_tail() {
         let content = b"line1\nline2\nline3\nline4\nline5\n";
         let (path, _file) = create_temp_file(content);
-        let tool = ReadFile::new();
+        let tool = ReadFile::new(make_tracker());
         let args = serde_json::json!({
             "path": path.to_str().unwrap(),
             "tail": 2
@@ -275,53 +293,57 @@ mod tests {
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: false,
+            agent_mode: AgentMode::Ask,
             progress: None,
         }, &args).await;
-        assert!(result.error.is_none());
-        assert!(!result.output.contains("line1"));
-        assert!(!result.output.contains("line2"));
-        assert!(!result.output.contains("line3"));
-        assert!(result.output.contains("line4"));
-        assert!(result.output.contains("line5"));
+        assert!(result.error().is_none());
+        assert!(!result.output().contains("line1"));
+        assert!(!result.output().contains("line2"));
+        assert!(!result.output().contains("line3"));
+        assert!(result.output().contains("line4"));
+        assert!(result.output().contains("line5"));
         let _ = std::fs::remove_file(&path);
     }
 
     #[tokio::test]
     async fn reject_git_path() {
-        let tool = ReadFile::new();
+        let tool = ReadFile::new(make_tracker());
         let args = serde_json::json!({"path": "/tmp/repo/.git/config"});
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: false,
+            agent_mode: AgentMode::Ask,
             progress: None,
         }, &args).await;
-        assert!(result.blocked);
+        assert!(result.is_blocked());
     }
 
     #[tokio::test]
     async fn missing_path() {
-        let tool = ReadFile::new();
+        let tool = ReadFile::new(make_tracker());
         let args = serde_json::json!({});
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: false,
+            agent_mode: AgentMode::Ask,
             progress: None,
         }, &args).await;
-        assert!(result.error.is_some());
+        assert!(result.error().is_some());
     }
 
     #[tokio::test]
     async fn empty_file() {
         let (path, _file) = create_temp_file(b"");
-        let tool = ReadFile::new();
+        let tool = ReadFile::new(make_tracker());
         let args = serde_json::json!({"path": path.to_str().unwrap()});
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: false,
+            agent_mode: AgentMode::Ask,
             progress: None,
         }, &args).await;
-        assert!(result.error.is_none());
-        assert!(result.output.contains("empty"));
+        assert!(result.error().is_none());
+        assert!(result.output().contains("empty"));
         let _ = std::fs::remove_file(&path);
     }
 
@@ -334,16 +356,17 @@ mod tests {
             b'w', 0x00, b'o', 0x00, b'r', 0x00, b'l', 0x00, b'd', 0x00,
         ];
         let (path, _file) = create_temp_file(&content);
-        let tool = ReadFile::new();
+        let tool = ReadFile::new(make_tracker());
         let args = serde_json::json!({"path": path.to_str().unwrap()});
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: false,
+            agent_mode: AgentMode::Ask,
             progress: None,
         }, &args).await;
-        assert!(result.error.is_none(), "error: {:?}", result.error);
-        assert!(result.output.contains("hello"), "output: {}", result.output);
-        assert!(result.output.contains("world"), "output: {}", result.output);
+        assert!(result.error().is_none(), "error: {:?}", result.error());
+        assert!(result.output().contains("hello"), "output: {}", result.output());
+        assert!(result.output().contains("world"), "output: {}", result.output());
         let _ = std::fs::remove_file(&path);
     }
 }

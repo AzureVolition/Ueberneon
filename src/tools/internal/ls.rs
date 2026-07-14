@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use llm::tool::{Tool, ToolContext, ToolResult};
+use llm::tool::{AgentMode, Tool, ToolContext, ToolResult};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
 
@@ -203,6 +203,7 @@ mod tests {
         ToolContext {
             call_id: "test".into(),
             plan_mode: false,
+            agent_mode: AgentMode::Ask,
             progress: None,
         }
     }
@@ -221,10 +222,10 @@ mod tests {
             &serde_json::json!({"path": dir.to_str().unwrap()}),
         ).await;
 
-        assert!(result.error.is_none(), "error: {:?}", result.error);
-        assert!(result.output.contains("a.txt"), "output: {}", result.output);
-        assert!(result.output.contains("b.rs"), "output: {}", result.output);
-        assert!(result.output.contains("subdir/"), "output: {}", result.output);
+        assert!(result.error().is_none(), "error: {:?}", result.error());
+        assert!(result.output().contains("a.txt"), "output: {}", result.output());
+        assert!(result.output().contains("b.rs"), "output: {}", result.output());
+        assert!(result.output().contains("subdir/"), "output: {}", result.output());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -239,8 +240,8 @@ mod tests {
             &serde_json::json!({"path": dir.to_str().unwrap()}),
         ).await;
 
-        assert!(result.error.is_none());
-        assert!(result.output.contains("empty"), "output: {}", result.output);
+        assert!(result.error().is_none());
+        assert!(result.output().contains("empty"), "output: {}", result.output());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -261,10 +262,10 @@ mod tests {
             }),
         ).await;
 
-        assert!(result.error.is_none(), "error: {:?}", result.error);
-        assert!(result.output.contains("root.txt"), "output: {}", result.output);
-        assert!(result.output.contains("sub/"), "output: {}", result.output);
-        assert!(result.output.contains("nested.rs"), "output: {}", result.output);
+        assert!(result.error().is_none(), "error: {:?}", result.error());
+        assert!(result.output().contains("root.txt"), "output: {}", result.output());
+        assert!(result.output().contains("sub/"), "output: {}", result.output());
+        assert!(result.output().contains("nested.rs"), "output: {}", result.output());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -275,8 +276,8 @@ mod tests {
             &test_ctx(),
             &serde_json::json!({"path": "/nonexistent_path_12345"}),
         ).await;
-        assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("does not exist"));
+        assert!(result.error().is_some());
+        assert!(result.error().unwrap().contains("does not exist"));
     }
 
     #[tokio::test]
@@ -291,8 +292,8 @@ mod tests {
             &test_ctx(),
             &serde_json::json!({"path": file.to_str().unwrap()}),
         ).await;
-        assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("not a directory"));
+        assert!(result.error().is_some());
+        assert!(result.error().unwrap().contains("not a directory"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -303,7 +304,7 @@ mod tests {
             &test_ctx(),
             &serde_json::json!({"path": "/tmp/repo/.git"}),
         ).await;
-        assert!(result.blocked);
+        assert!(result.is_blocked());
     }
 
     #[test]
@@ -319,10 +320,10 @@ mod tests {
     async fn default_path_is_dot() {
         let tool = Ls::new();
         let result = tool.execute(
-            &ToolContext { call_id: "test".into(), plan_mode: false, progress: None },
+            &ToolContext { call_id: "test".into(), plan_mode: false, agent_mode: AgentMode::Ask, progress: None },
             &serde_json::json!({}),
         ).await;
         // 应该成功列出当前目录
-        assert!(result.error.is_none(), "error: {:?}", result.error);
+        assert!(result.error().is_none(), "error: {:?}", result.error());
     }
 }

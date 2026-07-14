@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use llm::tool::{Tool, ToolContext, ToolResult};
+use llm::tool::{AgentMode, Tool, ToolContext, ToolResult};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
 
@@ -98,13 +98,6 @@ impl ReadOnlyBash {
 
     /// 将 ProcessOutput 转为 ToolResult。
     fn build_tool_result(output: ProcessOutput) -> ToolResult {
-        let mut result = ToolResult {
-            output: output.combined.clone(),
-            error: None,
-            blocked: false,
-            truncated: output.truncated,
-        };
-
         if output.exit_code != 0 {
             let detail = if output.combined.is_empty() {
                 "(no output)".to_string()
@@ -112,20 +105,24 @@ impl ReadOnlyBash {
                 let preview: String = output.combined.lines().take(5).collect::<Vec<_>>().join("\n");
                 format!("output:\n{preview}")
             };
-            result.error = Some(format!(
-                "command exited with code {}\n{detail}",
-                output.exit_code
-            ));
+            let msg = if output.timed_out {
+                format!(
+                    "command timed out (exit code {})\n{detail}",
+                    output.exit_code
+                )
+            } else {
+                format!(
+                    "command exited with code {}\n{detail}",
+                    output.exit_code
+                )
+            };
+            return ToolResult::Error(msg);
         }
 
-        if output.timed_out {
-            result.error = Some(format!(
-                "command timed out (exit code {})",
-                output.exit_code
-            ));
+        ToolResult::Success {
+            output: output.combined,
+            truncated: output.truncated,
         }
-
-        result
     }
 }
 
@@ -194,6 +191,7 @@ mod tests {
         ToolContext {
             call_id: "test".into(),
             plan_mode: false,
+            agent_mode: AgentMode::Ask,
             progress: None,
         }
     }
@@ -203,9 +201,9 @@ mod tests {
         let tool = test_tool();
         let args = serde_json::json!({"command": "ls"});
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.error.is_none(), "error: {:?}", result.error);
-        assert!(!result.blocked, "should not be blocked");
-        assert!(result.output.len() > 0, "should have output");
+        assert!(result.error().is_none(), "error: {:?}", result.error());
+        assert!(!result.is_blocked(), "should not be blocked");
+        assert!(result.output().len() > 0, "should have output");
     }
 
     #[tokio::test]
@@ -213,8 +211,8 @@ mod tests {
         let tool = test_tool();
         let args = serde_json::json!({"command": "cat Cargo.toml"});
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.error.is_none(), "error: {:?}", result.error);
-        assert!(!result.blocked);
+        assert!(result.error().is_none(), "error: {:?}", result.error());
+        assert!(!result.is_blocked());
     }
 
     #[tokio::test]
@@ -222,8 +220,8 @@ mod tests {
         let tool = test_tool();
         let args = serde_json::json!({"command": "grep -r 'fn' src/"});
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.error.is_none(), "error: {:?}", result.error);
-        assert!(!result.blocked);
+        assert!(result.error().is_none(), "error: {:?}", result.error());
+        assert!(!result.is_blocked());
     }
 
     #[tokio::test]
@@ -231,8 +229,8 @@ mod tests {
         let tool = test_tool();
         let args = serde_json::json!({"command": "rm -rf /tmp"});
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.blocked, "should be blocked");
-        assert!(result.output.contains("blocked"), "output: {}", result.output);
+        assert!(result.is_blocked(), "should be blocked");
+        assert!(result.output().contains("blocked"), "output: {}", result.output());
     }
 
     #[tokio::test]
@@ -240,7 +238,7 @@ mod tests {
         let tool = test_tool();
         let args = serde_json::json!({"command": "echo 'hello'"});
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.blocked, "echo should be blocked");
+        assert!(result.is_blocked(), "echo should be blocked");
     }
 
     #[tokio::test]
@@ -248,7 +246,7 @@ mod tests {
         let tool = test_tool();
         let args = serde_json::json!({"command": "touch /tmp/test_file"});
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.blocked, "touch should be blocked");
+        assert!(result.is_blocked(), "touch should be blocked");
     }
 
     #[tokio::test]
@@ -256,7 +254,7 @@ mod tests {
         let tool = test_tool();
         let args = serde_json::json!({"command": "sed -i 's/foo/bar/g' file.txt"});
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.blocked, "sed should be blocked");
+        assert!(result.is_blocked(), "sed should be blocked");
     }
 
     #[tokio::test]
@@ -265,7 +263,7 @@ mod tests {
         let args = serde_json::json!({"command": "git log --oneline -5"});
         let result = tool.execute(&test_ctx(), &args).await;
         // git log 可能在非 git 目录下失败，但不应被 blocked
-        assert!(!result.blocked, "should not be blocked");
+        assert!(!result.is_blocked(), "should not be blocked");
     }
 
     #[tokio::test]
@@ -273,8 +271,8 @@ mod tests {
         let tool = test_tool();
         let args = serde_json::json!({});
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("missing"));
+        assert!(result.error().is_some());
+        assert!(result.error().unwrap().contains("missing"));
     }
 
     #[tokio::test]
@@ -282,7 +280,7 @@ mod tests {
         let tool = test_tool();
         let args = serde_json::json!({"command": ""});
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.error.is_some());
+        assert!(result.error().is_some());
     }
 
     #[tokio::test]
@@ -290,7 +288,7 @@ mod tests {
         let tool = test_tool();
         let args = serde_json::json!({"command": "git status --short"});
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(!result.blocked, "should not be blocked");
+        assert!(!result.is_blocked(), "should not be blocked");
     }
 
     #[tokio::test]
@@ -299,13 +297,13 @@ mod tests {
         let ctx = test_ctx();
 
         let head_result = tool.execute(&ctx, &serde_json::json!({"command": "head -5 Cargo.toml"})).await;
-        assert!(!head_result.blocked, "head should be allowed");
+        assert!(!head_result.is_blocked(), "head should be allowed");
 
         let tail_result = tool.execute(&ctx, &serde_json::json!({"command": "tail -5 Cargo.toml"})).await;
-        assert!(!tail_result.blocked, "tail should be allowed");
+        assert!(!tail_result.is_blocked(), "tail should be allowed");
 
         let wc_result = tool.execute(&ctx, &serde_json::json!({"command": "wc -l Cargo.toml"})).await;
-        assert!(!wc_result.blocked, "wc should be allowed");
+        assert!(!wc_result.is_blocked(), "wc should be allowed");
     }
 
     #[test]

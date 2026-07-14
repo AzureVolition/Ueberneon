@@ -3,7 +3,7 @@
 // 支持 HTTP/HTTPS，自动将 HTML 转为纯文本。
 // 内置 SSRF 防护：拒绝私有 IP、回环地址和链路本地地址。
 
-use llm::tool::{Tool, ToolContext, ToolResult};
+use llm::tool::{AgentMode, Tool, ToolContext, ToolResult};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
 
@@ -399,6 +399,7 @@ mod tests {
         ToolContext {
             call_id: "test".into(),
             plan_mode: false,
+            agent_mode: AgentMode::Ask,
             progress: None,
         }
     }
@@ -407,8 +408,8 @@ mod tests {
     async fn missing_url() {
         let tool = WebFetch::new();
         let result = tool.execute(&test_ctx(), &serde_json::json!({})).await;
-        assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("missing"));
+        assert!(result.error().is_some());
+        assert!(result.error().unwrap().contains("missing"));
     }
 
     #[tokio::test]
@@ -417,8 +418,8 @@ mod tests {
         let result = tool.execute(&test_ctx(), &serde_json::json!({
             "url": "not a url"
         })).await;
-        assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("invalid URL"));
+        assert!(result.error().is_some());
+        assert!(result.error().unwrap().contains("invalid URL"));
     }
 
     #[tokio::test]
@@ -427,8 +428,8 @@ mod tests {
         let result = tool.execute(&test_ctx(), &serde_json::json!({
             "url": "ftp://example.com/file"
         })).await;
-        assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("only http/https"));
+        assert!(result.error().is_some());
+        assert!(result.error().unwrap().contains("only http/https"));
     }
 
     #[tokio::test]
@@ -437,8 +438,8 @@ mod tests {
         let result = tool.execute(&test_ctx(), &serde_json::json!({
             "url": "file:///etc/passwd"
         })).await;
-        assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("only http/https"));
+        assert!(result.error().is_some());
+        assert!(result.error().unwrap().contains("only http/https"));
     }
 
     #[tokio::test]
@@ -448,8 +449,8 @@ mod tests {
         let result = tool.execute(&test_ctx(), &serde_json::json!({
             "url": "http://10.0.0.1/admin"
         })).await;
-        assert!(result.error.is_some());
-        let err = result.error.as_ref().unwrap();
+        assert!(result.error().is_some());
+        let err = result.error().unwrap();
         assert!(err.contains("SSRF") || err.contains("private"), "error: {}", err);
     }
 
@@ -459,8 +460,8 @@ mod tests {
         let result = tool.execute(&test_ctx(), &serde_json::json!({
             "url": "http://127.0.0.1:8080/"
         })).await;
-        assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("SSRF"));
+        assert!(result.error().is_some());
+        assert!(result.error().unwrap().contains("SSRF"));
     }
 
     #[tokio::test]
@@ -469,8 +470,8 @@ mod tests {
         let result = tool.execute(&test_ctx(), &serde_json::json!({
             "url": "http://[::1]:8080/"
         })).await;
-        assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("SSRF"));
+        assert!(result.error().is_some());
+        assert!(result.error().unwrap().contains("SSRF"));
     }
 
     #[tokio::test]
@@ -479,8 +480,8 @@ mod tests {
         let result = tool.execute(&test_ctx(), &serde_json::json!({
             "url": "http://169.254.169.254/latest/meta-data/"
         })).await;
-        assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("SSRF"));
+        assert!(result.error().is_some());
+        assert!(result.error().unwrap().contains("SSRF"));
     }
 
     #[tokio::test]
@@ -489,8 +490,8 @@ mod tests {
         let result = tool.execute(&test_ctx(), &serde_json::json!({
             "url": "http://0.0.0.0/"
         })).await;
-        assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("SSRF"));
+        assert!(result.error().is_some());
+        assert!(result.error().unwrap().contains("SSRF"));
     }
 
     #[test]

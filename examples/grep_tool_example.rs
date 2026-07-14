@@ -11,7 +11,7 @@ use std::time::Duration;
 use llm::{
     Chunk, Message, OpenAiProvider, Provider, Request, Role, ToolCall,
 };
-use llm::tool::ToolContext;
+use llm::tool::{AgentMode, ToolContext};
 use futures::StreamExt;
 use racpagent::tools::{
     Bash, Grep, Registry,
@@ -49,6 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Duration::from_secs(120),
         Arc::new(racpagent::tools::JobManager::new()),
         None,
+        vec![],
     )));
 
     let mut req = Request {
@@ -136,6 +137,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let ctx = ToolContext {
                     call_id: tool.id.clone(),
                     plan_mode: false,
+                    agent_mode: AgentMode::Ask,
                     progress: None,
                 };
                 let args: serde_json::Value =
@@ -144,12 +146,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 req.messages.push(Message {
                     role: Role::Tool,
-                    content: Some(if let Some(ref err) = result.error {
+                    content: Some(if let Some(ref err) = result.error() {
                         println!("tool call error: {err}");
                         format!("error: {err}")
                     } else {
-                        println!("tool call success: {} lines", result.output.lines().count());
-                        result.output
+                        println!("tool call success: {} lines", result.output().lines().count());
+                        result.output().to_string()
                     }),
                     tool_call_id: Some(tool.id.clone()),
                     name: Some(tool.name.clone()),

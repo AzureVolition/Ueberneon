@@ -4,7 +4,7 @@
 //
 // 不依赖 LLM API，直接调用工具执行，展示所有只读浏览工具的用法。
 
-use llm::tool::{Tool, ToolContext};
+use llm::tool::{AgentMode, Tool, ToolContext};
 use racpagent::tools::{
     CodeIndex, Glob, Grep, Ls, WebFetch,
 };
@@ -16,6 +16,7 @@ async fn main() {
     let ctx = ToolContext {
         call_id: "demo".into(),
         plan_mode: false,
+        agent_mode: AgentMode::Ask,
         progress: None,
     };
 
@@ -139,19 +140,19 @@ async fn main() {
 
 /// 打印工具执行结果。
 fn print_result(label: &str, result: &llm::tool::ToolResult) {
-    if let Some(ref err) = result.error {
+    if let Some(err) = result.error() {
         eprintln!("  [{label}] ❌ 错误: {err}\n");
-    } else if result.blocked {
-        eprintln!("  [{label}] 🔒 被阻止: {}\n", result.output);
-    } else if result.output.contains("no matches") || result.output.contains("no symbols found") {
-        println!("  ℹ️  {}\n", result.output.trim());
+    } else if result.is_blocked() {
+        eprintln!("  [{label}] 🔒 被阻止: {}\n", result.output());
+    } else if result.output().contains("no matches") || result.output().contains("no symbols found") {
+        println!("  ℹ️  {}\n", result.output().trim());
     } else {
-        let preview: Vec<&str> = result.output.lines().take(15).collect();
+        let preview: Vec<&str> = result.output().lines().take(15).collect();
         for line in &preview {
             println!("  {}", line);
         }
-        if preview.len() < result.output.lines().count() {
-            println!("  ... ({} lines total)", result.output.lines().count());
+        if preview.len() < result.output().lines().count() {
+            println!("  ... ({} lines total)", result.output().lines().count());
         }
         println!();
     }
@@ -159,14 +160,14 @@ fn print_result(label: &str, result: &llm::tool::ToolResult) {
 
 /// 打印工具执行结果，只显示前 N 行并计数。
 fn print_result_count(label: &str, result: &llm::tool::ToolResult, show_lines: usize) {
-    if let Some(ref err) = result.error {
+    if let Some(err) = result.error() {
         eprintln!("  [{label}] ❌ 错误: {err}\n");
-    } else if result.blocked {
-        eprintln!("  [{label}] 🔒 被阻止: {}\n", result.output);
-    } else if result.output.contains("no matches") || result.output.contains("no symbols found") {
-        println!("  ℹ️  {}\n", result.output.trim());
+    } else if result.is_blocked() {
+        eprintln!("  [{label}] 🔒 被阻止: {}\n", result.output());
+    } else if result.output().contains("no matches") || result.output().contains("no symbols found") {
+        println!("  ℹ️  {}\n", result.output().trim());
     } else {
-        let lines: Vec<&str> = result.output.lines().collect();
+        let lines: Vec<&str> = result.output().lines().collect();
         let total = lines.len();
         for line in lines.iter().take(show_lines) {
             println!("  {}", line);

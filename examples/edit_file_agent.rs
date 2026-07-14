@@ -4,12 +4,13 @@ use std::time::Duration;
 use llm::{
     Chunk, Message, OpenAiProvider, Provider, Request, Role, ToolCall,
 };
-use llm::tool::ToolContext;
+use llm::tool::{AgentMode, ToolContext};
 use futures::StreamExt;
 use racpagent::tools::{
     Bash, BashOutput, EditFile, KillShell, JobManager, MultiEdit, Registry,
     SandboxSpec, SnapshotStore, WriteFile,
 };
+use racpagent::tools::content_tracker::FileObserveTracker;
 use racpagent::tools::internal::read_file::ReadFile;
 
 #[tokio::main]
@@ -25,7 +26,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     let registry = Registry::new();
-    registry.add(Box::new(ReadFile::new()));
+    let tracker = Arc::new(FileObserveTracker::new());
+    registry.add(Box::new(ReadFile::new(tracker.clone())));
 
     let job_manager = Arc::new(JobManager::new());
     let snapshot = Arc::new(SnapshotStore::new());
@@ -40,15 +42,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Duration::from_secs(120),
         job_manager.clone(),
         Some(sandbox),
+        vec![],
     )));
 
     registry.add(Box::new(BashOutput::new(job_manager.clone())));
     registry.add(Box::new(KillShell::new(job_manager)));
 
     // 文件编辑工具（核心）
-    registry.add(Box::new(EditFile::new(work_dir.clone(), snapshot.clone())));
-    registry.add(Box::new(MultiEdit::new(work_dir.clone(), snapshot.clone())));
-    registry.add(Box::new(WriteFile::new(work_dir, snapshot)));
+    registry.add(Box::new(EditFile::new(work_dir.clone(), snapshot.clone(), vec![], tracker.clone())));
+    registry.add(Box::new(MultiEdit::new(work_dir.clone(), snapshot.clone(), vec![], tracker.clone())));
+    registry.add(Box::new(WriteFile::new(work_dir, snapshot, vec![], tracker)));
 
     let mut req = Request {
         messages: vec![
@@ -140,6 +143,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let ctx = ToolContext {
                     call_id: tool.id.clone(),
                     plan_mode: false,
+                    agent_mode: AgentMode::Ask,
                     progress: None,
                 };
                 let args: serde_json::Value =
@@ -148,12 +152,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 req.messages.push(Message {
                     role: Role::Tool,
-                    content: Some(if let Some(ref err) = result.error {
+                    content: Some(if let Some(ref err) = result.error() {
                         println!("tool call error: {err}");
                         format!("error: {err}")
                     } else {
-                        println!("tool call success: {}", &result.output);
-                        result.output
+                        println!("tool call success: {}", &result.output());
+                        result.output().to_string()
                     }),
                     tool_call_id: Some(tool.id.clone()),
                     name: Some(tool.name.clone()),
