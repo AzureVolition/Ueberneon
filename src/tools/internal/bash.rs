@@ -5,9 +5,7 @@
 // 前台：ProcessRunner 同步执行；后台：JobManager 异步 spawn，返回 job ID。
 // 支持沙箱隔离（macOS Seatbelt / Linux bubblewrap）和环境变量安全处理。
 
-use crate::agent::{Tool, ToolContext, ToolResult};
-#[cfg(test)]
-use crate::agent::{AgentMode, ToolResultExt};
+use crate::agent::{Tool, ToolContext, ToolResult, ToolResultExt};
 use llm::tool::ToolMeta;
 use racpagent_macros::ToolMetaImpl;
 use serde::Deserialize;
@@ -179,15 +177,8 @@ impl CheckableTool for Bash {
         }
         if ctx.plan_mode {
             let command = args.get("command").and_then(|v| v.as_str()).unwrap_or("");
-            let cmd = command.trim();
-            let allowed = Self::PLAN_MODE_ALLOWED_PREFIXES
-                .iter()
-                .any(|prefix| cmd.starts_with(prefix));
-            if !allowed {
-                return Decision::Deny(format!(
-                    "blocked: bash command not allowed in plan mode: {}",
-                    cmd
-                ));
+            if let Some(reason) = Self::check_plan_mode(command) {
+                return Decision::Deny(reason);
             }
         }
         Decision::Allow
@@ -248,6 +239,7 @@ impl Bash {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::AgentMode;
     use llm::tool::ToolMeta;
 
     fn test_job_manager() -> Arc<JobManager> {
