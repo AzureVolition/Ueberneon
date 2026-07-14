@@ -11,7 +11,8 @@ use std::time::Duration;
 use llm::{
     Chunk, Message, OpenAiProvider, Provider, Request, Role, ToolCall,
 };
-use llm::tool::{ToolResultExt, AgentMode, ToolContext};
+use racpagent::agent::ToolResultExt;
+use racpagent::agent::{AgentMode, ToolContext};
 use futures::StreamExt;
 use racpagent::tools::{
     Bash, Grep, Registry,

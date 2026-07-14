@@ -3,7 +3,9 @@
 // 支持 HTTP/HTTPS，自动将 HTML 转为纯文本。
 // 内置 SSRF 防护：拒绝私有 IP、回环地址和链路本地地址。
 
-use llm::tool::{AgentMode, Tool, ToolContext, ToolResult, ToolResultExt};
+use crate::agent::{Tool, ToolContext, ToolResult};
+#[cfg(test)]
+use crate::agent::{AgentMode, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
 use crate::tools::internal::common::checkable_tool::CheckableTool;

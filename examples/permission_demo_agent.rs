@@ -13,7 +13,7 @@ use std::time::Duration;
 use llm::{
     Chunk, Message, OpenAiProvider, Provider, Request, Role, ToolCall,
 };
-use llm::tool::{ToolResultExt, AgentMode, ToolContext, ToolResult};
+use racpagent::agent::{AgentMode, ToolContext};
 use futures::StreamExt;
 use racpagent::permission::checks::{
     DangerousPatternDetector, DenySystemPaths, ForcePushGuard, ReadOnlyBashClassifier,

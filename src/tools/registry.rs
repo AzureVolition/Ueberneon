@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 use crate::tools::internal::common::checkable_tool::CheckableTool;
-use llm::tool::Tool;
+use crate::agent::Tool;
 use llm::ToolSchema;
 
 

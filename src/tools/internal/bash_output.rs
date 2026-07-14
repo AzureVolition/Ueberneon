@@ -3,7 +3,9 @@
 // 通过 JobManager 读取后台任务的 stdout+stderr 增量。
 // 每次调用返回自上次读取以来的新内容。
 
-use llm::tool::{AgentMode, Tool, ToolContext, ToolResult, ToolResultExt};
+use crate::agent::{Tool, ToolContext, ToolResult};
+#[cfg(test)]
+use crate::agent::{AgentMode, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
 use std::sync::Arc;

@@ -16,5 +16,6 @@ llm = { path = "../llm" }
 
 [dev-dependencies]
 async-trait = "0.1"
+racpagent = { path = "../.." }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }

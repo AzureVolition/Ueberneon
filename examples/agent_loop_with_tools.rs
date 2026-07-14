@@ -5,9 +5,9 @@ use std::time::Duration;
 use llm::{
     Chunk, Message, OpenAiProvider, Provider, Request, Role, ToolCall,
 };
-use llm::tool::{ToolResultExt, AgentMode, ToolContext};
+use racpagent::agent::{AgentMode, ToolContext};
 use futures::StreamExt;
-use racpagent::tools::{SnapshotStore, Bash, BashOutput, EditFile, KillShell, JobManager, MultiEdit, Registry, SandboxSpec, WriteFile};
+use racpagent::tools::{SnapshotStore, Bash, BashOutput, KillShell, JobManager, Registry, SandboxSpec, WriteFile};
 use racpagent::tools::content_tracker::FileObserveTracker;
 use racpagent::tools::internal::read_file::ReadFile;
 
@@ -132,12 +132,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 req.messages.push(Message {
                     role: Role::Tool,
-                    content: Some(if let Some(ref err) = result.error() {
+                    content: Some(if let Some(err) = &result.as_ref().err() {
                         println!("tool call error: {err}");
                         format!("error: {err}")
                     } else {
-                        println!("tool call success: {}", &result.output());
-                        result.output().to_string()
+                        println!("tool call success: {}", result.as_ref().unwrap().output.clone());
+                        result.as_ref().unwrap().output.clone()
                     }),
                     tool_call_id: Some(tool.id.clone()),
                     name: Some(tool.name.clone()),

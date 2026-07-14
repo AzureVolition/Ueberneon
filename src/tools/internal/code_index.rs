@@ -5,7 +5,9 @@
 
 use std::path::Path;
 
-use llm::tool::{AgentMode, Tool, ToolContext, ToolResult, ToolResultExt};
+use crate::agent::{Tool, ToolContext, ToolResult};
+#[cfg(test)]
+use crate::agent::{AgentMode, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
 use regex::Regex;
 use serde_json::Value;

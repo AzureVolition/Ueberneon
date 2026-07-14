@@ -5,9 +5,12 @@
 // 前台：ProcessRunner 同步执行；后台：JobManager 异步 spawn，返回 job ID。
 // 支持沙箱隔离（macOS Seatbelt / Linux bubblewrap）和环境变量安全处理。
 
-use llm::tool::{AgentMode, Tool, ToolContext, ToolMeta, ToolResult, ToolResultExt};
+use crate::agent::{Tool, ToolContext, ToolResult};
+#[cfg(test)]
+use crate::agent::{AgentMode, ToolResultExt};
+use llm::tool::ToolMeta;
 use racpagent_macros::ToolMetaImpl;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;

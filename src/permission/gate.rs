@@ -5,8 +5,8 @@
 //
 // Gate 包装 Policy 和可选的 Approver，是 Agent 在 execute 前调用的入口。
 
+use crate::agent::AgentMode;
 use crate::permission::{Decision, Check, bash_decompose, extract_subject, extract_subjects};
-use llm::tool::AgentMode;
 
 // ── Policy ───────────────────────────────────────────────────────────────────
 
@@ -263,11 +263,6 @@ impl Gate {
                 }
 
                 let subject = subjects.first().map(|s| s.as_str()).unwrap_or("");
-                let ctx = ApprovalContext {
-                    tool: tool.to_string(),
-                    subject: subject.to_string(),
-                    args: args.clone(),
-                };
 
                 // 这里只在同步上下文中调用——实际场景中 Gate 应该是 async
                 // 目前返回 NeedsApproval 让上层处理
@@ -844,6 +839,7 @@ mod tests {
             "safe_directory_guard"
         }
 
+        
         fn check(&self, tool: &str, subject: &str) -> Option<Decision> {
             if subject.is_empty() {
                 return None;

@@ -1392,6 +1392,7 @@ dependencies = [
  "llm",
  "proc-macro2",
  "quote",
+ "racpagent",
  "serde_json",
  "syn",
  "tokio",

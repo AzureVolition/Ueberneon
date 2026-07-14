@@ -7,7 +7,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use llm::tool::{AgentMode, Tool, ToolContext, ToolMeta, ToolResult, ToolResultExt};
+use crate::agent::{Tool, ToolContext, ToolResult};
+use llm::tool::ToolMeta;
+#[cfg(test)]
+use crate::agent::{AgentMode, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
 use crate::permission::{Check, Decision, gate::PermissionChecked};

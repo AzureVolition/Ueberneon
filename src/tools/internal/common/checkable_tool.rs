@@ -5,7 +5,7 @@
 //
 // Registry 存储 CheckableTool，Agent 调用 checked_execute。
 
-use llm::tool::{Tool, ToolContext, ToolResult};
+use crate::agent::{Tool, ToolContext, ToolResult};
 use crate::permission::Decision;
 
 /// 带校验的工具执行流程。

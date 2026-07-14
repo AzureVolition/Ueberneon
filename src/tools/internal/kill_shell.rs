@@ -2,7 +2,9 @@
 //
 // 通过 JobManager 终止后台任务，先 SIGTERM 后 SIGKILL。
 
-use llm::tool::{AgentMode, Tool, ToolContext, ToolResult, ToolResultExt};
+use crate::agent::{Tool, ToolContext, ToolResult};
+#[cfg(test)]
+use crate::agent::{AgentMode, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
 use std::sync::Arc;

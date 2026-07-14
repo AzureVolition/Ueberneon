@@ -1,5 +1,6 @@
-use llm::tool::{AgentMode, Tool};
+use racpagent::agent::Tool;
 use llm::tool::ToolMeta as _;
+use racpagent::agent::AgentMode;
 use racpagent_macros::ToolMetaImpl;
 
 /// Reads a file from disk with automatic encoding detection.
@@ -24,13 +25,13 @@ fn make_read_file() -> ReadFile {
 
 // 手动实现 Tool 以便测试 execute
 #[::async_trait::async_trait]
-impl llm::tool::Tool for ReadFile {
+impl racpagent::agent::Tool for ReadFile {
     async fn execute(
         &self,
-        _ctx: &llm::tool::ToolContext,
+        _ctx: &racpagent::agent::ToolContext,
         _args: &serde_json::Value,
-    ) -> Result<llm::tool::ToolResult, String> {
-        Ok(llm::tool::ToolResult::ok("executed"))
+    ) -> Result<racpagent::agent::ToolResult, String> {
+        Ok(racpagent::agent::ToolResult::ok("executed"))
     }
 }
 
@@ -82,7 +83,7 @@ async fn schema_is_independent_per_instance() {
 #[tokio::test]
 async fn execute_returns_ok() {
     let tool = make_read_file();
-    let ctx = llm::tool::ToolContext {
+    let ctx = racpagent::agent::ToolContext {
         call_id: "test".into(),
         plan_mode: false,
             agent_mode: AgentMode::Ask,
