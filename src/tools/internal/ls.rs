@@ -5,9 +5,11 @@
 
 use std::path::Path;
 
-use llm::tool::{AgentMode, Tool, ToolContext, ToolResult};
+use llm::tool::{AgentMode, Tool, ToolContext, ToolResult, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
+use crate::tools::internal::common::checkable_tool::CheckableTool;
+use crate::permission::Decision;
 
 /// ls — 列出目录内容。
 ///
@@ -58,7 +60,7 @@ impl Ls {
 
 #[async_trait::async_trait]
 impl Tool for Ls {
-    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> ToolResult {
+    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
         let path_str = args
             .get("path")
             .and_then(|v| v.as_str())
@@ -74,15 +76,15 @@ impl Tool for Ls {
 
         // 安全检查
         if path.components().any(|c| c.as_os_str() == ".git") {
-            return ToolResult::blocked("access to .git directory is not allowed");
+            return Err("access to .git directory is not allowed".into());
         }
 
         if !path.exists() {
-            return ToolResult::err(format!("ls: path '{}' does not exist", path_str));
+            return Err(format!("ls: path '{}' does not exist", path_str));
         }
 
         if !path.is_dir() {
-            return ToolResult::err(format!("ls: '{}' is not a directory", path_str));
+            return Err(format!("ls: '{}' is not a directory", path_str));
         }
 
         if recursive {
@@ -94,10 +96,10 @@ impl Tool for Ls {
 }
 
 /// 非递归：读取单层目录。
-fn list_flat(dir: &Path, display: &str) -> ToolResult {
+fn list_flat(dir: &Path, display: &str) -> Result<ToolResult, String> {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
-        Err(e) => return ToolResult::err(format!("ls: failed to read '{}': {}", display, e)),
+        Err(e) => return Err(format!("ls: failed to read '{}': {}", display, e)),
     };
 
     let mut items: Vec<String> = Vec::new();
@@ -126,14 +128,14 @@ fn list_flat(dir: &Path, display: &str) -> ToolResult {
     items.sort();
 
     if items.is_empty() {
-        return ToolResult::ok("(empty directory)");
+        return Ok(ToolResult::ok("(empty directory)"));
     }
 
-    ToolResult::ok(items.join("\n"))
+    Ok(ToolResult::ok(items.join("\n")))
 }
 
 /// 递归：深度优先遍历目录树。
-fn list_recursive(dir: &Path, display: &str) -> ToolResult {
+fn list_recursive(dir: &Path, display: &str) -> Result<ToolResult, String> {
     let mut walker = walkdir::WalkDir::new(dir)
         .sort_by(|a, b| a.file_name().cmp(b.file_name()))
         .into_iter();
@@ -178,10 +180,19 @@ fn list_recursive(dir: &Path, display: &str) -> ToolResult {
     }
 
     if items.is_empty() {
-        return ToolResult::ok("(empty directory tree)");
+        return Ok(ToolResult::ok("(empty directory tree)"));
     }
 
-    ToolResult::ok(items.join("\n"))
+    Ok(ToolResult::ok(items.join("\n")))
+}
+
+
+#[async_trait::async_trait]
+impl CheckableTool for Ls {
+    fn check(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> Decision {
+        Decision::Allow
+    }
+
 }
 
 #[cfg(test)]
@@ -304,7 +315,7 @@ mod tests {
             &test_ctx(),
             &serde_json::json!({"path": "/tmp/repo/.git"}),
         ).await;
-        assert!(result.is_blocked());
+        assert!(result.is_err());
     }
 
     #[test]

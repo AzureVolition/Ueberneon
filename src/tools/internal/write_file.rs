@@ -7,14 +7,15 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use llm::tool::{AgentMode, Tool, ToolContext, ToolResult};
+use llm::tool::{AgentMode, Tool, ToolContext, ToolMeta, ToolResult, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
 
 use crate::tools::content_tracker::FileObserveTracker;
+use crate::tools::internal::common::checkable_tool::CheckableTool;
 use crate::tools::snapshot::SnapshotStore;
 use crate::tools::diff::{self, Kind as DiffKind};
-use crate::permission::{Check, gate::PermissionChecked};
+use crate::permission::{Check, Decision, gate::PermissionChecked};
 
 /// write_file — 创建新文件或覆盖已有文件。
 ///
@@ -140,36 +141,27 @@ impl PermissionChecked for WriteFile {
 
 #[async_trait::async_trait]
 impl Tool for WriteFile {
-    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> ToolResult {
-        // 0. 权限检查
-        if let Some(reason) = self.check_permission("write_file", args, _ctx.agent_mode) {
-            return ToolResult::blocked(reason);
-        }
-        // plan mode：写工具拒绝
-        if _ctx.plan_mode {
-            return ToolResult::blocked("write_file is not allowed in plan mode");
-        }
-
+    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
         // 1. 解析参数
         let path_str = match args.get("path").and_then(|v| v.as_str()) {
             Some(p) => p,
-            None => return ToolResult::err("write_file: missing required argument 'path'"),
+            None => return Err("write_file: missing required argument 'path'".into()),
         };
         let content = match args.get("content").and_then(|v| v.as_str()) {
             Some(c) => c,
-            None => return ToolResult::err("write_file: missing required argument 'content'"),
+            None => return Err("write_file: missing required argument 'content'".into()),
         };
         let overwrite = args.get("overwrite").and_then(|v| v.as_bool()).unwrap_or(false);
 
         // 2. 解析路径并检查范围
         let path = match self.resolve_path(path_str) {
             Ok(p) => p,
-            Err(e) => return ToolResult::err(format!("write_file: {}", e)),
+            Err(e) => return Err(format!("write_file: {}", e)),
         };
 
         // 3. 检查文件是否已存在
         if path.exists() && !overwrite {
-            return ToolResult::blocked(format!(
+            return Err(format!(
                 "write_file: '{}' already exists. Use overwrite=true to replace, or use edit_file for targeted edits.",
                 path_str
             ));
@@ -181,7 +173,7 @@ impl Tool for WriteFile {
                 Ok(c) => {
                     // 陈旧锚点检查：覆盖已有文件时验证内容是否一致
                     if let Err(msg) = self.tracker.check_anchor(path_str, &c) {
-                        return ToolResult::err(msg);
+                        return Err(msg);
                     }
                     self.checkpoint.snapshot(path_str, &c, 0);
                     c
@@ -196,7 +188,7 @@ impl Tool for WriteFile {
         if let Some(parent) = path.parent() {
             if !parent.exists() {
                 if let Err(e) = std::fs::create_dir_all(parent) {
-                    return ToolResult::err(format!(
+                    return Err(format!(
                         "write_file: failed to create directory '{}': {}",
                         parent.display(),
                         e
@@ -210,7 +202,7 @@ impl Tool for WriteFile {
 
         // 7. 写入文件
         if let Err(e) = std::fs::write(&path, content) {
-            return ToolResult::err(format!("write_file: failed to write '{}': {}", path_str, e));
+            return Err(format!("write_file: failed to write '{}': {}", path_str, e));
         }
 
         // 8. 更新追踪器
@@ -218,7 +210,21 @@ impl Tool for WriteFile {
 
         // 9. 返回成功消息
         let summary = diff::change_summary(&file_change);
-        ToolResult::ok(format!("wrote {}\n{}", path_str, summary))
+        Ok(ToolResult::ok(format!("wrote {}\n{}", path_str, summary)))
+    }
+}
+
+#[async_trait::async_trait]
+impl CheckableTool for WriteFile {
+    fn check(&self, ctx: &ToolContext, args: &Value) -> Decision {
+        match self.check_permission(self.name(), args, ctx.agent_mode) {
+            Decision::Allow => {}
+            decision => return decision,
+        }
+        if ctx.plan_mode {
+            return Decision::Deny("write_file is not allowed in plan mode".into());
+        }
+        Decision::Allow
     }
 }
 
@@ -280,7 +286,7 @@ mod tests {
             "content": "new content"
         });
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.is_blocked(), "should be blocked without overwrite");
+        assert!(result.is_err(), "should be blocked without overwrite");
 
         // With overwrite flag — should succeed
         let args = serde_json::json!({

@@ -5,10 +5,12 @@
 
 use std::path::Path;
 
-use llm::tool::{AgentMode, Tool, ToolContext, ToolResult};
+use llm::tool::{AgentMode, Tool, ToolContext, ToolResult, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
 use regex::Regex;
 use serde_json::Value;
+use crate::tools::internal::common::checkable_tool::CheckableTool;
+use crate::permission::Decision;
 
 /// code_index — 提取源文件中的符号定义。
 ///
@@ -424,17 +426,17 @@ fn parse_kotlin(file: &str, content: &str, _: &Regex, _: &Regex) -> Vec<CodeSymb
 
 #[async_trait::async_trait]
 impl Tool for CodeIndex {
-    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> ToolResult {
+    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
         let action = match args.get("action").and_then(|v| v.as_str()) {
             Some("outline") => "outline",
             Some("search") => "search",
-            _ => return ToolResult::err("code_index: 'action' must be 'outline' or 'search'"),
+            _ => return Err("code_index: 'action' must be 'outline' or 'search'".into()),
         };
 
         let query = if action == "search" {
             match args.get("query").and_then(|v| v.as_str()) {
                 Some(q) if !q.is_empty() => Some(q.to_lowercase()),
-                _ => return ToolResult::err("code_index: 'query' is required for action='search'"),
+                _ => return Err("code_index: 'query' is required for action='search'".into()),
             }
         } else {
             args.get("query").and_then(|v| v.as_str()).map(|q| q.to_lowercase())
@@ -457,7 +459,7 @@ impl Tool for CodeIndex {
         let path = std::path::Path::new(path_str);
 
         if !path.exists() {
-            return ToolResult::err(format!("code_index: path '{}' does not exist", path_str));
+            return Err(format!("code_index: path '{}' does not exist", path_str));
         }
 
         // 收集符号
@@ -528,7 +530,7 @@ impl Tool for CodeIndex {
                 "search" => format!("code_index: no symbols found matching '{}'", query.unwrap_or_default()),
                 _ => "code_index: no symbols found".into(),
             };
-            return ToolResult::ok(msg);
+            return Ok(ToolResult::ok(msg));
         }
 
         // 格式化输出
@@ -545,8 +547,17 @@ impl Tool for CodeIndex {
             output.push_str("... (truncated; narrow path/query/kind or raise limit)\n");
         }
 
-        ToolResult::ok(output.trim_end().to_string())
+        Ok(ToolResult::ok(output.trim_end().to_string()))
     }
+}
+
+
+#[async_trait::async_trait]
+impl CheckableTool for CodeIndex {
+    fn check(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> Decision {
+        Decision::Allow
+    }
+
 }
 
 #[cfg(test)]

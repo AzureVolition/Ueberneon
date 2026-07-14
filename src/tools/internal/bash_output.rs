@@ -3,12 +3,14 @@
 // 通过 JobManager 读取后台任务的 stdout+stderr 增量。
 // 每次调用返回自上次读取以来的新内容。
 
-use llm::tool::{AgentMode, Tool, ToolContext, ToolResult};
+use llm::tool::{AgentMode, Tool, ToolContext, ToolResult, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
 use std::sync::Arc;
 
 use crate::tools::jobs::JobManager;
+use crate::tools::internal::common::checkable_tool::CheckableTool;
+use crate::permission::Decision;
 
 /// bash_output — 读取通过 bash(run_in_background=true) 启动的后台任务输出。
 ///
@@ -41,16 +43,16 @@ impl BashOutput {
 
 #[async_trait::async_trait]
 impl Tool for BashOutput {
-    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> ToolResult {
+    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
         let job_id = match args.get("job_id").and_then(|v| v.as_str()) {
             Some(id) => id,
-            None => return ToolResult::err("bash_output: missing required argument 'job_id'"),
+            None => return Err("bash_output: missing required argument 'job_id'".into()),
         };
 
         let handle = match self.job_manager.get(job_id) {
             Some(h) => h,
             None => {
-                return ToolResult::err(format!(
+                return Err(format!(
                     "bash_output: job '{job_id}' not found (it may have been reaped or never existed)"
                 ));
             }
@@ -62,24 +64,33 @@ impl Tool for BashOutput {
         if output.is_empty() && finished {
             let exit_code = handle.exit_code.load(std::sync::atomic::Ordering::SeqCst);
             if exit_code == 0 {
-                ToolResult::ok(format!("job {job_id} finished successfully (exit 0)"))
+                Ok(ToolResult::ok(format!("job {job_id} finished successfully (exit 0)")))
             } else {
-                ToolResult::ok(format!(
+                Ok(ToolResult::ok(format!(
                     "job {job_id} finished with exit code {exit_code}"
-                ))
+                )))
             }
         } else if output.is_empty() {
-            ToolResult::ok(format!("job {job_id} is still running (no new output)"))
+            Ok(ToolResult::ok(format!("job {job_id} is still running (no new output)")))
         } else if finished {
-            ToolResult::ok(format!(
+            Ok(ToolResult::ok(format!(
                 "{output}",
-            ))
+            )))
         } else {
-            ToolResult::ok(format!(
+            Ok(ToolResult::ok(format!(
                 "{output}\n[job {job_id} still running]"
-            ))
+            )))
         }
     }
+}
+
+
+#[async_trait::async_trait]
+impl CheckableTool for BashOutput {
+    fn check(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> Decision {
+        Decision::Allow
+    }
+
 }
 
 #[cfg(test)]

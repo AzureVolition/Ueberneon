@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use llm::tool::{AgentMode, Tool, ToolContext, ToolResult};
+use llm::tool::{AgentMode, Tool, ToolContext, ToolResult, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
 
@@ -16,6 +16,8 @@ use super::common::env::EnvBuilder;
 use super::common::process::{ProcessOutput, ProcessRunner};
 use super::common::shell::Shell;
 use crate::tools::sandbox::SandboxSpec;
+use crate::tools::internal::common::checkable_tool::CheckableTool;
+use crate::permission::Decision;
 
 /// read_only_bash —— 只读安全的 shell 命令执行。
 ///
@@ -97,7 +99,7 @@ impl ReadOnlyBash {
     }
 
     /// 将 ProcessOutput 转为 ToolResult。
-    fn build_tool_result(output: ProcessOutput) -> ToolResult {
+    fn build_tool_result(output: ProcessOutput) -> Result<ToolResult, String> {
         if output.exit_code != 0 {
             let detail = if output.combined.is_empty() {
                 "(no output)".to_string()
@@ -116,23 +118,20 @@ impl ReadOnlyBash {
                     output.exit_code
                 )
             };
-            return ToolResult::Error(msg);
+            return Err(msg);
         }
 
-        ToolResult::Success {
-            output: output.combined,
-            truncated: output.truncated,
-        }
+        Ok(ToolResult { output: output.combined, truncated: output.truncated })
     }
 }
 
 #[async_trait::async_trait]
 impl Tool for ReadOnlyBash {
-    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> ToolResult {
+    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
         // 1. 解析参数
         let command = match args.get("command").and_then(|v| v.as_str()) {
             Some(c) if !c.trim().is_empty() => c,
-            _ => return ToolResult::err("read_only_bash: missing required argument 'command'"),
+            _ => return Err("read_only_bash: missing required argument 'command'".into()),
         };
 
         let timeout = args
@@ -143,7 +142,7 @@ impl Tool for ReadOnlyBash {
 
         // 2. 只读白名单检查（始终强制执行）
         if let Some(reason) = Self::check_read_only(command) {
-            return ToolResult::blocked(reason);
+            return Err(reason);
         }
 
         // 3. Shell 探测 + 命令包装
@@ -168,6 +167,15 @@ impl Tool for ReadOnlyBash {
         // 6. 构建返回结果
         Self::build_tool_result(output)
     }
+}
+
+
+#[async_trait::async_trait]
+impl CheckableTool for ReadOnlyBash {
+    fn check(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> Decision {
+        Decision::Allow
+    }
+
 }
 
 #[cfg(test)]
@@ -202,7 +210,7 @@ mod tests {
         let args = serde_json::json!({"command": "ls"});
         let result = tool.execute(&test_ctx(), &args).await;
         assert!(result.error().is_none(), "error: {:?}", result.error());
-        assert!(!result.is_blocked(), "should not be blocked");
+        assert!(!result.is_err(), "should not be blocked");
         assert!(result.output().len() > 0, "should have output");
     }
 
@@ -212,7 +220,7 @@ mod tests {
         let args = serde_json::json!({"command": "cat Cargo.toml"});
         let result = tool.execute(&test_ctx(), &args).await;
         assert!(result.error().is_none(), "error: {:?}", result.error());
-        assert!(!result.is_blocked());
+        assert!(!result.is_err());
     }
 
     #[tokio::test]
@@ -221,7 +229,7 @@ mod tests {
         let args = serde_json::json!({"command": "grep -r 'fn' src/"});
         let result = tool.execute(&test_ctx(), &args).await;
         assert!(result.error().is_none(), "error: {:?}", result.error());
-        assert!(!result.is_blocked());
+        assert!(!result.is_err());
     }
 
     #[tokio::test]
@@ -229,7 +237,7 @@ mod tests {
         let tool = test_tool();
         let args = serde_json::json!({"command": "rm -rf /tmp"});
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.is_blocked(), "should be blocked");
+        assert!(result.is_err(), "should be blocked");
         assert!(result.output().contains("blocked"), "output: {}", result.output());
     }
 
@@ -238,7 +246,7 @@ mod tests {
         let tool = test_tool();
         let args = serde_json::json!({"command": "echo 'hello'"});
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.is_blocked(), "echo should be blocked");
+        assert!(result.is_err(), "echo should be blocked");
     }
 
     #[tokio::test]
@@ -246,7 +254,7 @@ mod tests {
         let tool = test_tool();
         let args = serde_json::json!({"command": "touch /tmp/test_file"});
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.is_blocked(), "touch should be blocked");
+        assert!(result.is_err(), "touch should be blocked");
     }
 
     #[tokio::test]
@@ -254,7 +262,7 @@ mod tests {
         let tool = test_tool();
         let args = serde_json::json!({"command": "sed -i 's/foo/bar/g' file.txt"});
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.is_blocked(), "sed should be blocked");
+        assert!(result.is_err(), "sed should be blocked");
     }
 
     #[tokio::test]
@@ -263,7 +271,7 @@ mod tests {
         let args = serde_json::json!({"command": "git log --oneline -5"});
         let result = tool.execute(&test_ctx(), &args).await;
         // git log 可能在非 git 目录下失败，但不应被 blocked
-        assert!(!result.is_blocked(), "should not be blocked");
+        assert!(!result.is_err(), "should not be blocked");
     }
 
     #[tokio::test]
@@ -288,7 +296,7 @@ mod tests {
         let tool = test_tool();
         let args = serde_json::json!({"command": "git status --short"});
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(!result.is_blocked(), "should not be blocked");
+        assert!(!result.is_err(), "should not be blocked");
     }
 
     #[tokio::test]
@@ -297,13 +305,13 @@ mod tests {
         let ctx = test_ctx();
 
         let head_result = tool.execute(&ctx, &serde_json::json!({"command": "head -5 Cargo.toml"})).await;
-        assert!(!head_result.is_blocked(), "head should be allowed");
+        assert!(!head_result.is_err(), "head should be allowed");
 
         let tail_result = tool.execute(&ctx, &serde_json::json!({"command": "tail -5 Cargo.toml"})).await;
-        assert!(!tail_result.is_blocked(), "tail should be allowed");
+        assert!(!tail_result.is_err(), "tail should be allowed");
 
         let wc_result = tool.execute(&ctx, &serde_json::json!({"command": "wc -l Cargo.toml"})).await;
-        assert!(!wc_result.is_blocked(), "wc should be allowed");
+        assert!(!wc_result.is_err(), "wc should be allowed");
     }
 
     #[test]

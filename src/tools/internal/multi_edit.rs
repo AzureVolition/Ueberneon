@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use llm::tool::{AgentMode, Tool, ToolContext, ToolResult};
+use llm::tool::{AgentMode, Tool, ToolContext, ToolMeta, ToolResult, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
 use serde::Deserialize;
 use serde_json::Value;
@@ -14,9 +14,10 @@ use serde_json::Value;
 use super::common::edit;
 use super::common::encoding;
 use crate::tools::content_tracker::FileObserveTracker;
+use crate::tools::internal::common::checkable_tool::CheckableTool;
 use crate::tools::snapshot::SnapshotStore;
 use crate::tools::diff::{self, Kind as DiffKind};
-use crate::permission::{Check, gate::PermissionChecked};
+use crate::permission::{Check, Decision, gate::PermissionChecked};
 
 /// multi_edit — 对单个文件进行原子性批量替换。
 ///
@@ -135,36 +136,27 @@ impl PermissionChecked for MultiEdit {
 
 #[async_trait::async_trait]
 impl Tool for MultiEdit {
-    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> ToolResult {
-        // 0. 权限检查
-        if let Some(reason) = self.check_permission("multi_edit", args, _ctx.agent_mode) {
-            return ToolResult::blocked(reason);
-        }
-        // plan mode：写工具拒绝
-        if _ctx.plan_mode {
-            return ToolResult::blocked("multi_edit is not allowed in plan mode");
-        }
-
+    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
         // 1. 解析参数
         let params: MultiEditParams = match serde_json::from_value(args.clone()) {
             Ok(p) => p,
-            Err(e) => return ToolResult::err(format!("multi_edit: invalid arguments: {e}")),
+            Err(e) => return Err(format!("multi_edit: invalid arguments: {e}")),
         };
 
         if params.edits.is_empty() {
-            return ToolResult::err("multi_edit: 'edits' must not be empty");
+            return Err("multi_edit: 'edits' must not be empty".into());
         }
 
         // 2. 解析路径
         let path = match self.resolve_path(&params.path) {
             Ok(p) => p,
-            Err(e) => return ToolResult::err(format!("multi_edit: {}", e)),
+            Err(e) => return Err(format!("multi_edit: {}", e)),
         };
 
         // 3. 读取文件
         let data = match std::fs::read(&path) {
             Ok(d) => d,
-            Err(e) => return ToolResult::err(format!("multi_edit: failed to read '{}': {}", params.path, e)),
+            Err(e) => return Err(format!("multi_edit: failed to read '{}': {}", params.path, e)),
         };
 
         let (enc, _) = encoding::detect(&data);
@@ -173,13 +165,13 @@ impl Tool for MultiEdit {
 
         // 4. 陈旧锚点检查
         if let Err(msg) = self.tracker.check_anchor(&params.path, &content) {
-            return ToolResult::err(msg);
+            return Err(msg);
         }
 
         // 5. 循环守卫：检查每项编辑是否重复
         for (i, op) in params.edits.iter().enumerate() {
             if let Err(msg) = self.tracker.check_loop(&params.path, &op.old_string, &op.new_string) {
-                return ToolResult::err(format!("multi_edit: edit {} — {}", i, msg));
+                return Err(format!("multi_edit: edit {} — {}", i, msg));
             }
         }
 
@@ -187,7 +179,7 @@ impl Tool for MultiEdit {
         let mut _total_applied = 0usize;
         for (i, op) in params.edits.iter().enumerate() {
             if op.old_string.is_empty() {
-                return ToolResult::err(format!(
+                return Err(format!(
                     "multi_edit: edits[{}].old_string must not be empty", i
                 ));
             }
@@ -196,14 +188,14 @@ impl Tool for MultiEdit {
 
             match result.applied {
                 0 if result.matches == 0 => {
-                    return ToolResult::err(format!(
+                    return Err(format!(
                         "multi_edit: edit {} failed — {}",
                         i,
                         edit::old_string_not_found_error(&params.path, &op.old_string, &content)
                     ));
                 }
                 0 if result.matches > 1 && !op.replace_all => {
-                    return ToolResult::err(format!(
+                    return Err(format!(
                         "multi_edit: edit {} failed — {}",
                         i,
                         edit::old_string_not_unique_error(&params.path, &op.old_string, &content, result.matches)
@@ -223,7 +215,7 @@ impl Tool for MultiEdit {
         // 6. 回写文件
         let output_bytes = encoding::encode(&content, enc);
         if let Err(e) = std::fs::write(&path, &output_bytes) {
-            return ToolResult::err(format!("multi_edit: failed to write '{}': {}", params.path, e));
+            return Err(format!("multi_edit: failed to write '{}': {}", params.path, e));
         }
 
         // 7. 更新追踪器
@@ -234,7 +226,21 @@ impl Tool for MultiEdit {
 
         // 8. 返回成功消息
         let summary = diff::change_summary(&file_change);
-        ToolResult::ok(format!("edited {} ({} edits applied)\n{}", params.path, params.edits.len(), summary))
+        Ok(ToolResult::ok(format!("edited {} ({} edits applied)\n{}", params.path, params.edits.len(), summary)))
+    }
+}
+
+#[async_trait::async_trait]
+impl CheckableTool for MultiEdit {
+    fn check(&self, ctx: &ToolContext, args: &Value) -> Decision {
+        match self.check_permission(self.name(), args, ctx.agent_mode) {
+            Decision::Allow => {}
+            decision => return decision,
+        }
+        if ctx.plan_mode {
+            return Decision::Deny("multi_edit is not allowed in plan mode".into());
+        }
+        Decision::Allow
     }
 }
 

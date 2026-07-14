@@ -13,8 +13,8 @@ pub trait ToolMeta: Send + Sync {
 
 #[async_trait::async_trait]
 pub trait Tool: ToolMeta {
-    /// 执行工具，接收模型生成的 raw JSON args，返回文本结果
-    async fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> ToolResult;
+    /// 执行工具，接收模型生成的 raw JSON args
+    async fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> Result<ToolResult, String>;
 }
 
 // ── AgentMode ──────────────────────────────────────────────────────────────
@@ -77,98 +77,62 @@ impl std::fmt::Display for BlockedKind {
 
 // ── ToolResult ───────────────────────────────────────────────────────────────
 
-/// 工具执行结果。
-///
-/// 三种变体：
-/// - `Success`：正常执行，包含输出文本
-/// - `Blocked`：被权限策略或 plan mode 阻止
-/// - `Error`：执行出错，错误信息返回给模型
+/// 工具执行成功结果。
 #[derive(Debug, Clone)]
-pub enum ToolResult {
-    /// 正常执行成功。
-    Success {
-        /// 返回给模型的文本。
-        output: String,
-        /// 输出是否被截断（> 32KB）。
-        truncated: bool,
-    },
-    /// 被门禁阻止（plan mode / permission gate）。
-    Blocked {
-        /// 阻止原因类别。
-        kind: BlockedKind,
-        /// 模型可见的阻止原因。
-        message: String,
-    },
-    /// 执行出错，错误信息返回给模型。
-    Error(String),
+pub struct ToolResult {
+    /// 返回给模型的文本。
+    pub output: String,
+    /// 输出是否被截断（> 32KB）。
+    pub truncated: bool,
 }
 
 impl ToolResult {
-    /// 是否被门禁阻止
-    pub fn is_blocked(&self) -> bool {
-        matches!(self, ToolResult::Blocked { .. })
-    }
-
-    /// 获取输出文本（Success 返回 output，Blocked 返回 message，Error 返回错误消息）。
-    pub fn output(&self) -> &str {
-        match self {
-            ToolResult::Success { output, .. } => output,
-            ToolResult::Blocked { message, .. } => message,
-            ToolResult::Error(msg) => msg,
-        }
-    }
-
-    /// 获取可选错误信息（Success 和 Blocked 返回 None）。
-    pub fn error(&self) -> Option<&str> {
-        match self {
-            ToolResult::Error(msg) => Some(msg),
-            _ => None,
-        }
-    }
-
-    /// 输出是否被截断（仅 Success 有意义，其他变体返回 false）。
-    pub fn truncated(&self) -> bool {
-        match self {
-            ToolResult::Success { truncated, .. } => *truncated,
-            _ => false,
-        }
-    }
-
-    /// 获取阻止原因类别（仅 Blocked 有意义）。
-    pub fn blocked_kind(&self) -> Option<BlockedKind> {
-        match self {
-            ToolResult::Blocked { kind, .. } => Some(*kind),
-            _ => None,
-        }
-    }
-
     /// 创建成功结果。
     pub fn ok(output: impl Into<String>) -> Self {
-        ToolResult::Success {
+        ToolResult {
             output: output.into(),
             truncated: false,
         }
     }
 
-    /// 创建错误结果。
-    pub fn err(error: impl Into<String>) -> Self {
-        ToolResult::Error(error.into())
-    }
-
-    /// 创建被阻止结果。
-    pub fn blocked(reason: impl Into<String>) -> Self {
-        ToolResult::Blocked {
-            kind: BlockedKind::PermissionDenied,
-            message: reason.into(),
-        }
-    }
-
-    /// 设置截断标记（仅对 Success 变体有效）。
+    /// 设置截断标记。
     pub fn with_truncated(mut self, val: bool) -> Self {
-        match &mut self {
-            ToolResult::Success { truncated, .. } => *truncated = val,
-            _ => {}
-        }
+        self.truncated = val;
         self
+    }
+}
+
+/// 为 `Result<ToolResult, String>` 提供兼容访问器。
+pub trait ToolResultExt {
+    fn output(&self) -> &str;
+    fn error(&self) -> Option<&str>;
+    fn truncated(&self) -> bool;
+    fn is_blocked(&self) -> bool;
+}
+
+impl ToolResultExt for Result<ToolResult, String> {
+    fn output(&self) -> &str {
+        match self {
+            Ok(tr) => &tr.output,
+            Err(msg) => msg,
+        }
+    }
+
+    fn error(&self) -> Option<&str> {
+        match self {
+            Ok(_) => None,
+            Err(msg) => Some(msg),
+        }
+    }
+
+    fn truncated(&self) -> bool {
+        match self {
+            Ok(tr) => tr.truncated,
+            Err(_) => false,
+        }
+    }
+
+    fn is_blocked(&self) -> bool {
+        self.is_err()
     }
 }

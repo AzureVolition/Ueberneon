@@ -11,7 +11,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use llm::tool::{AgentMode, BlockedKind, ToolContext, ToolResult};
+use llm::tool::{ToolResultExt, AgentMode, BlockedKind, ToolContext, ToolResult};
 use racpagent::permission::Check;
 use racpagent::permission::checks::*;
 use racpagent::tools::content_tracker::FileObserveTracker;
@@ -150,27 +150,18 @@ async fn main() {
 /// 执行工具并打印结果（含是否被阻止的标记）。
 async fn run_tool(tool_name: &str, registry: &Registry, ctx: &ToolContext, args: serde_json::Value) {
     if let Some(tool) = registry.get(tool_name) {
-        let result = tool.execute(ctx, &args).await;
+        let result = tool.checked_execute(ctx, &args).await;
 
         match &result {
-            ToolResult::Success { output, truncated } => {
-                let preview: &str = output.lines().next().unwrap_or("");
+            Ok(tr) => {
+                let preview: &str = tr.output.lines().next().unwrap_or("");
                 println!("  ✅ Success: {}", preview);
-                if *truncated {
+                if tr.truncated {
                     println!("     (output truncated)");
                 }
             }
-            ToolResult::Blocked { kind, message } => {
-                let kind_str = match kind {
-                    BlockedKind::PlanMode => "plan_mode",
-                    BlockedKind::PermissionDenied => "permission_denied",
-                    BlockedKind::FileBlocked => "file_blocked",
-                    BlockedKind::SecurityRestriction => "security_restriction",
-                };
-                println!("  🔒 Blocked [{}]: {}", kind_str, message);
-            }
-            ToolResult::Error(msg) => {
-                println!("  ❌ Error: {}", msg);
+            Err(msg) => {
+                println!("  ❌ {}", msg);
             }
         }
     } else {

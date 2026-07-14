@@ -49,7 +49,7 @@ impl Check for DenySystemPaths {
         }
         for prefix in SYSTEM_PATH_PREFIXES {
             if subject.starts_with(prefix) {
-                return Some(Decision::Deny);
+                return Some(Decision::Deny("denied".into()));
             }
         }
         None
@@ -322,14 +322,14 @@ mod tests {
     #[test]
     fn deny_etc() {
         let c = DenySystemPaths;
-        assert_eq!(c.check("edit_file", "/etc/passwd"), Some(Decision::Deny));
-        assert_eq!(c.check("write_file", "/etc/nginx/nginx.conf"), Some(Decision::Deny));
+        assert_eq!(c.check("edit_file", "/etc/passwd"), Some(Decision::Deny("denied".into())));
+        assert_eq!(c.check("write_file", "/etc/nginx/nginx.conf"), Some(Decision::Deny("denied".into())));
     }
 
     #[test]
     fn deny_usr() {
         let c = DenySystemPaths;
-        assert_eq!(c.check("edit_file", "/usr/local/bin/something"), Some(Decision::Deny));
+        assert_eq!(c.check("edit_file", "/usr/local/bin/something"), Some(Decision::Deny("denied".into())));
     }
 
     #[test]

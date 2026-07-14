@@ -11,7 +11,7 @@ use std::time::Duration;
 use llm::{
     Chunk, Message, OpenAiProvider, Provider, Request, Role, ToolCall,
 };
-use llm::tool::{AgentMode, ToolContext};
+use llm::tool::{ToolResultExt, AgentMode, ToolContext};
 use futures::StreamExt;
 use racpagent::tools::{
     Bash, Grep, Registry,
@@ -142,7 +142,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 };
                 let args: serde_json::Value =
                     serde_json::from_str(&tool.arguments).unwrap_or_default();
-                let result = t.execute(&ctx, &args).await;
+                let result = t.checked_execute(&ctx, &args).await;
 
                 req.messages.push(Message {
                     role: Role::Tool,

@@ -29,8 +29,8 @@ impl llm::tool::Tool for ReadFile {
         &self,
         _ctx: &llm::tool::ToolContext,
         _args: &serde_json::Value,
-    ) -> llm::tool::ToolResult {
-        llm::tool::ToolResult::ok("executed")
+    ) -> Result<llm::tool::ToolResult, String> {
+        Ok(llm::tool::ToolResult::ok("executed"))
     }
 }
 
@@ -90,6 +90,6 @@ async fn execute_returns_ok() {
     };
     let args = serde_json::json!({});
     let result = tool.execute(&ctx, &args).await;
-    assert!(result.error().is_none());
-    assert_eq!(result.output(), "executed");
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap().output, "executed");
 }

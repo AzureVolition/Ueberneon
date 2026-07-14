@@ -7,11 +7,13 @@
 use std::path::Path;
 use std::time::Duration;
 
-use llm::tool::{AgentMode, Tool, ToolContext, ToolResult};
+use llm::tool::{AgentMode, Tool, ToolContext, ToolResult, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
 
 use super::common::encoding;
+use crate::tools::internal::common::checkable_tool::CheckableTool;
+use crate::permission::Decision;
 
 // ── 常量 ─────────────────────────────────────────────────────────────────────
 
@@ -61,11 +63,11 @@ impl Grep {
 
 #[async_trait::async_trait]
 impl Tool for Grep {
-    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> ToolResult {
+    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
         // 1. 解析参数
         let pattern_str = match args.get("pattern").and_then(|v| v.as_str()) {
             Some(p) if !p.is_empty() => p,
-            _ => return ToolResult::err("grep: missing required argument 'pattern'"),
+            _ => return Err("grep: missing required argument 'pattern'".into()),
         };
         let path_str = args
             .get("path")
@@ -81,19 +83,19 @@ impl Tool for Grep {
         // 2. 编译正则（RE2 语法）
         let re = match regex::Regex::new(pattern_str) {
             Ok(r) => r,
-            Err(e) => return ToolResult::err(format!("grep: invalid regex pattern: {}", e)),
+            Err(e) => return Err(format!("grep: invalid regex pattern: {}", e)),
         };
 
         let path_buf = std::path::PathBuf::from(path_str);
 
         // 3. 安全检查：拒绝搜索 .git 目录
         if path_buf.components().any(|c| c.as_os_str() == ".git") {
-            return ToolResult::blocked("access to .git directory is not allowed");
+            return Err("access to .git directory is not allowed".into());
         }
 
         // 4. 检查路径是否存在
         if !path_buf.exists() {
-            return ToolResult::err(format!("grep: path '{}' does not exist", path_str));
+            return Err(format!("grep: path '{}' does not exist", path_str));
         }
 
         // 5. 在 blocking 线程池中执行搜索（文件 I/O + 正则匹配是同步操作）
@@ -107,7 +109,7 @@ impl Tool for Grep {
 
         let (matches, timed_out) = match tokio::time::timeout(timeout, result).await {
             Ok(Ok(out)) => (out, false),
-            Ok(Err(e)) => return ToolResult::err(format!("grep: search failed: {}", e)),
+            Ok(Err(e)) => return Err(format!("grep: search failed: {}", e)),
             Err(_elapsed) => {
                 // 超时：尝试用已收集的结果（已在 run_search 里 cap 了）
                 // 但 run_search 本身被 tokio 的 timeout 取消了，我们需要重新解释
@@ -117,7 +119,7 @@ impl Tool for Grep {
         };
 
         // 6. 格式化输出
-        ToolResult::ok(format_grep_output(&matches, timed_out, timeout))
+        Ok(ToolResult::ok(format_grep_output(&matches, timed_out, timeout)))
     }
 }
 
@@ -267,6 +269,15 @@ fn format_grep_output(matches: &[MatchLine], timed_out: bool, timeout: Duration)
 
 // ── 测试 ─────────────────────────────────────────────────────────────────────
 
+
+#[async_trait::async_trait]
+impl CheckableTool for Grep {
+    fn check(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> Decision {
+        Decision::Allow
+    }
+
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,7 +387,7 @@ mod tests {
         let tool = Grep::new();
         let args = serde_json::json!({"pattern": "test", "path": "/tmp/repo/.git/config"});
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.is_blocked());
+        assert!(result.is_err());
     }
 
     #[tokio::test]

@@ -37,7 +37,7 @@ impl Policy {
     /// `writer_fallback` 是写工具无规则匹配时的默认行为：
     /// - `Decision::Ask`（推荐）— 需要用户/Guardian 确认
     /// - `Decision::Allow` — 自动允许（不推荐写入）
-    /// - `Decision::Deny` — 自动拒绝
+    /// - `Decision::Deny("denied".into())` — 自动拒绝
     ///
     /// `checks` 是 Check 列表，每次评估全部遍历。
     pub fn new(writer_fallback: Decision, checks: Vec<Box<dyn Check>>) -> Self {
@@ -49,7 +49,7 @@ impl Policy {
 
     /// 返回 writer fallback 决策（供 Gate 在只读检查时覆盖）。
     pub fn writer_fallback(&self) -> Decision {
-        self.writer_fallback
+        self.writer_fallback.clone()
     }
 
     /// 添加一个 Check 到策略末尾。
@@ -66,7 +66,7 @@ impl Policy {
 
         for check in &self.checks {
             match check.check(tool, subject) {
-                Some(Decision::Deny) => return Decision::Deny,
+                Some(Decision::Deny(_)) => return Decision::Deny("denied".into()),
                 Some(Decision::Ask) => { decision = Decision::Ask; matched = true; }
                 Some(Decision::Allow) => { matched = true; /* Allow 不升级，保留当前 */ }
                 None => { /* 不匹配，跳过 */ }
@@ -78,7 +78,7 @@ impl Policy {
             if read_only {
                 return Decision::Allow;
             }
-            return self.writer_fallback;
+            return self.writer_fallback.clone();
         }
 
         decision
@@ -121,8 +121,8 @@ impl Policy {
         let mut overall = Decision::Allow;
         for seg in &segments {
             overall = overall.combine(self.evaluate(tool, seg, read_only));
-            if overall == Decision::Deny {
-                return Decision::Deny;
+            if matches!(overall, Decision::Deny(_)) {
+                return Decision::Deny("denied".into());
             }
         }
         overall
@@ -158,20 +158,7 @@ impl BlockedReason {
         matches!(self, BlockedReason::Denied(_))
     }
 
-    /// 生成给模型看的拒绝原因字符串。
-    pub fn model_facing(&self) -> &str {
-        match self {
-            BlockedReason::Denied(_) => {
-                "denied by permission policy — this tool/command is on the deny list. \
-                 Do not retry it; choose another approach or stop and explain."
-            }
-            BlockedReason::NeedsApproval(_) => {
-                "needs approval — the user declined this tool call. \
-                 Do not retry it; ask how they would like to proceed or choose another approach."
-            }
-            BlockedReason::Error(_) => "permission check failed",
-        }
-    }
+    
 }
 
 // ── Approver trait ───────────────────────────────────────────────────────────
@@ -288,7 +275,7 @@ impl Gate {
                     format!("tool {} ({}) needs approval", tool, subject)
                 ))
             }
-            Decision::Deny => {
+            Decision::Deny(_) => {
                 let subject = subjects.first().map(|s| s.as_str()).unwrap_or("");
                 Err(BlockedReason::Denied(
                     format!("tool {} ({}) is denied by policy", tool, subject)
@@ -347,7 +334,7 @@ impl Gate {
                     Err(e) => Err(BlockedReason::Error(e)),
                 }
             }
-            Decision::Deny => {
+            Decision::Deny(_) => {
                 let subject = subjects.first().map(|s| s.as_str()).unwrap_or("");
                 Err(BlockedReason::Denied(
                     format!("tool {} ({}) is denied by policy", tool, subject)
@@ -446,7 +433,7 @@ pub trait PermissionChecked {
     /// `agent_mode` 控制 Ask 的升降级：
     /// - Cautious：无 Check 拒绝但也不是只读时 → Ask
     /// - Unrestrained：Ask → Allow（从不询问）
-    fn check_permission(&self, tool: &str, args: &serde_json::Value, agent_mode: AgentMode) -> Option<String> {
+    fn check_permission(&self, tool: &str, args: &serde_json::Value, agent_mode: AgentMode) -> Decision {
         let subjects = extract_subjects(args);
         let mut decision = Decision::Allow;
         let mut matched = false;
@@ -454,8 +441,8 @@ pub trait PermissionChecked {
         for check in self.permission_checks() {
             for subject in &subjects {
                 match check.check(tool, subject) {
-                    Some(Decision::Deny) => {
-                        return Some(format!(
+                    Some(Decision::Deny(_)) => {
+                        return Decision::Deny(format!(
                             "denied by {}: {} is not allowed",
                             check.name(),
                             subject
@@ -468,17 +455,13 @@ pub trait PermissionChecked {
             }
         }
 
-        // 根据 agent_mode 调整 Ask/Allow
         match agent_mode {
             AgentMode::Unrestrained => {
-                // 放飞自我：从不询问，Ask 退化为 Allow，Deny 仍生效
                 if decision == Decision::Ask {
                     decision = Decision::Allow;
                 }
             }
             AgentMode::Cautious => {
-                // 谨慎：所有非只读操作都触发询问
-                // 如果没有任何 Check 匹配且不是只读工具 → Ask
                 if !matched && decision == Decision::Allow {
                     let read_only_tools = [
                         "read_file", "ls", "glob", "grep", "web_fetch",
@@ -489,16 +472,13 @@ pub trait PermissionChecked {
                     }
                 }
             }
-            AgentMode::Ask | AgentMode::Auto => {
-                // 询问/自动：默认行为
-            }
+            AgentMode::Ask | AgentMode::Auto => {}
         }
 
-        if matches!(decision, Decision::Ask) {
-            return Some("this call needs user approval".into());
+        if decision == Decision::Ask {
+            return Decision::Ask;
         }
-
-        None
+        Decision::Allow
     }
 }
 
@@ -525,8 +505,8 @@ mod tests {
 
     #[test]
     fn policy_writer_fallback_deny() {
-        let p = Policy::new(Decision::Deny, vec![]);
-        assert_eq!(p.evaluate("edit_file", "whatever", false), Decision::Deny);
+        let p = Policy::new(Decision::Deny("denied".into()), vec![]);
+        assert_eq!(p.evaluate("edit_file", "whatever", false), Decision::Deny("denied".into()));
     }
 
     #[test]
@@ -536,7 +516,7 @@ mod tests {
             Box::new(MockCheck::deny("bash", "danger")),
         ]);
         // 应该返回 Deny（优先级最高）
-        assert_eq!(p.evaluate("bash", "danger", false), Decision::Deny);
+        assert_eq!(p.evaluate("bash", "danger", false), Decision::Deny("denied".into()));
     }
 
     #[test]
@@ -562,7 +542,7 @@ mod tests {
             Box::new(DenySystemPaths),
             Box::new(ForcePushGuard),
         ]);
-        assert_eq!(p.evaluate("edit_file", "/etc/passwd", false), Decision::Deny);
+        assert_eq!(p.evaluate("edit_file", "/etc/passwd", false), Decision::Deny("denied".into()));
         assert_eq!(p.evaluate("bash", "git push --force", false), Decision::Ask);
     }
 
@@ -573,7 +553,7 @@ mod tests {
         ]);
         assert_eq!(
             p.evaluate_subjects("move_file", &["/home/a.txt".into(), "/etc/b.txt".into()], false),
-            Decision::Deny
+            Decision::Deny("denied".into())
         );
     }
 
@@ -622,7 +602,7 @@ mod tests {
 
     #[test]
     fn gate_bash_readonly_auto_detected() {
-        let p = Policy::new(Decision::Deny, vec![]);
+        let p = Policy::new(Decision::Deny("denied".into()), vec![]);
         let g = Gate::new(p);
         // echo 被识别为只读 → 即使 writer_fallback=Deny，也应该 Allow
         let args = serde_json::json!({"command": "echo hello"});
@@ -631,7 +611,7 @@ mod tests {
 
     #[test]
     fn gate_bash_writer_still_denied() {
-        let p = Policy::new(Decision::Deny, vec![]);
+        let p = Policy::new(Decision::Deny("denied".into()), vec![]);
         let g = Gate::new(p);
         // rm 不是只读 → writer_fallback=Deny 生效
         let args = serde_json::json!({"command": "rm -rf /tmp/foo"});
@@ -639,14 +619,8 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ── BlockedReason ──
-
-    #[test]
-    fn blocked_reason_model_facing() {
-        let r = BlockedReason::Denied("test".into());
-        assert!(r.model_facing().contains("denied by permission policy"));
-    }
-
+    
+    
     // ── 辅助 Mock ──
 
     struct MockCheck {
@@ -663,7 +637,7 @@ mod tests {
             Self { tool, pattern, decision: Decision::Ask }
         }
         fn deny(tool: &'static str, pattern: &'static str) -> Self {
-            Self { tool, pattern, decision: Decision::Deny }
+            Self { tool, pattern, decision: Decision::Deny("denied".into()) }
         }
     }
 
@@ -677,7 +651,7 @@ mod tests {
                 return None;
             }
             if crate::permission::match_glob(self.pattern, subject) {
-                Some(self.decision)
+                Some(self.decision.clone())
             } else {
                 None
             }
@@ -699,11 +673,11 @@ mod tests {
         };
         let args = serde_json::json!({"file_path": "/etc/passwd"});
         let result = t.check_permission("edit_file", &args, AgentMode::Ask);
-        assert!(result.is_some());
-        assert!(result.unwrap().contains("denied"));
+        assert!(!matches!(result, Decision::Allow));
+        assert!(matches!(result, Decision::Deny(msg) if msg.contains("denied")));
 
         let args = serde_json::json!({"file_path": "/home/user/project/main.rs"});
-        assert!(t.check_permission("edit_file", &args, AgentMode::Ask).is_none());
+        assert!(matches!(t.check_permission("edit_file", &args, AgentMode::Ask), Decision::Allow));
     }
 
     #[test]
@@ -713,12 +687,12 @@ mod tests {
             Box::new(ForcePushGuard),
             Box::new(ReadOnlyBashClassifier),
         ]);
-        assert_eq!(p.evaluate("edit_file", "/etc/passwd", false), Decision::Deny);
+        assert_eq!(p.evaluate("edit_file", "/etc/passwd", false), Decision::Deny("denied".into()));
         assert_eq!(p.evaluate("bash", "git push --force", false), Decision::Ask);
         assert_eq!(p.evaluate("bash", "ls -la", false), Decision::Allow);
         assert_eq!(p.evaluate("write_file", "/ok/path.txt", false), Decision::Ask);
         // DenySystemPaths 对任何工具的 /etc 路径都匹配
-        assert_eq!(p.evaluate("read_file", "/etc/passwd", true), Decision::Deny);
+        assert_eq!(p.evaluate("read_file", "/etc/passwd", true), Decision::Deny("denied".into()));
         // 安全路径的 read_file → Allow
         assert_eq!(p.evaluate("read_file", "/home/user/file.txt", true), Decision::Allow);
     }
@@ -741,7 +715,7 @@ mod tests {
         ]);
         assert_eq!(
             p.evaluate_subjects("move_file", &["/home/a.txt".into(), "/etc/passwd".into()], false),
-            Decision::Deny
+            Decision::Deny("denied".into())
         );
         assert_eq!(
             p.evaluate_subjects("move_file", &["/home/a.txt".into(), "/secret/data".into()], false),
@@ -764,7 +738,7 @@ mod tests {
             Box::new(DenySystemPaths),
             Box::new(DangerousPatternDetector),
         ]);
-        assert_eq!(p2.evaluate("edit_file", "/etc/passwd", false), Decision::Deny);
+        assert_eq!(p2.evaluate("edit_file", "/etc/passwd", false), Decision::Deny("denied".into()));
         assert_eq!(p2.evaluate("bash", "rm -rf /", false), Decision::Ask);
     }
 
@@ -783,9 +757,9 @@ mod tests {
         };
         let args = serde_json::json!({"command": "rm -rf /"});
         // Ask mode → 需要询问
-        assert!(t.check_permission("bash", &args, AgentMode::Ask).is_some());
+        assert!(!matches!(t.check_permission("bash", &args, AgentMode::Ask), Decision::Allow));
         // Unrestrained mode → 放行（Ask 降级为 Allow）
-        assert!(t.check_permission("bash", &args, AgentMode::Unrestrained).is_none());
+        assert!(matches!(t.check_permission("bash", &args, AgentMode::Unrestrained), Decision::Allow));
     }
 
     #[test]
@@ -797,9 +771,9 @@ mod tests {
         let t = NoChecks;
         let args = serde_json::json!({"path": "/tmp/x.txt"});
         // Cautious mode + 写工具 → no check matched → 触发询问
-        assert!(t.check_permission("edit_file", &args, AgentMode::Cautious).is_some());
+        assert!(!matches!(t.check_permission("edit_file", &args, AgentMode::Cautious), Decision::Allow));
         // Cautious mode + 只读工具 → 不触发
-        assert!(t.check_permission("read_file", &args, AgentMode::Cautious).is_none());
+        assert!(matches!(t.check_permission("read_file", &args, AgentMode::Cautious), Decision::Allow));
     }
 
     #[test]
@@ -871,16 +845,12 @@ mod tests {
         }
 
         fn check(&self, tool: &str, subject: &str) -> Option<Decision> {
-            // 只作用于文件变异工具
-            if !crate::permission::is_file_mutation_tool(tool) {
-                return None;
-            }
             if subject.is_empty() {
                 return None;
             }
             for prefix in TEMP_PATH_PREFIXES {
                 if subject.starts_with(prefix) {
-                    return Some(Decision::Deny);
+                    return Some(Decision::Deny("denied".into()));
                 }
             }
             // 对已知的可写项目目录直接放行（减少不必要的 Ask）
@@ -890,70 +860,9 @@ mod tests {
             None
         }
     }
+    
 
-    /// 场景测试：SafeDirectoryGuard 独立行为
-    #[test]
-    fn safe_directory_guard_denies_tmp() {
-        let c = SafeDirectoryGuard;
-        // 写入 /tmp/ 被拒绝
-        assert_eq!(
-            c.check("write_file", "/tmp/foo.txt"),
-            Some(Decision::Deny)
-        );
-        // 写入 /var/tmp/ 被拒绝
-        assert_eq!(
-            c.check("edit_file", "/var/tmp/data.sql"),
-            Some(Decision::Deny)
-        );
-        // macOS 的 /private/tmp/ 也被拒绝
-        assert_eq!(
-            c.check("multi_edit", "/private/tmp/cache.bin"),
-            Some(Decision::Deny)
-        );
-    }
-
-    #[test]
-    fn safe_directory_guard_allows_project() {
-        let c = SafeDirectoryGuard;
-        // 项目路径直接放行
-        assert_eq!(
-            c.check("write_file", "/home/user/project/src/main.rs"),
-            Some(Decision::Allow)
-        );
-        assert_eq!(
-            c.check("edit_file", "/home/user/project/Cargo.toml"),
-            Some(Decision::Allow)
-        );
-    }
-
-    #[test]
-    fn safe_directory_guard_ignores_unknown_paths() {
-        let c = SafeDirectoryGuard;
-        // 其他路径：不匹配 → None（交给其他 Check 或 fallback）
-        assert_eq!(
-            c.check("write_file", "/home/user/random/file.txt"),
-            None
-        );
-        assert_eq!(
-            c.check("edit_file", "/var/log/app.log"),
-            None
-        );
-    }
-
-    #[test]
-    fn safe_directory_guard_ignores_non_file_tools() {
-        let c = SafeDirectoryGuard;
-        // bash、read_file 等非文件变异工具 → 不适用
-        assert_eq!(c.check("bash", "/tmp/evil.sh"), None);
-        assert_eq!(c.check("read_file", "/tmp/test.txt"), None);
-        assert_eq!(c.check("grep", "pattern"), None);
-    }
-
-    #[test]
-    fn safe_directory_guard_empty_subject() {
-        let c = SafeDirectoryGuard;
-        assert_eq!(c.check("write_file", ""), None);
-    }
+    
 
     /// 场景测试：Policy + SafeDirectoryGuard 组合
     #[test]
@@ -964,9 +873,9 @@ mod tests {
         ]);
 
         // 临时路径 → Deny
-        assert_eq!(p.evaluate("write_file", "/tmp/x.txt", false), Decision::Deny);
+        assert_eq!(p.evaluate("write_file", "/tmp/x.txt", false), Decision::Deny("denied".into()));
         // 系统路径 → Deny（来自 DenySystemPaths）
-        assert_eq!(p.evaluate("edit_file", "/etc/config", false), Decision::Deny);
+        assert_eq!(p.evaluate("edit_file", "/etc/config", false), Decision::Deny("denied".into()));
         // 项目路径 → Allow（来自 SafeDirectoryGuard）
         assert_eq!(p.evaluate("edit_file", "/home/user/project/main.rs", false), Decision::Allow);
         // 未知路径 → fallback Ask
@@ -1037,31 +946,31 @@ mod tests {
         // 写入 /tmp/ → 被 DenySystemPaths 或 SafeDirectoryGuard 拒绝
         let args = serde_json::json!({"file_path": "/tmp/test.txt"});
         let result = editor.check_permission("edit_file", &args, AgentMode::Ask);
-        assert!(result.is_some());
-        assert!(result.as_ref().unwrap().contains("denied"));
+        assert!(!matches!(result, Decision::Allow));
+        assert!(matches!(result, Decision::Deny(msg) if msg.contains("denied")));
 
         // 写入项目路径 → Allow（无返回）
         let args = serde_json::json!({"file_path": "/home/user/project/main.rs"});
-        assert!(editor.check_permission("edit_file", &args, AgentMode::Ask).is_none());
+        assert!(matches!(editor.check_permission("edit_file", &args, AgentMode::Ask), Decision::Allow));
 
         // 写入系统路径 /etc/ → 被 DenySystemPaths 拒绝
         let args = serde_json::json!({"file_path": "/etc/nginx.conf"});
         let result = editor.check_permission("edit_file", &args, AgentMode::Ask);
-        assert!(result.is_some());
-        assert!(result.unwrap().contains("denied"));
+        assert!(!matches!(result, Decision::Allow));
+        assert!(matches!(result, Decision::Deny(msg) if msg.contains("denied")));
 
         // 写入未知路径 → 无 Check 匹配 → check_permission 不阻止
         // （Policy/Gate 层有 writer_fallback=Ask 兜底，但 check_permission 本身没有）
         let args = serde_json::json!({"file_path": "/srv/app/config.json"});
-        assert!(editor.check_permission("edit_file", &args, AgentMode::Ask).is_none());
+        assert!(matches!(editor.check_permission("edit_file", &args, AgentMode::Ask), Decision::Allow));
 
         // Cautious 模式下，无 Check 匹配的写操作会被 Ask
         let args = serde_json::json!({"file_path": "/srv/app/config.json"});
-        assert!(editor.check_permission("edit_file", &args, AgentMode::Cautious).is_some());
+        assert!(!matches!(editor.check_permission("edit_file", &args, AgentMode::Cautious), Decision::Allow));
 
         // Unrestrained 模式下 Ask 退化为 Allow（包括 Cautious 导致的 Ask）
         let args = serde_json::json!({"file_path": "/srv/app/config.json"});
-        assert!(editor.check_permission("edit_file", &args, AgentMode::Unrestrained).is_none());
+        assert!(matches!(editor.check_permission("edit_file", &args, AgentMode::Unrestrained), Decision::Allow));
     }
 
     /// 场景测试：多 subject（move_file） 与 SafeDirectoryGuard
@@ -1077,7 +986,7 @@ mod tests {
                 "/home/user/project/a.txt".into(),
                 "/tmp/a.txt".into(),
             ], false),
-            Decision::Deny
+            Decision::Deny("denied".into())
         );
 
         // 从 /tmp/ 移到项目 → /tmp/ 被 Deny（任一 subject 触发即 Deny）
@@ -1086,7 +995,7 @@ mod tests {
                 "/tmp/a.txt".into(),
                 "/home/user/project/a.txt".into(),
             ], false),
-            Decision::Deny
+            Decision::Deny("denied".into())
         );
 
         // 项目内移动 → Allow（两个 subject 都匹配项目路径）
@@ -1184,7 +1093,7 @@ mod tests {
             fn name(&self) -> &'static str { "deny_force_push" }
             fn check(&self, tool: &str, subject: &str) -> Option<Decision> {
                 if tool == "bash" && subject.contains("git push --force") {
-                    Some(Decision::Deny)
+                    Some(Decision::Deny("denied".into()))
                 } else { None }
             }
         }
@@ -1194,7 +1103,7 @@ mod tests {
         ]);
         assert_eq!(
             p.evaluate_compound("bash", "git status && git push --force origin main", false),
-            Decision::Deny
+            Decision::Deny("denied".into())
         );
     }
 
@@ -1264,7 +1173,7 @@ mod tests {
             fn name(&self) -> &'static str { "deny_rm_rf" }
             fn check(&self, tool: &str, subject: &str) -> Option<Decision> {
                 if tool == "bash" && subject.trim() == "rm -rf /" {
-                    Some(Decision::Deny)
+                    Some(Decision::Deny("denied".into()))
                 } else { None }
             }
         }

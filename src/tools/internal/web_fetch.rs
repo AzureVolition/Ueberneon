@@ -3,9 +3,11 @@
 // 支持 HTTP/HTTPS，自动将 HTML 转为纯文本。
 // 内置 SSRF 防护：拒绝私有 IP、回环地址和链路本地地址。
 
-use llm::tool::{AgentMode, Tool, ToolContext, ToolResult};
+use llm::tool::{AgentMode, Tool, ToolContext, ToolResult, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
+use crate::tools::internal::common::checkable_tool::CheckableTool;
+use crate::permission::Decision;
 
 /// web_fetch — 从 URL 获取文本内容。
 ///
@@ -259,22 +261,22 @@ impl WebFetch {
 
 #[async_trait::async_trait]
 impl Tool for WebFetch {
-    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> ToolResult {
+    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
         let url_str = match args.get("url").and_then(|v| v.as_str()) {
             Some(u) if !u.is_empty() => u.trim(),
-            _ => return ToolResult::err("web_fetch: missing required argument 'url'"),
+            _ => return Err("web_fetch: missing required argument 'url'".into()),
         };
 
         // URL 格式校验
         let url = match url::Url::parse(url_str) {
             Ok(u) => u,
-            Err(e) => return ToolResult::err(format!("web_fetch: invalid URL '{}': {}", url_str, e)),
+            Err(e) => return Err(format!("web_fetch: invalid URL '{}': {}", url_str, e)),
         };
 
         // 只允许 http/https
         match url.scheme() {
             "http" | "https" => {}
-            scheme => return ToolResult::err(format!(
+            scheme => return Err(format!(
                 "web_fetch: only http/https URLs are allowed, got '{}'", scheme
             )),
         }
@@ -282,11 +284,11 @@ impl Tool for WebFetch {
         // SSRF 防护
         let host = match url.host_str() {
             Some(h) => h,
-            None => return ToolResult::err(format!("web_fetch: URL '{}' has no host", url_str)),
+            None => return Err(format!("web_fetch: URL '{}' has no host", url_str)),
         };
 
         if let Err(e) = Self::check_ssrf(host).await {
-            return ToolResult::err(e);
+            return Err(e);
         }
 
         // 构建 HTTP 客户端
@@ -297,7 +299,7 @@ impl Tool for WebFetch {
             .build()
         {
             Ok(c) => c,
-            Err(e) => return ToolResult::err(format!("web_fetch: failed to create HTTP client: {}", e)),
+            Err(e) => return Err(format!("web_fetch: failed to create HTTP client: {}", e)),
         };
 
         // 执行请求
@@ -305,16 +307,16 @@ impl Tool for WebFetch {
             Ok(r) => r,
             Err(e) => {
                 if e.is_timeout() {
-                    return ToolResult::err(format!(
+                    return Err(format!(
                         "web_fetch: request timed out after {}s", WEB_FETCH_TIMEOUT.as_secs()
                     ));
                 }
                 if e.is_connect() {
-                    return ToolResult::err(format!(
+                    return Err(format!(
                         "web_fetch: connection failed: {}", e
                     ));
                 }
-                return ToolResult::err(format!("web_fetch: request failed: {}", e));
+                return Err(format!("web_fetch: request failed: {}", e));
             }
         };
 
@@ -329,14 +331,14 @@ impl Tool for WebFetch {
         // 读取响应体（上限 1 MiB）
         let body = match resp.bytes().await {
             Ok(b) => b,
-            Err(e) => return ToolResult::err(format!("web_fetch: failed to read response body: {}", e)),
+            Err(e) => return Err(format!("web_fetch: failed to read response body: {}", e)),
         };
 
         if body.is_empty() {
-            return ToolResult::ok(format!(
+            return Ok(ToolResult::ok(format!(
                 "(empty body — status {})",
                 status
-            ));
+            )));
         }
 
         let body_len = body.len();
@@ -386,8 +388,17 @@ impl Tool for WebFetch {
             byte_str,
         );
 
-        ToolResult::ok(format!("{}{}", header, text_content))
+        Ok(ToolResult::ok(format!("{}{}", header, text_content)))
     }
+}
+
+
+#[async_trait::async_trait]
+impl CheckableTool for WebFetch {
+    fn check(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> Decision {
+        Decision::Allow
+    }
+
 }
 
 #[cfg(test)]

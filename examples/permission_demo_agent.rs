@@ -13,7 +13,7 @@ use std::time::Duration;
 use llm::{
     Chunk, Message, OpenAiProvider, Provider, Request, Role, ToolCall,
 };
-use llm::tool::{AgentMode, ToolContext, ToolResult};
+use llm::tool::{ToolResultExt, AgentMode, ToolContext, ToolResult};
 use futures::StreamExt;
 use racpagent::permission::checks::{
     DangerousPatternDetector, DenySystemPaths, ForcePushGuard, ReadOnlyBashClassifier,
@@ -184,25 +184,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 };
                 let args: serde_json::Value =
                     serde_json::from_str(&tool.arguments).unwrap_or_default();
-                let result = t.execute(&ctx, &args).await;
+                let result = t.checked_execute(&ctx, &args).await;
 
                 // 根据三种结果变体构造不同的反馈消息
                 let content = match &result {
-                    ToolResult::Success { output, truncated } => {
-                        println!("✅ tool success: {} (truncated={})", &output[..output.len().min(80)], truncated);
-                        if *truncated {
-                            format!("[output truncated]\n{}", output)
+                    Ok(tr) => {
+                        println!("✅ tool success: {} (truncated={})", &tr.output[..tr.output.len().min(80)], tr.truncated);
+                        if tr.truncated {
+                            format!("[output truncated]\n{}", tr.output)
                         } else {
-                            output.clone()
+                            tr.output.clone()
                         }
                     }
-                    ToolResult::Blocked { kind, message } => {
-                        println!("🔒 tool BLOCKED: kind={:?}, message={}", kind, message);
-                        format!("[blocked: {}] {}", kind, message)
-                    }
-                    ToolResult::Error(msg) => {
-                        println!("❌ tool error: {}", msg);
-                        format!("error: {}", msg)
+                    Err(msg) => {
+                        println!("❌ tool blocked/error: {}", msg);
+                        format!("[blocked/error] {}", msg)
                     }
                 };
 

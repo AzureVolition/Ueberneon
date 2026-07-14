@@ -2,9 +2,11 @@
 //
 // 支持 ** 递归匹配，结果排序后输出，最多返回 1000 条。
 
-use llm::tool::{AgentMode, Tool, ToolContext, ToolResult};
+use llm::tool::{AgentMode, Tool, ToolContext, ToolResult, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
+use crate::tools::internal::common::checkable_tool::CheckableTool;
+use crate::permission::Decision;
 
 /// glob — 按 glob 模式搜索文件路径。
 ///
@@ -39,10 +41,10 @@ impl Glob {
 
 #[async_trait::async_trait]
 impl Tool for Glob {
-    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> ToolResult {
+    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
         let pattern = match args.get("pattern").and_then(|v| v.as_str()) {
             Some(p) if !p.is_empty() => p,
-            _ => return ToolResult::err("glob: missing required argument 'pattern'"),
+            _ => return Err("glob: missing required argument 'pattern'".into()),
         };
 
         // 安全检查：拒绝 .git 路径
@@ -50,7 +52,7 @@ impl Tool for Glob {
             // 更精确的检查：解析 pattern 是否明确包含 .git
             for component in pattern.split('/') {
                 if component == ".git" || component.starts_with(".git/") {
-                    return ToolResult::blocked("access to .git directory is not allowed");
+                    return Err("access to .git directory is not allowed".into());
                 }
             }
             // 也要检查 ** 展开后会进入 .git 的情况
@@ -82,12 +84,12 @@ impl Tool for Glob {
                 }
             }
             Err(e) => {
-                return ToolResult::err(format!("glob: invalid pattern: {}", e));
+                return Err(format!("glob: invalid pattern: {}", e));
             }
         }
 
         if results.is_empty() {
-            return ToolResult::ok("(no matches)");
+            return Ok(ToolResult::ok("(no matches)"));
         }
 
         results.sort();
@@ -101,8 +103,17 @@ impl Tool for Glob {
             ));
         }
 
-        ToolResult::ok(output)
+        Ok(ToolResult::ok(output))
     }
+}
+
+
+#[async_trait::async_trait]
+impl CheckableTool for Glob {
+    fn check(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> Decision {
+        Decision::Allow
+    }
+
 }
 
 #[cfg(test)]

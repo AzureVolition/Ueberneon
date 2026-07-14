@@ -7,10 +7,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use llm::tool::{AgentMode, Tool, ToolContext, ToolResult};
+use llm::tool::{AgentMode, Tool, ToolContext, ToolMeta, ToolResult, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
-use crate::permission::{Check, gate::PermissionChecked};
+use crate::permission::{Check, Decision, gate::PermissionChecked};
+use crate::tools::internal::common::checkable_tool::CheckableTool;
 
 use super::common::edit;
 use super::common::encoding;
@@ -107,44 +108,36 @@ impl PermissionChecked for EditFile {
 
 #[async_trait::async_trait]
 impl Tool for EditFile {
-    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> ToolResult {
-        // 0. 权限检查
-        if let Some(reason) = self.check_permission("edit_file", args, _ctx.agent_mode) {
-            return ToolResult::blocked(reason);
-        }
-        // plan mode：写工具拒绝
-        if _ctx.plan_mode {
-            return ToolResult::blocked("edit_file is not allowed in plan mode");
-        }
+    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
 
         // 1. 解析参数
         let path_str = match args.get("path").and_then(|v| v.as_str()) {
             Some(p) => p,
-            None => return ToolResult::err("edit_file: missing required argument 'path'"),
+            None => return Err("edit_file: missing required argument 'path'".into()),
         };
         let old_string = match args.get("old_string").and_then(|v| v.as_str()) {
             Some(s) => s,
-            None => return ToolResult::err("edit_file: missing required argument 'old_string'"),
+            None => return Err("edit_file: missing required argument 'old_string'".into()),
         };
         let new_string = match args.get("new_string").and_then(|v| v.as_str()) {
             Some(s) => s,
-            None => return ToolResult::err("edit_file: missing required argument 'new_string'"),
+            None => return Err("edit_file: missing required argument 'new_string'".into()),
         };
 
         if old_string.is_empty() {
-            return ToolResult::err("edit_file: 'old_string' must not be empty");
+            return Err("edit_file: 'old_string' must not be empty".into());
         }
 
         // 2. 解析路径并检查范围
         let path = match self.resolve_path(path_str) {
             Ok(p) => p,
-            Err(e) => return ToolResult::err(format!("edit_file: {}", e)),
+            Err(e) => return Err(format!("edit_file: {}", e)),
         };
 
         // 3. 读取文件
         let data = match std::fs::read(&path) {
             Ok(d) => d,
-            Err(e) => return ToolResult::err(format!("edit_file: failed to read '{}': {}", path_str, e)),
+            Err(e) => return Err(format!("edit_file: failed to read '{}': {}", path_str, e)),
         };
 
         let (enc, _) = encoding::detect(&data);
@@ -152,12 +145,12 @@ impl Tool for EditFile {
 
         // 4. 陈旧锚点检查：文件内容自上次读取后是否被外部修改
         if let Err(msg) = self.tracker.check_anchor(path_str, &content) {
-            return ToolResult::err(msg);
+            return Err(msg);
         }
 
         // 5. 循环守卫：检测重复编辑
         if let Err(msg) = self.tracker.check_loop(path_str, old_string, new_string) {
-            return ToolResult::err(msg);
+            return Err(msg);
         }
 
         // 6. 应用编辑
@@ -165,10 +158,10 @@ impl Tool for EditFile {
 
         match result.applied {
             0 if result.matches == 0 => {
-                return ToolResult::err(edit::old_string_not_found_error(path_str, old_string, &content));
+                return Err(edit::old_string_not_found_error(path_str, old_string, &content));
             }
             0 if result.matches > 1 => {
-                return ToolResult::err(edit::old_string_not_unique_error(path_str, old_string, &content, result.matches));
+                return Err(edit::old_string_not_unique_error(path_str, old_string, &content, result.matches));
             }
             _ => {}
         }
@@ -182,7 +175,7 @@ impl Tool for EditFile {
         // 7. 回写文件（保持原始编码）
         let output_bytes = encoding::encode(&result.updated, enc);
         if let Err(e) = std::fs::write(&path, &output_bytes) {
-            return ToolResult::err(format!("edit_file: failed to write '{}': {}", path_str, e));
+            return Err(format!("edit_file: failed to write '{}': {}", path_str, e));
         }
 
         // 8. 更新追踪器
@@ -192,7 +185,21 @@ impl Tool for EditFile {
         // 9. 返回成功消息
         let fuzzy_suffix = if result.fuzzy { " (fuzzy match)" } else { "" };
         let summary = diff::change_summary(&file_change);
-        ToolResult::ok(format!("edited {}{}\n{}", path_str, fuzzy_suffix, summary))
+        Ok(ToolResult::ok(format!("edited {}{}\n{}", path_str, fuzzy_suffix, summary)))
+    }
+}
+
+#[async_trait::async_trait]
+impl CheckableTool for EditFile {
+    fn check(&self, ctx: &ToolContext, args: &Value) -> Decision {
+        match self.check_permission(self.name(), args, ctx.agent_mode) {
+            Decision::Allow => {}
+            decision => return decision,
+        }
+        if ctx.plan_mode {
+            return Decision::Deny("edit_file is not allowed in plan mode".into());
+        }
+        Decision::Allow
     }
 }
 

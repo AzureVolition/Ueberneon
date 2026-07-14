@@ -26,14 +26,14 @@ pub mod gate;
 /// 权限决策结果。
 ///
 /// 优先级（从高到低）：Deny > Ask > Allow
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
     /// 允许执行。
     Allow,
     /// 需要询问用户（或委托给 Guardian 子代理）。
     Ask,
-    /// 拒绝执行，模型不应重试。
-    Deny,
+    /// 拒绝执行，携带拒绝原因。
+    Deny(String),
 }
 
 impl Decision {
@@ -41,7 +41,7 @@ impl Decision {
     /// 用于同时有多个 subject 时（如 move_file 的 src + dst）。
     pub fn combine(self, other: Decision) -> Decision {
         match (self, other) {
-            (Decision::Deny, _) | (_, Decision::Deny) => Decision::Deny,
+            (Decision::Deny(_), _) | (_, Decision::Deny(_)) => Decision::Deny("denied".into()),
             (Decision::Ask, _) | (_, Decision::Ask) => Decision::Ask,
             _ => Decision::Allow,
         }
@@ -53,7 +53,7 @@ impl fmt::Display for Decision {
         match self {
             Decision::Allow => write!(f, "allow"),
             Decision::Ask => write!(f, "ask"),
-            Decision::Deny => write!(f, "deny"),
+            Decision::Deny(_) => write!(f, "deny"),
         }
     }
 }
@@ -62,7 +62,7 @@ impl fmt::Display for Decision {
 pub fn parse_decision(s: &str) -> Decision {
     match s.trim().to_lowercase().as_str() {
         "allow" => Decision::Allow,
-        "deny" => Decision::Deny,
+        "deny" => Decision::Deny("denied".into()),
         _ => Decision::Ask,
     }
 }
@@ -241,21 +241,7 @@ pub fn rule_matches(rule: &str, tool: &str, subject: &str) -> bool {
 }
 
 // ── 工具分类 ─────────────────────────────────────────────────────────────────
-/// 判断一个工具是否属于"文件变异"类（会修改工作区文件）。
-///
-/// 这类工具共享文件写入侧的权限规则（如拒绝写入系统路径）。
-pub fn is_file_mutation_tool(tool: &str) -> bool {
-    matches!(
-        tool,
-        "write_file"
-            | "edit_file"
-            | "multi_edit"
-            | "move_file"
-            | "notebook_edit"
-            | "delete_range"
-            | "delete_symbol"
-    )
-}
+
 
 // ── 便利函数 ─────────────────────────────────────────────────────────────────
 
@@ -291,9 +277,9 @@ mod tests {
 
     #[test]
     fn decision_combine_deny_wins() {
-        assert_eq!(Decision::Deny, Decision::Allow.combine(Decision::Deny));
-        assert_eq!(Decision::Deny, Decision::Deny.combine(Decision::Allow));
-        assert_eq!(Decision::Deny, Decision::Ask.combine(Decision::Deny));
+        assert!(matches!(Decision::Allow.combine(Decision::Deny("denied".into())), Decision::Deny(_)));
+        assert!(matches!(Decision::Deny("denied".into()).combine(Decision::Allow), Decision::Deny(_)));
+        assert!(matches!(Decision::Ask.combine(Decision::Deny("denied".into())), Decision::Deny(_)));
     }
 
     #[test]
@@ -316,7 +302,7 @@ mod tests {
     #[test]
     fn parse_decision_cases() {
         assert_eq!(Decision::Allow, parse_decision("allow"));
-        assert_eq!(Decision::Deny, parse_decision("deny"));
+        assert!(matches!(parse_decision("deny"), Decision::Deny(_)));
         assert_eq!(Decision::Ask, parse_decision("ask"));
     }
 
@@ -448,19 +434,8 @@ mod tests {
 
     // ── 工具分类 ──
 
-    #[test]
-    fn is_file_mutation_positive() {
-        assert!(is_file_mutation_tool("write_file"));
-        assert!(is_file_mutation_tool("edit_file"));
-        assert!(is_file_mutation_tool("multi_edit"));
-    }
-
-    #[test]
-    fn is_file_mutation_negative() {
-        assert!(!is_file_mutation_tool("bash"));
-        assert!(!is_file_mutation_tool("grep"));
-        assert!(!is_file_mutation_tool("read_file"));
-    }
+    
+    
 
     // ── 危险警告 ──
 

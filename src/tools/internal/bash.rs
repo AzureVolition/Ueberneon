@@ -5,7 +5,7 @@
 // 前台：ProcessRunner 同步执行；后台：JobManager 异步 spawn，返回 job ID。
 // 支持沙箱隔离（macOS Seatbelt / Linux bubblewrap）和环境变量安全处理。
 
-use llm::tool::{AgentMode, Tool, ToolContext, ToolResult};
+use llm::tool::{AgentMode, Tool, ToolContext, ToolMeta, ToolResult, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,7 +18,8 @@ use super::common::process::{ProcessOutput, ProcessRunner};
 use super::common::shell::Shell;
 use crate::tools::jobs::JobManager;
 use crate::tools::sandbox::SandboxSpec;
-use crate::permission::{Check, gate::PermissionChecked};
+use crate::permission::{Check, Decision, gate::PermissionChecked};
+use crate::tools::internal::common::checkable_tool::CheckableTool;
 
 /// bash — 在子进程中执行 shell 命令，返回合并后的 stdout+stderr。
 ///
@@ -115,51 +116,40 @@ impl PermissionChecked for Bash {
 
 #[async_trait::async_trait]
 impl Tool for Bash {
-    async fn execute(&self, ctx: &ToolContext, args: &Value) -> ToolResult {
-        // 0. 权限检查
-        if let Some(reason) = self.check_permission("bash", args, ctx.agent_mode) {
-            return ToolResult::blocked(reason);
-        }
-
+    
+    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
         // 1. 解析参数
         let params: BashParams = match serde_json::from_value(args.clone()) {
             Ok(p) => p,
-            Err(e) => return ToolResult::err(format!("bash: invalid arguments: {e}")),
+            Err(e) => return Err(format!("bash: invalid arguments: {e}")),
         };
 
         if params.command.trim().is_empty() {
-            return ToolResult::err("bash: 'command' must not be empty");
+            return Err("bash: 'command' must not be empty".into());
         }
 
-        // 2. plan mode 检查
-        if ctx.plan_mode {
-            if let Some(reason) = Self::check_plan_mode(&params.command) {
-                return ToolResult::blocked(reason);
-            }
-        }
-
-        // 3. Shell 探测 + 命令包装
+        // 2. Shell 探测 + 命令包装
         let shell = self.get_shell();
         let (prog, shell_args) = shell.build_command(&params.command);
 
-        // 4. 后台模式：通过 JobManager spawn
+        // 3. 后台模式：通过 JobManager spawn
         if params.run_in_background {
             let job_id = self
                 .job_manager
                 .spawn(&prog, &shell_args, &self.work_dir)
                 .await;
 
-            return ToolResult::ok(format!(
+            return Ok(ToolResult::ok(format!(
                 "background job started: {job_id}\n\
                  Use bash_output with job_id=\"{job_id}\" to read output.\n\
                  Use kill_shell with job_id=\"{job_id}\" to terminate."
-            ));
+            )));
         }
 
-        // 5. 构建安全的环境变量
+        // 4. 构建安全的环境变量
         let env = self.build_env();
 
-        // 6. 前台模式：通过 ProcessRunner 同步执行（带沙箱 + 安全环境变量）
+        // 5. 前台模式：通过 ProcessRunner 同步执行（带沙箱 + 安全环境变量）
         let runner = ProcessRunner::new(self.work_dir.clone(), self.timeout)
             .with_env(env);
 
@@ -172,9 +162,34 @@ impl Tool for Bash {
 
         let output = runner.run(&prog, &shell_args).await;
 
-        // 7. 构建返回结果
+        // 6. 构建返回结果
         Self::build_tool_result(output)
     }
+}
+
+#[async_trait::async_trait]
+impl CheckableTool for Bash {
+    fn check(&self, ctx: &ToolContext, args: &Value) -> Decision {
+        match self.check_permission(self.name(), args, ctx.agent_mode) {
+            Decision::Allow => {}
+            decision => return decision,
+        }
+        if ctx.plan_mode {
+            let command = args.get("command").and_then(|v| v.as_str()).unwrap_or("");
+            let cmd = command.trim();
+            let allowed = Self::PLAN_MODE_ALLOWED_PREFIXES
+                .iter()
+                .any(|prefix| cmd.starts_with(prefix));
+            if !allowed {
+                return Decision::Deny(format!(
+                    "blocked: bash command not allowed in plan mode: {}",
+                    cmd
+                ));
+            }
+        }
+        Decision::Allow
+    }
+
 }
 
 impl Bash {
@@ -200,7 +215,7 @@ impl Bash {
     }
 
     /// 将 ProcessOutput 转为 ToolResult。
-    fn build_tool_result(output: ProcessOutput) -> ToolResult {
+    fn build_tool_result(output: ProcessOutput) -> Result<ToolResult, String> {
         if output.exit_code != 0 {
             // 出错：将 output 和错误信息合并为 Error 消息
             let detail = if output.combined.is_empty() {
@@ -220,13 +235,10 @@ impl Bash {
                     output.exit_code
                 )
             };
-            return ToolResult::Error(msg);
+            return Err(msg);
         }
 
-        ToolResult::Success {
-            output: output.combined,
-            truncated: output.truncated,
-        }
+        Ok(ToolResult { output: output.combined, truncated: output.truncated })
     }
 }
 
@@ -267,7 +279,7 @@ mod tests {
         let result = bash.execute(&ctx, &args).await;
         assert!(result.error().is_none(), "unexpected error: {:?}", result.error());
         assert!(result.output().contains("hello"), "output: {}", result.output());
-        assert!(!result.is_blocked());
+        assert!(!result.is_err());
     }
 
     #[tokio::test]
@@ -345,7 +357,7 @@ mod tests {
         };
 
         let result = bash.execute(&ctx, &args).await;
-        assert!(result.is_blocked(), "rm should be blocked in plan mode");
+        assert!(result.is_err(), "rm should be blocked in plan mode");
     }
 
     #[tokio::test]
@@ -360,7 +372,7 @@ mod tests {
         };
 
         let result = bash.execute(&ctx, &args).await;
-        assert!(!result.is_blocked(), "ls should be allowed in plan mode");
+        assert!(!result.is_err(), "ls should be allowed in plan mode");
         assert!(result.error().is_none());
     }
 

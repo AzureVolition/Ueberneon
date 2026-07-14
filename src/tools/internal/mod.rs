@@ -11,5 +11,5 @@ pub mod read_file;
 pub mod read_only_bash;
 pub mod web_fetch;
 pub mod write_file;
-mod common;
+pub mod common;
 

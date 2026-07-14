@@ -5,6 +5,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
+use crate::tools::internal::common::checkable_tool::CheckableTool;
 use llm::tool::Tool;
 use llm::ToolSchema;
 
@@ -22,7 +23,7 @@ pub struct Registry {
 }
 
 struct ToolsInner {
-    map: BTreeMap<String, Arc<dyn Tool + Send + Sync>>,
+    map: BTreeMap<String, Arc<dyn CheckableTool + Send + Sync>>,
     order: Vec<String>,
     canon: BTreeMap<String, serde_json::Value>,
 }
@@ -40,7 +41,7 @@ impl Registry {
 
     /// 插入（或替换）一个工具。保持首次插入顺序。
     /// Schema 在此处规范化并缓存，后续 schemas() 直接返回缓存。
-    pub fn add(&self, tool: Box<dyn Tool>) {
+    pub fn add(&self, tool: Box<dyn CheckableTool>) {
         let mut inner = self.tools.write().unwrap();
         let name = tool.name().to_string();
 
@@ -51,7 +52,7 @@ impl Registry {
         let mut schema = tool.schema();
         canonicalize_schema(&mut schema);
         inner.canon.insert(name.clone(), schema);
-        let boxed: Box<dyn Tool + Send + Sync> = tool;
+        let boxed: Box<dyn CheckableTool + Send + Sync> = tool;
         inner.map.insert(name, Arc::from(boxed));
     }
 
@@ -79,7 +80,7 @@ impl Registry {
     }
 
     /// 按名查找工具。
-    pub fn get(&self, name: &str) -> Option<Arc<dyn Tool + Send + Sync>> {
+    pub fn get(&self, name: &str) -> Option<Arc<dyn CheckableTool + Send + Sync>> {
         self.tools.read().unwrap().map.get(name).cloned()
     }
 

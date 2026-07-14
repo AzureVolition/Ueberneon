@@ -4,7 +4,7 @@ use std::time::Duration;
 use llm::{
     Chunk, Message, OpenAiProvider, Provider, Request, Role, ToolCall,
 };
-use llm::tool::{AgentMode, ToolContext};
+use llm::tool::{ToolResultExt, AgentMode, ToolContext};
 use futures::StreamExt;
 use racpagent::tools::{
     Bash, BashOutput, EditFile, KillShell, JobManager, MultiEdit, Registry,
@@ -58,14 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Message {
                 role: Role::System,
                 content: Some(
-                    "你是一个文件编辑助手。你可以使用以下工具来编辑文件：\n\
-                    - ReadFile：读取文件内容\n\
-                    - WriteFile：写入/覆盖文件\n\
-                    - EditFile：对文件做精确替换编辑（指定 old_str → new_str）\n\
-                    - MultiEdit：一次性对同一个文件做多个替换编辑\n\
-                    - Bash：执行 shell 命令（如编译、运行等）\n\
-                    - BashOutput：查看后台命令的输出\n\
-                    - KillShell：终止后台 shell 进程\n\n\
+                    "你是一个文件编辑助手。
                     请先使用 ReadFile 查看文件内容，再选择合适的编辑工具进行修改。\
                     编辑完成后可以用 Bash 运行或编译来验证修改是否正确。"
                         .into(),
@@ -148,7 +141,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 };
                 let args: serde_json::Value =
                     serde_json::from_str(&tool.arguments).unwrap_or_default();
-                let result = t.execute(&ctx, &args).await;
+                let result = t.checked_execute(&ctx, &args).await;
 
                 req.messages.push(Message {
                     role: Role::Tool,

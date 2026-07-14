@@ -2,12 +2,14 @@
 //
 // 通过 JobManager 终止后台任务，先 SIGTERM 后 SIGKILL。
 
-use llm::tool::{AgentMode, Tool, ToolContext, ToolResult};
+use llm::tool::{AgentMode, Tool, ToolContext, ToolResult, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
 use std::sync::Arc;
 
 use crate::tools::jobs::JobManager;
+use crate::tools::internal::common::checkable_tool::CheckableTool;
+use crate::permission::Decision;
 
 /// kill_shell — 终止通过 bash(run_in_background=true) 启动的后台任务。
 ///
@@ -40,16 +42,16 @@ impl KillShell {
 
 #[async_trait::async_trait]
 impl Tool for KillShell {
-    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> ToolResult {
+    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
         let job_id = match args.get("job_id").and_then(|v| v.as_str()) {
             Some(id) => id,
-            None => return ToolResult::err("kill_shell: missing required argument 'job_id'"),
+            None => return Err("kill_shell: missing required argument 'job_id'".into()),
         };
 
         let handle = match self.job_manager.get(job_id) {
             Some(h) => h,
             None => {
-                return ToolResult::err(format!(
+                return Err(format!(
                     "kill_shell: job '{job_id}' not found"
                 ));
             }
@@ -61,11 +63,20 @@ impl Tool for KillShell {
         handle.kill().await;
 
         if remaining.is_empty() {
-            ToolResult::ok(format!("job {job_id} terminated"))
+            Ok(ToolResult::ok(format!("job {job_id} terminated")))
         } else {
-            ToolResult::ok(format!("job {job_id} terminated\n\nRemaining output:\n{remaining}"))
+            Ok(ToolResult::ok(format!("job {job_id} terminated\n\nRemaining output:\n{remaining}")))
         }
     }
+}
+
+
+#[async_trait::async_trait]
+impl CheckableTool for KillShell {
+    fn check(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> Decision {
+        Decision::Allow
+    }
+
 }
 
 #[cfg(test)]

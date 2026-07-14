@@ -6,12 +6,14 @@
 
 use std::sync::Arc;
 
-use llm::tool::{AgentMode, Tool, ToolContext, ToolResult};
+use llm::tool::{AgentMode, Tool, ToolContext, ToolResult, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
 
 use super::common::encoding;
 use crate::tools::content_tracker::FileObserveTracker;
+use crate::tools::internal::common::checkable_tool::CheckableTool;
+use crate::permission::Decision;
 
 ///  read file tool
 ///  Read a text file from the local filesystem. 
@@ -70,28 +72,28 @@ impl ReadFile {
 
 #[async_trait::async_trait]
 impl Tool for ReadFile {
-    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> ToolResult {
+    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
         let path_str = match args.get("path").and_then(|v| v.as_str()) {
             Some(p) => p,
-            None => return ToolResult::err("read_file: missing required argument 'path'"),
+            None => return Err("read_file: missing required argument 'path'".into()),
         };
 
         let path = std::path::Path::new(path_str);
 
         // 安全检查：拒绝访问 .git 目录和二进制文件（通过快速 BOM 检查）
         if path.components().any(|c| c.as_os_str() == ".git") {
-            return ToolResult::blocked("access to .git directory is not allowed");
+            return Err("access to .git directory is not allowed".into());
         }
 
         // 读取原始字节
         let data = match std::fs::read(path) {
             Ok(d) => d,
-            Err(e) => return ToolResult::err(format!("read_file: failed to read '{}': {}", path_str, e)),
+            Err(e) => return Err(format!("read_file: failed to read '{}': {}", path_str, e)),
         };
 
         // 空文件快速返回
         if data.is_empty() {
-            return ToolResult::ok("(empty file)");
+            return Ok(ToolResult::ok("(empty file)"));
         }
 
         // 快速 BOM 检测拒绝二进制（非文本）文件
@@ -116,11 +118,11 @@ impl Tool for ReadFile {
                     encoding::Kind::LossyUTF8 => {
                         // 对于有 NUL 的 LossyUTF8，很可能是二进制文件
                         if nul_count as f64 > data.len() as f64 * 0.3 {
-                            return ToolResult::ok(format!(
+                            return Ok(ToolResult::ok(format!(
                                 "(binary file, {} bytes, {} NUL bytes — use a hex viewer to inspect)",
                                 data.len(),
                                 nul_count
-                            ));
+                            )));
                         }
                     }
                     _ => {
@@ -190,8 +192,17 @@ impl Tool for ReadFile {
         // 记录内容哈希用作陈旧锚点检查
         self.tracker.observe(path_str, &content);
 
-        ToolResult::ok(output)
+        Ok(ToolResult::ok(output))
     }
+}
+
+
+#[async_trait::async_trait]
+impl CheckableTool for ReadFile {
+    fn check(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> Decision {
+        Decision::Allow
+    }
+
 }
 
 #[cfg(test)]
@@ -315,7 +326,7 @@ mod tests {
             agent_mode: AgentMode::Ask,
             progress: None,
         }, &args).await;
-        assert!(result.is_blocked());
+        assert!(result.is_err());
     }
 
     #[tokio::test]
