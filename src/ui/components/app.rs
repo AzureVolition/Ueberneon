@@ -140,6 +140,28 @@ pub fn App() -> Element {
         active_tool_calls.set(Vec::new());
     };
 
+    /// 删除项目
+    let on_delete_project = move |project_id: String| {
+        // 默认项目不允许删除（安全检查）
+        if project_id == store::DEFAULT_PROJECT_ID {
+            return;
+        }
+
+        // 如果正在查看该项目，返回项目列表
+        let is_current = active_project_id.read().as_deref() == Some(&project_id);
+        if is_current {
+            sidebar_view.set(SidebarView::ProjectList);
+            active_project_id.set(None);
+            messages.set(Vec::new());
+        }
+
+        {
+            let mut projs = projects.write();
+            projs.retain(|p| p.id != project_id);
+        }
+        store::save_projects_quiet(&projects.read());
+    };
+
     rsx! {
         style { {include_str!("style.css")} }
 
@@ -156,6 +178,7 @@ pub fn App() -> Element {
                 on_select_project,
                 on_select_conversation,
                 on_back_to_projects,
+                on_delete_project,
             }
 
             div {

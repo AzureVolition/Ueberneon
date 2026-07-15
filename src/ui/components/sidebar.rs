@@ -14,17 +14,60 @@ pub fn Sidebar(
     on_select_project: EventHandler<String>,
     on_select_conversation: EventHandler<String>,
     on_back_to_projects: EventHandler<()>,
+    on_delete_project: EventHandler<String>,
 ) -> Element {
     // ── 新建项目表单状态 ──
     let mut show_new_project_form = use_signal(|| false);
     let mut new_project_name = use_signal(String::new);
     let mut new_project_path = use_signal(String::new);
 
+    // ── 右键菜单状态 ──
+    let mut context_menu = use_signal(|| Option::<(f64, f64, String)>::None);
+
     let view = sidebar_view.read().clone();
+
+    // ── 右键菜单计算 ──
+    let ctx_menu_overlay = {
+        let guard = context_menu.read();
+        let val = guard.as_ref().map(|(x, y, target_id)| {
+            let is_default = *target_id == crate::ui::store::DEFAULT_PROJECT_ID;
+            let tid = target_id.clone();
+            let pos_x = *x;
+            let pos_y = *y;
+            rsx! {
+                div {
+                    class: "context-menu-overlay",
+                    onclick: move |_| { context_menu.set(None); },
+                    div {
+                        class: "context-menu",
+                        style: "left: {pos_x}px; top: {pos_y}px;",
+                        if !is_default {
+                            div {
+                                class: "context-menu-item danger",
+                                onclick: move |_| {
+                                    on_delete_project.call(tid.clone());
+                                    context_menu.set(None);
+                                },
+                                "delete project"
+                            }
+                        } else {
+                            div {
+                                class: "context-menu-item disabled",
+                                "cannot delete default"
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        val
+    };
 
     rsx! {
         div {
             class: "sidebar",
+
+            {ctx_menu_overlay}
 
             match view {
                 SidebarView::ProjectList => {
@@ -35,7 +78,7 @@ pub fn Sidebar(
                             h3 { "racp agent" }
                             div {
                                 class: "sidebar-header-row",
-                                span { class: "sidebar-label", "01 · PROJECTS" }
+                                span { class: "sidebar-label", "PROJECTS" }
                                 button {
                                     class: "btn btn-new-chat",
                                     onclick: move |_| {
@@ -144,19 +187,34 @@ pub fn Sidebar(
                                         div {
                                             key: "{proj_id}",
                                             class: if is_active {
-                                                "conversation-item active"
+                                                "project-item active"
                                             } else {
-                                                "conversation-item"
+                                                "project-item"
                                             },
-                                            onclick: move |_| {
-                                                on_select_project.call(proj_id.clone());
+                                            onclick: {
+                                                let pid = proj_id.clone();
+                                                move |_| {
+                                                    context_menu.set(None);
+                                                    on_select_project.call(pid.clone());
+                                                }
+                                            },
+                                            oncontextmenu: {
+                                                let pid = proj_id.clone();
+                                                move |evt| {
+                                                    evt.prevent_default();
+                                                    let coords = evt.client_coordinates();
+                                                    context_menu.set(Some((
+                                                        coords.x,
+                                                        coords.y,
+                                                        pid.clone(),
+                                                    )));
+                                                }
                                             },
                                             span {
-                                                class: "project-icon",
-                                                "\u{1f4c1}"  /* folder icon */
+                                                class: "project-item-indicator",
                                             }
                                             span {
-                                                class: "conversation-title",
+                                                class: "project-item-name",
                                                 "{proj_name}"
                                             }
                                         }
@@ -177,14 +235,14 @@ pub fn Sidebar(
                         div {
                             class: "sidebar-header",
                             div {
-                                class: "sidebar-breadcrumb",
+                                class: "sidebar-nav-back",
                                 onclick: move |_| on_back_to_projects.call(()),
-                                span { class: "breadcrumb-back", "\u{2190}" }
-                                span { class: "breadcrumb-text", "{proj_name}" }
+                                span { class: "sidebar-nav-label", "projects /" }
+                                span { class: "sidebar-nav-project", "{proj_name}" }
                             }
                             div {
                                 class: "sidebar-header-row",
-                                span { class: "sidebar-label", "01 · CONVERSATIONS" }
+                                span { class: "sidebar-label", "CONVERSATIONS" }
                                 button {
                                     class: "btn btn-new-chat",
                                     onclick: move |_| on_new_conversation.call(()),
