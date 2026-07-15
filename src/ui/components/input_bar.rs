@@ -5,7 +5,6 @@ use crate::ui::state::*;
 /// 底部输入栏 —— 多行输入框 + 发送/取消按钮
 #[component]
 pub fn InputBar(
-    messages: Signal<Vec<ChatMessage>>,
     is_streaming: Signal<bool>,
     on_send: EventHandler<String>,
 ) -> Element {
@@ -30,12 +29,6 @@ pub fn InputBar(
                         if evt.key() == Key::Enter && !evt.modifiers().contains(Modifiers::SHIFT) {
                             let text = input.read().trim().to_string();
                             if !text.is_empty() && !is_streaming() {
-                                messages.write().push(ChatMessage {
-                                    role: Role::User,
-                                    content: text.clone(),
-                                    timestamp: chrono::Local::now(),
-                                    tool_calls: vec![],
-                                });
                                 on_send.call(text);
                                 input.set(String::new());
                             }
@@ -57,12 +50,6 @@ pub fn InputBar(
                         onclick: move |_| {
                             let text = input.read().trim().to_string();
                             if !text.is_empty() && !is_streaming() {
-                                messages.write().push(ChatMessage {
-                                    role: Role::User,
-                                    content: text.clone(),
-                                    timestamp: chrono::Local::now(),
-                                    tool_calls: vec![],
-                                });
                                 on_send.call(text);
                                 input.set(String::new());
                             }

@@ -1,7 +1,8 @@
 use chrono::{DateTime, Local};
+use serde::{Deserialize, Serialize};
 
 /// 消息角色
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub enum Role {
     User,
     Assistant,
@@ -9,7 +10,7 @@ pub enum Role {
 }
 
 /// 工具调用状态
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub enum ToolCallStatus {
     Running,
     Success,
@@ -17,7 +18,7 @@ pub enum ToolCallStatus {
 }
 
 /// 单次工具调用记录
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ToolCallRecord {
     pub tool_name: String,
     pub args: serde_json::Value,
@@ -26,7 +27,7 @@ pub struct ToolCallRecord {
 }
 
 /// 一条聊天消息
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: Role,
     pub content: String,
@@ -35,11 +36,30 @@ pub struct ChatMessage {
 }
 
 /// 对话
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Conversation {
     pub id: String,
     pub title: String,
     pub messages: Vec<ChatMessage>,
+}
+
+/// 项目
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Project {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    pub created_at: DateTime<Local>,
+    pub conversations: Vec<Conversation>,
+}
+
+/// 侧边栏视图状态
+#[derive(Clone, PartialEq)]
+pub enum SidebarView {
+    /// 显示项目列表
+    ProjectList,
+    /// 显示指定项目的对话列表
+    ConversationList(String),
 }
 
 /// 应用配置

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace]
-members = [".", "src/llm", "src/racpagent-macros"]
+members = ["", "src/llm", "src/racpagent-macros"]
 
 [dependencies]
 ambassador = "0.5.1"
@@ -13,7 +13,7 @@ async-openai = { version = "0.41.1", features = ["chat-completion"] }
 async-stream = "0.3.6"
 async-trait = "0.1"
 backon = "1.6.0"
-chrono = "0.4.45"
+chrono = { version = "0.4.45", features = ["serde"] }
 dotenvy = "0.15.7"
 futures = "0.3.32"
 schemars = "1.2.1"
@@ -35,3 +35,4 @@ llm = { path = "src/llm" }
 racpagent-macros = { path = "src/racpagent-macros" }
 dioxus = { version = "0.7", features = ["desktop"] }
 pulldown-cmark = "0.12"
+rfd = "0.15"

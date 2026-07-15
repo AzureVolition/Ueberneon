@@ -1,0 +1,22 @@
+[
+  {
+    "id": "racpagent-default",
+    "name": "racpagent",
+    "path": "/Users/linjiageng/.racpagent",
+    "created_at": "2026-07-15T22:52:54.186347+08:00",
+    "conversations": [
+      {
+        "id": "conv-1784127180678",
+        "title": "新对话",
+        "messages": []
+      }
+    ]
+  },
+  {
+    "id": "proj-1784126493548",
+    "name": "globle",
+    "path": "/Users/linjiageng/.racpagent",
+    "created_at": "2026-07-15T22:41:33.549132+08:00",
+    "conversations": []
+  }
+]

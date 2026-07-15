@@ -26,6 +26,9 @@ pub async fn run_agent_loop(
     mut streaming_content: Signal<String>,
     mut is_streaming: Signal<bool>,
     mut active_tool_calls: Signal<Vec<ToolCallRecord>>,
+    mut projects: Signal<Vec<Project>>,
+    active_project_id: Signal<Option<String>>,
+    active_conversation_id: Signal<String>,
 ) {
     is_streaming.set(true);
     streaming_content.set(String::new());
@@ -211,7 +214,7 @@ pub async fn run_agent_loop(
         }
     }
 
-    // ── 5. 循环结束，将最终响应写入消息列表 ──
+    // ── 5. 循环结束，将最终响应写入消息列表和持久化存储 ──
     let final_content = final_output;
     if !final_content.is_empty() {
         messages.write().push(ChatMessage {
@@ -220,6 +223,22 @@ pub async fn run_agent_loop(
             timestamp: chrono::Local::now(),
             tool_calls: active_tool_calls.read().clone(),
         });
+
+        // 同步写入项目对话存储
+        let proj_id = active_project_id.read().clone();
+        let conv_id = active_conversation_id.read().clone();
+        if let (Some(ref pid), cid) = (proj_id, conv_id) {
+            if !cid.is_empty() {
+                let msgs = messages.read().clone();
+                let mut projs = projects.write();
+                if let Some(proj) = projs.iter_mut().find(|p| p.id == *pid) {
+                    if let Some(conv) = proj.conversations.iter_mut().find(|c| c.id == cid) {
+                        conv.messages = msgs;
+                    }
+                }
+                crate::ui::store::save_projects_quiet(&projs);
+            }
+        }
     }
 
     streaming_content.set(String::new());
