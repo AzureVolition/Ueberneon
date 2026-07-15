@@ -1,3 +1,4 @@
+pub mod hook;
 pub use llm::tool::ToolMeta;
 
 // ── Tool trait ──────────────────────────────────────────────────────────────
@@ -127,4 +128,10 @@ impl std::fmt::Display for BlockedKind {
             BlockedKind::SecurityRestriction => write!(f, "security_restriction"),
         }
     }
+}
+
+// —— agent ————————————————————————————————————————————————————————————————————
+
+pub struct Agent {
+    
 }

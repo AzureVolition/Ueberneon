@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace]
-members = [""]
+members = [".", "src/llm", "src/racpagent-macros"]
 
 [dependencies]
 ambassador = "0.5.1"
@@ -33,3 +33,5 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 url = "2"
 llm = { path = "src/llm" }
 racpagent-macros = { path = "src/racpagent-macros" }
+dioxus = { version = "0.7", features = ["desktop"] }
+pulldown-cmark = "0.12"

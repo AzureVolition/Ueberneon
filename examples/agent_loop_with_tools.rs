@@ -78,13 +78,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut pending_tool_calls: Vec<ToolCall> = Vec::new();
 
         while let Some(result) = stream.next().await {
-            match &result {
+            match result {
                 Ok(Chunk::Text(t)) => {
-                    output.push_str(t);
+                    output.push_str(&t);
                     print!("{t}");
                 }
                 Ok(Chunk::Reasoning { text, .. }) => {
-                    reasoning_content.push_str(text);
+                    reasoning_content.push_str(&text);
                     print!("{text}")
                 }
                 Ok(Chunk::Usage(u)) => {
@@ -96,7 +96,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(Chunk::ToolCallComplete(tool)) => {
                     eprintln!("\n[tool call: {} — {}]", tool.name, tool.arguments);
                     have_tool_calls = true;
-                    pending_tool_calls.push(tool.clone());
+                    pending_tool_calls.push(tool);
                 }
                 Err(e) => eprintln!("\n[error: {e}]"),
                 _ => {}
