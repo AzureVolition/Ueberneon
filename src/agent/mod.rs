@@ -86,6 +86,40 @@ pub enum ActionMode {
     Plan,
 }
 
+impl ActionMode {
+    /// 用于 HTML option value 的键。
+    pub fn as_key(self) -> &'static str {
+        match self {
+            ActionMode::Regular => "regular",
+            ActionMode::Plan => "plan",
+        }
+    }
+
+    /// 所有变体，供 UI 遍历。
+    pub const ALL: &[ActionMode] = &[ActionMode::Regular, ActionMode::Plan];
+}
+
+impl std::fmt::Display for ActionMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ActionMode::Regular => write!(f, "常规"),
+            ActionMode::Plan => write!(f, "计划"),
+        }
+    }
+}
+
+impl std::str::FromStr for ActionMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "regular" => Ok(ActionMode::Regular),
+            "plan" => Ok(ActionMode::Plan),
+            _ => Err(format!("unknown ActionMode key: {s}")),
+        }
+    }
+}
+
 // ── AgentMode ──────────────────────────────────────────────────────────────
 
 /// Agent 的全局门控模式，影响权限决策的升降级。
@@ -102,6 +136,51 @@ pub enum AgentMode {
     Auto,
     /// 放飞自我：从不询问，所有 Ask 退化为 Allow
     Unrestrained,
+}
+
+impl AgentMode {
+    /// 用于 HTML option value 的键。
+    pub fn as_key(self) -> &'static str {
+        match self {
+            AgentMode::Cautious => "cautious",
+            AgentMode::Ask => "ask",
+            AgentMode::Auto => "auto",
+            AgentMode::Unrestrained => "unrestrained",
+        }
+    }
+
+    /// 所有变体，供 UI 遍历。
+    pub const ALL: &[AgentMode] = &[
+        AgentMode::Cautious,
+        AgentMode::Ask,
+        AgentMode::Auto,
+        AgentMode::Unrestrained,
+    ];
+}
+
+impl std::fmt::Display for AgentMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AgentMode::Cautious => write!(f, "谨慎"),
+            AgentMode::Ask => write!(f, "询问"),
+            AgentMode::Auto => write!(f, "自动"),
+            AgentMode::Unrestrained => write!(f, "放飞自我"),
+        }
+    }
+}
+
+impl std::str::FromStr for AgentMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "cautious" => Ok(AgentMode::Cautious),
+            "ask" => Ok(AgentMode::Ask),
+            "auto" => Ok(AgentMode::Auto),
+            "unrestrained" => Ok(AgentMode::Unrestrained),
+            _ => Err(format!("unknown AgentMode key: {s}")),
+        }
+    }
 }
 
 // ── ToolContext ──────────────────────────────────────────────────────────────

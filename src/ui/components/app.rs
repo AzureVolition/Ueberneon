@@ -1,4 +1,7 @@
 use dioxus::prelude::*;
+use std::sync::{Arc, Mutex};
+
+use crate::agent::{ActionMode, AgentMode};
 
 use crate::ui::components::chat_panel::ChatPanel;
 use crate::ui::components::input_bar::InputBar;
@@ -49,6 +52,10 @@ pub fn App() -> Element {
     let mut is_streaming = use_signal(|| false);
     let mut streaming_project_id = use_signal(|| Option::<String>::None);
     let mut active_tool_calls = use_signal(Vec::<ToolCallRecord>::new);
+    let mut action_mode = use_signal(|| ActionMode::Regular);
+    let mut agent_mode = use_signal(|| AgentMode::Ask);
+    let mut pending_approval = use_signal(|| Option::<PendingApproval>::None);
+    let approval_responder: Signal<Arc<Mutex<Option<tokio::sync::oneshot::Sender<bool>>>>> = use_signal(|| Arc::new(Mutex::new(None)));
     let config = use_signal(|| AppConfig {
         model: std::env::var("OPENAI_MODEL")
             .unwrap_or_else(|_| "deepseek-chat".into()),
@@ -59,6 +66,7 @@ pub fn App() -> Element {
         max_tokens: 4096,
         agent_mode: "ask".into(),
     });
+
 
     // ── 事件处理 ──
 
@@ -228,6 +236,7 @@ pub fn App() -> Element {
         store::save_projects_quiet(&projects.read());
     };
 
+
     rsx! {
         style { {include_str!("style.css")} }
 
@@ -259,10 +268,21 @@ pub fn App() -> Element {
                     is_streaming,
                     active_tool_calls,
                     markdown_to_html,
+                    on_approve: {
+                        let resp = approval_responder;
+                        move |(allowed,): (bool,)| {
+                            if let Some(tx) = resp.read().lock().unwrap().take() {
+                                let _ = tx.send(allowed);
+                            }
+                            pending_approval.set(None);
+                        }
+                    },
                 }
 
                 InputBar {
                     is_streaming,
+                    action_mode,
+                    agent_mode,
                     on_send: move |input: String| {
                         // 将用户消息写入 messages signal（UI 显示）
                         messages.write().push(ChatMessage {
@@ -347,11 +367,19 @@ pub fn App() -> Element {
                         let active_conversation_id_sig = active_conversation_id;
                         let streaming_project_id_sig = streaming_project_id;
                         let config_val = config.read().clone();
+                        let cur_action_mode = action_mode();
+                        let cur_agent_mode = agent_mode();
+                        let bridge_responder = approval_responder.read().clone();
+                        let bridge_pending = pending_approval;
 
                         spawn(async move {
                             crate::ui::bridge::run_agent_loop(
                                 input,
                                 config_val,
+                                cur_action_mode,
+                                cur_agent_mode,
+                                bridge_responder,
+                                bridge_pending,
                                 messages,
                                 streaming_segments,
                                 is_streaming,

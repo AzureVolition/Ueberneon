@@ -15,6 +15,10 @@ pub enum ToolCallStatus {
     Running,
     Success,
     Failed(String),
+    /// 等待用户审批
+    AwaitingApproval {
+        reason: String,
+    },
 }
 
 /// 单次工具调用记录
@@ -24,6 +28,9 @@ pub struct ToolCallRecord {
     pub args: serde_json::Value,
     pub result: Option<String>,
     pub status: ToolCallStatus,
+    /// 审批原因（仅 AwaitingApproval 时填充）
+    #[serde(default)]
+    pub approval_reason: Option<String>,
 }
 
 /// 一条聊天消息
@@ -97,6 +104,14 @@ pub struct AppConfig {
     pub temperature: f64,
     pub max_tokens: u32,
     pub agent_mode: String,
+}
+
+/// 待审批的工具调用（仅在桥接层使用，不持久化）
+#[derive(Clone)]
+pub struct PendingApproval {
+    pub tool_name: String,
+    pub args: serde_json::Value,
+    pub reason: String,
 }
 
 /// 从消息中提取对话标题（用首条用户消息的前 N 个字符）

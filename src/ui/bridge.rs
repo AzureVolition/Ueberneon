@@ -3,7 +3,8 @@
 // 初始化 Agent 结构体，通过 mpsc channel 消费流式事件并更新 UI Signal。
 
 use dioxus::prelude::*;
-use tokio::sync::mpsc;
+use std::sync::{Arc, Mutex};
+use tokio::sync::{mpsc, oneshot};
 
 use crate::agent::hook::HookRegister;
 use crate::agent::main_agent::{AgentOutput, StreamEvent};
@@ -38,6 +39,10 @@ fn push_segment(segments: &mut Vec<StreamSegment>, new: StreamSegment) {
 pub async fn run_agent_loop(
     user_input: String,
     config: AppConfig,
+    action_mode: ActionMode,
+    agent_mode: AgentMode,
+    approval_responder: Arc<Mutex<Option<oneshot::Sender<bool>>>>,
+    mut pending_approval: Signal<Option<PendingApproval>>,
     mut messages: Signal<Vec<ChatMessage>>,
     mut streaming_segments: Signal<Vec<StreamSegment>>,
     mut is_streaming: Signal<bool>,
@@ -90,7 +95,7 @@ pub async fn run_agent_loop(
 
     // ── 4. 构建 Agent ──
     let hook_register = HookRegister::new();
-    let agent = Agent::new(provider, registry, hook_register, ActionMode::Regular, AgentMode::Ask, project_path.into());
+    let agent = Agent::new(provider, registry, hook_register, action_mode, agent_mode, project_path.into());
 
     // ── 5. 构建 LLM 消息历史 ──
     let mut history: Vec<Message> = vec![Message {
@@ -163,6 +168,7 @@ pub async fn run_agent_loop(
                     args: args.clone(),
                     result: None,
                     status: ToolCallStatus::Running,
+                    approval_reason: None,
                 });
                 local_segments.push(StreamSegment::ToolCall);
                 if on_original {
@@ -172,13 +178,14 @@ pub async fn run_agent_loop(
                         args,
                         result: None,
                         status: ToolCallStatus::Running,
+                        approval_reason: None,
                     });
                 }
             }
             StreamEvent::ToolExecuted { tool_name, result } => {
                 // 更新本地累积中的记录
                 if let Some(record) = all_tool_records.iter_mut().rev().find(|tc| {
-                    tc.tool_name == tool_name && tc.status == ToolCallStatus::Running
+                    tc.tool_name == tool_name && (tc.status == ToolCallStatus::Running || matches!(tc.status, ToolCallStatus::AwaitingApproval{..}))
                 }) {
                     record.result = Some(match &result {
                         Ok(tr) => tr.output.clone(),
@@ -192,7 +199,7 @@ pub async fn run_agent_loop(
                 if on_original {
                     let mut calls = active_tool_calls.write();
                     if let Some(record) = calls.iter_mut().rev().find(|tc| {
-                        tc.tool_name == tool_name && tc.status == ToolCallStatus::Running
+                        tc.tool_name == tool_name && (tc.status == ToolCallStatus::Running || matches!(tc.status, ToolCallStatus::AwaitingApproval{..}))
                     }) {
                         record.result = Some(match &result {
                             Ok(tr) => tr.output.clone(),
@@ -203,6 +210,36 @@ pub async fn run_agent_loop(
                             Err(_) => ToolCallStatus::Failed("failed".into()),
                         };
                     }
+                    // 清除审批状态
+                    pending_approval.set(None);
+                }
+            }
+            StreamEvent::ToolNeedsApproval { tool_name, args, reason, approval_tx } => {
+                // 存储 oneshot sender 供 UI 回调使用
+                *approval_responder.lock().unwrap() = Some(approval_tx);
+                // 更新工具调用状态
+                if let Some(record) = all_tool_records.iter_mut().rev().find(|tc| {
+                    tc.tool_name == tool_name && tc.status == ToolCallStatus::Running
+                }) {
+                    record.status = ToolCallStatus::AwaitingApproval { reason: reason.clone() };
+                    record.approval_reason = Some(reason.clone());
+                }
+                local_segments.push(StreamSegment::ToolCall);
+                if on_original {
+                    // 更新 active_tool_calls 中对应记录的状态
+                    let mut calls = active_tool_calls.write();
+                    if let Some(record) = calls.iter_mut().rev().find(|tc| {
+                        tc.tool_name == tool_name && tc.status == ToolCallStatus::Running
+                    }) {
+                        record.status = ToolCallStatus::AwaitingApproval { reason: reason.clone() };
+                        record.approval_reason = Some(reason.clone());
+                    }
+                    // 通知 UI 有审批请求
+                    pending_approval.set(Some(PendingApproval {
+                        tool_name: tool_name.clone(),
+                        args: args.clone(),
+                        reason: reason.clone(),
+                    }));
                 }
             }
             StreamEvent::Done => break,

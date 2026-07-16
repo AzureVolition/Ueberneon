@@ -31,6 +31,8 @@
 
   --color-glow:        oklch(72% 0.20 200 / 0.40);  /* dense cyan halo */
   --color-glow-2:      oklch(72% 0.20 200 / 0.12);  /* soft cyan glow */
+  --color-glow-pink:       oklch(68% 0.22 330 / 0.12); /* soft pink glow */
+  --color-glow-pink-strong: oklch(68% 0.22 330 / 0.35); /* dense pink glow */
 
   --color-rule:        oklch(96% 0.006 262 / 0.08);  /* hairline border */
   --color-rule-2:      oklch(96% 0.006 262 / 0.14);  /* stronger hairline */
@@ -716,6 +718,16 @@ body {
   background: oklch(72% 0.16 265);
 }
 
+/* ── Streaming + awaiting approval — neon pink ── */
+.timeline-hit.streaming.awaiting-approval {
+  background: var(--color-accent-2);
+  animation: hit-breathe-pink 3s linear infinite;
+}
+
+.timeline-hit.streaming.awaiting-approval.active {
+  background: oklch(78% 0.24 330);
+}
+
 @keyframes hit-breathe {
   0%, 100% {
     box-shadow: 0 0 4px 1px oklch(65% 0.14 265 / 0.25);
@@ -725,12 +737,30 @@ body {
   }
 }
 
+@keyframes hit-breathe-pink {
+  0%, 100% {
+    box-shadow: 0 0 4px 1px var(--color-glow-pink);
+  }
+  50% {
+    box-shadow: 0 0 14px 3px var(--color-glow-pink-strong);
+  }
+}
+
 @keyframes border-breathe {
   0%, 100% {
     box-shadow: 0 0 4px 1px oklch(65% 0.14 265 / 0.25);
   }
   50% {
     box-shadow: 0 0 14px 3px oklch(65% 0.14 265 / 0.55);
+  }
+}
+
+@keyframes border-breathe-pink {
+  0%, 100% {
+    box-shadow: 0 0 4px 1px var(--color-glow-pink);
+  }
+  50% {
+    box-shadow: 0 0 16px 4px var(--color-glow-pink-strong);
   }
 }
 
@@ -851,13 +881,14 @@ body {
 
 .message-assistant {
   margin-right: auto;
-  background: var(--color-paper-2);
-  border: 1px solid var(--color-rule);
+  margin-left: var(--space-sm);
+  border: none;
+  border-left: 2px solid var(--color-rule);
+  padding: 0;
+  padding-left: var(--space-md);
+  background: transparent;
   color: var(--color-ink-2);
-  border-bottom-left-radius: var(--radius-sm);
-  /* inner emission */
-  background-image: radial-gradient(ellipse 100% 80% at 50% 0%, var(--color-paper-emit) 0%, transparent 80%);
-  background-blend-mode: overlay;
+  border-radius: 0;
 }
 
 .message-system {
@@ -874,10 +905,8 @@ body {
 
 /* Lumen hairline lift on hover */
 .message-assistant:hover {
-  border-color: var(--color-rule-2);
-  background-image: radial-gradient(ellipse 100% 80% at 50% 0%, var(--color-glow-2) 0%, transparent 80%);
-  transition: border-color var(--dur-base) var(--ease-out),
-              background-image var(--dur-base) var(--ease-out);
+  border-left-color: var(--color-rule-2);
+  transition: border-left-color var(--dur-base) var(--ease-out);
 }
 
 .message-header {
@@ -1231,11 +1260,18 @@ body {
   50%      { opacity: 1;   transform: scale(1); }
 }
 
-/* ── Streaming bubble — warm border (no cooldown while live) ── */
+/* ── Streaming — left-border warm gold, breathe ── */
 .message-assistant.streaming {
-  border: 2px solid var(--color-warm-cursor);
+  border-left: 2px solid var(--color-warm-cursor);
   box-shadow: 0 0 12px var(--color-warm-glow-soft);
   animation: border-breathe 3s linear infinite;
+}
+
+/* ── Streaming + awaiting approval — left-border neon pink ── */
+.message-assistant.streaming.awaiting-approval {
+  border-left: 2px solid var(--color-accent-2);
+  box-shadow: 0 0 12px var(--color-glow-pink);
+  animation: border-breathe-pink 3s linear infinite;
 }
 
 .streaming .message-content {
@@ -1254,14 +1290,14 @@ body {
 /* ── Cooldown — warm border fades to cool after streaming ends ── */
 .message-assistant.cooldown-start {
   animation: none;
-  border: 1px solid var(--color-warm-cursor);
+  border-left: 2px solid var(--color-warm-cursor);
   box-shadow: 0 0 4px 1px oklch(65% 0.14 265 / 0.25);
-  transition: border-color var(--color-warm-transition-dur) var(--ease-soft),
+  transition: border-left-color var(--color-warm-transition-dur) var(--ease-soft),
               box-shadow var(--color-warm-transition-dur) var(--ease-soft);
 }
 
 .message-assistant.cooldown-end {
-  border: 1px solid var(--color-rule);
+  border-left: 2px solid var(--color-rule);
   box-shadow: none;
 }
 
@@ -1391,6 +1427,119 @@ body {
   padding: 0;
 }
 
+/* ── Approval card (Hallmark · Lumen) ── */
+.approval-card {
+  margin: var(--space-xs) 0;
+  border: 1px solid var(--color-rule);
+  border-left: 3px solid var(--color-accent-2);
+  border-radius: var(--radius-sm);
+  background: var(--color-paper-2);
+  font-family: var(--font-body);
+  text-transform: none;
+}
+
+.approval-header {
+  display: flex;
+  align-items: center;
+  padding: var(--space-xs) var(--space-sm);
+  border-bottom: 1px solid var(--color-rule);
+}
+
+.approval-title {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-micro);
+  color: var(--color-accent-2);
+}
+
+.approval-body {
+  padding: var(--space-xs) var(--space-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.approval-args {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-transform: none;
+}
+
+.approval-reason {
+  font-family: var(--font-body);
+  font-size: var(--text-xs);
+  color: var(--color-ink-4);
+  text-transform: lowercase;
+}
+
+.approval-actions {
+  display: flex;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  border-top: 1px solid var(--color-rule);
+  justify-content: flex-end;
+}
+
+.approval-btn {
+  padding: 4px 16px;
+  border-radius: var(--radius-pill);
+  font-family: var(--font-body);
+  font-size: var(--text-xs);
+  text-transform: lowercase;
+  cursor: pointer;
+  outline: none;
+  border: none;
+  transition: background var(--dur-fast) var(--ease-out),
+              color var(--dur-fast) var(--ease-out),
+              transform var(--dur-fast) var(--ease-out);
+  line-height: 1.5;
+  min-height: 28px;
+}
+
+.approval-btn.allow {
+  background: var(--color-accent);
+  color: var(--color-paper);
+}
+
+.approval-btn.allow:hover {
+  background: oklch(80% 0.25 200);
+  box-shadow: 0 0 8px rgba(0, 195, 255, 0.3);
+  animation: send-pulse 3s ease-in-out infinite;
+  transition: none;
+}
+
+.approval-btn.allow:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-focus);
+}
+
+.approval-btn.allow:active {
+  transform: scale(0.96);
+}
+
+.approval-btn.deny {
+  background: transparent;
+  color: var(--color-accent-2);
+  border: 1px solid var(--color-accent-2);
+}
+
+.approval-btn.deny:hover {
+  background: var(--color-accent-2);
+  color: var(--color-paper);
+}
+
+.approval-btn.deny:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-focus);
+}
+
+.approval-btn.deny:active {
+  transform: scale(0.96);
+}
+
 /* ── Think & Watch — 折叠归组块 ── */
 .think-watch {
   margin: var(--space-xs) 0;
@@ -1469,6 +1618,89 @@ body {
   margin-left: calc(-1 * var(--page-gutter));
   margin-right: calc(-1 * var(--page-gutter));
   opacity: 0.5;
+}
+
+/* ── Mode toggle pills (Hallmark · Lumen) ── */
+.mode-toggle-row {
+  display: flex;
+  gap: var(--space-md);
+  margin-bottom: var(--space-sm);
+  align-items: flex-end;
+}
+
+.mode-toggle-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mode-toggle-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-ink-4);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-micro);
+}
+
+.mode-pill-row {
+  display: inline-flex;
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-pill);
+  padding: 2px;
+  gap: 1px;
+}
+
+.mode-pill {
+  padding: 2px 10px;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--color-ink-3);
+  font-family: var(--font-body);
+  font-size: var(--text-xs);
+  text-transform: lowercase;
+  cursor: pointer;
+  outline: none;
+  transition: background var(--dur-fast) var(--ease-out),
+              color var(--dur-fast) var(--ease-out),
+              transform var(--dur-fast) var(--ease-out);
+  line-height: 1.5;
+  min-height: 24px;
+}
+
+.mode-pill:hover {
+  color: var(--color-ink-2);
+  background: var(--color-paper-3);
+}
+
+.mode-pill:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-focus);
+}
+
+.mode-pill:active {
+  transform: scale(0.96);
+}
+
+.mode-pill.is-active {
+  background: var(--color-accent);
+  color: var(--color-paper);
+}
+
+.mode-pill.is-active:hover {
+  background: var(--color-glow);
+}
+
+.mode-pill.is-active.is-danger {
+  background: var(--color-accent-2);
+}
+
+.mode-pill.is-active.is-danger:hover {
+  background: var(--color-accent-2);
+}
+
+.mode-pill-row.is-disabled {
+  opacity: 0.4;
+  pointer-events: none;
 }
 
 .input-row {

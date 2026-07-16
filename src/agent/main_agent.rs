@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 
 use super::hook::{AgentEvent, HookRegister};
 use super::{AgentMode, ActionMode, ToolContext, ToolResult};
+use crate::permission::Decision;
 use crate::tools::Registry;
 use crate::ui::state::ToolCallRecord;
 use llm::{Chunk, Message, Provider, Request, Role as LlmRole, ToolCall};
@@ -16,7 +17,7 @@ use llm::{Chunk, Message, Provider, Request, Role as LlmRole, ToolCall};
 /// Agent 运行时通过 mpsc 发出的流式事件。
 ///
 /// 复用 llm::Chunk 表示 LLM 流式输出，附加工具执行生命周期和循环状态。
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum StreamEvent {
     /// LLM 流式事件（Text / Reasoning / ToolCallStart/Delta/Complete / Usage）
     Chunk(Chunk),
@@ -29,6 +30,13 @@ pub enum StreamEvent {
     ToolExecuted {
         tool_name: String,
         result: Result<ToolResult, String>,
+    },
+    /// 工具需要用户审批（Ask 决策），携带 oneshot sender 等待 UI 回传
+    ToolNeedsApproval {
+        tool_name: String,
+        args: serde_json::Value,
+        reason: String,
+        approval_tx: tokio::sync::oneshot::Sender<bool>,
     },
     /// 循环正常结束
     Done,
@@ -199,14 +207,35 @@ impl Agent {
                         args: args.clone(),
                     });
 
-                    // 执行工具
+                    // ── 权限预检 + 审批分流 ──
                     let ctx = ToolContext {
                         call_id: tool_call.id.clone(),
                         plan_mode: self.plan_mode,
                         agent_mode: self.agent_mode,
                         progress: None,
                     };
-                    let result = tool.checked_execute(&ctx, &args).await;
+                    let decision = tool.pre_check(&ctx, &args);
+                    let result = match decision {
+                        Decision::Allow => {
+                            tool.execute(&ctx, &args).await
+                        }
+                        Decision::Ask => {
+                            let reason = format!("{} needs approval", tool_name);
+                            let (approval_tx, approval_rx) = tokio::sync::oneshot::channel();
+                            let _ = tx.send(StreamEvent::ToolNeedsApproval {
+                                tool_name: tool_name.clone(),
+                                args: args.clone(),
+                                reason: reason.clone(),
+                                approval_tx,
+                            });
+                            match approval_rx.await {
+                                Ok(true) => tool.execute(&ctx, &args).await,
+                                Ok(false) => Err(format!("denied by user: {reason}")),
+                                Err(_) => Err("approval channel closed".into()),
+                            }
+                        }
+                        Decision::Deny(msg) => Err(msg),
+                    };
 
                     // 通知前端：工具执行完毕
                     let _ = tx.send(StreamEvent::ToolExecuted {

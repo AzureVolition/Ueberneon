@@ -1,13 +1,14 @@
 use dioxus::desktop::use_window;
 use dioxus::prelude::*;
 use std::time::Duration;
+use crate::agent::{ActionMode, AgentMode};
 
-use crate::ui::state::*;
-
-/// 底部输入栏 —— 多行输入框 + 发送/取消按钮
+/// 底部输入栏 —— 模式选择 + 多行输入框 + 发送/取消按钮
 #[component]
 pub fn InputBar(
     is_streaming: Signal<bool>,
+    action_mode: Signal<ActionMode>,
+    agent_mode: Signal<AgentMode>,
     on_send: EventHandler<String>,
 ) -> Element {
     let mut input = use_signal(String::new);
@@ -41,6 +42,53 @@ pub fn InputBar(
         div {
             class: "input-bar",
 
+            // ── 模式选择行 ──
+            div {
+                class: "mode-toggle-row",
+
+                // ── 执行模式 ──
+                div {
+                    class: "mode-toggle-group",
+                    label {
+                        class: "mode-toggle-label",
+                        "action"
+                    }
+                    div {
+                        class: if running { "mode-pill-row is-disabled" } else { "mode-pill-row" },
+                        for mode in ActionMode::ALL.iter() {
+                            button {
+                                class: if *mode == action_mode() { "mode-pill is-active" } else { "mode-pill" },
+                                onclick: move |_| action_mode.set(*mode),
+                                "{mode}"
+                            }
+                        }
+                    }
+                }
+
+                // ── Agent 模式 ──
+                div {
+                    class: "mode-toggle-group",
+                    label {
+                        class: "mode-toggle-label",
+                        "agent"
+                    }
+                    div {
+                        class: if running { "mode-pill-row is-disabled" } else { "mode-pill-row" },
+                        for mode in AgentMode::ALL.iter() {
+                            button {
+                                class: if *mode == agent_mode() {
+                                    if *mode == AgentMode::Unrestrained { "mode-pill is-active is-danger" } else { "mode-pill is-active" }
+                                } else {
+                                    if *mode == AgentMode::Unrestrained { "mode-pill is-danger" } else { "mode-pill" }
+                                },
+                                onclick: move |_| agent_mode.set(*mode),
+                                "{mode}"
+                            }
+                        }
+                    }
+                }
+            }
+
             div {
                 class: "input-row",
 
@@ -69,7 +117,7 @@ pub fn InputBar(
                         }
                     },
                 }
-
+                
                 if running {
                     button {
                         class: "btn btn-cancel",

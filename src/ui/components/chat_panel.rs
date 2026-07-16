@@ -11,6 +11,7 @@ pub fn ChatPanel(
     is_streaming: Signal<bool>,
     active_tool_calls: Signal<Vec<ToolCallRecord>>,
     markdown_to_html: fn(&str) -> String,
+    on_approve: EventHandler<(bool,)>,
 ) -> Element {
     let msgs = messages.read();
     let segments = streaming_segments.read();
@@ -171,17 +172,41 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
                             }
                         }
                         // 按 LLM 返回的 StreamSegment 顺序渲染
-                        {render_segments(false, &msg.segments, &msg.tool_calls, markdown_to_html).into_iter()}
+                        // 如果 segments 为空但 content 非空（用户消息），直接渲染 content
+                        {
+                            if msg.segments.is_empty() && !msg.content.is_empty() {
+                                rsx! {
+                                    div {
+                                        class: "message-content",
+                                        dangerous_inner_html: markdown_to_html(&msg.content),
+                                    }
+                                }
+                            } else {
+                                rsx! {
+                                    {render_segments(false, &msg.segments, &msg.tool_calls, markdown_to_html, on_approve).into_iter()}
+                                }
+                            }
+                        }
                     }
                 }
             })}
 
             // 流式输出区 —— 按 LLM 返回的 StreamSegment 顺序渲染
             if running && !segments.is_empty() {
-                div {
-                    key: "{streaming_key}",
-                    class: "message-bubble message-assistant streaming",
-                    {render_segments(true, &segments, &active_calls, markdown_to_html).into_iter()}
+                {
+                    let has_approval = active_calls.iter().any(|tc| matches!(tc.status, ToolCallStatus::AwaitingApproval { .. }));
+                    let streaming_class = if has_approval {
+                        "message-bubble message-assistant streaming awaiting-approval"
+                    } else {
+                        "message-bubble message-assistant streaming"
+                    };
+                    rsx! {
+                        div {
+                            key: "{streaming_key}",
+                            class: "{streaming_class}",
+                            {render_segments(true, &segments, &active_calls, markdown_to_html, on_approve).into_iter()}
+                        }
+                    }
                 }
             }
 
@@ -205,9 +230,18 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
                         let i = *idx;
                         let tooltip = preview.clone();
                         let w = win.clone();
+                        let is_streaming = running && Some(*idx) == last_user_index;
+                        let has_approval = is_streaming && active_calls.iter().any(|tc| matches!(tc.status, ToolCallStatus::AwaitingApproval { .. }));
+                        let hit_class = if has_approval {
+                            "timeline-hit streaming awaiting-approval"
+                        } else if is_streaming {
+                            "timeline-hit streaming"
+                        } else {
+                            "timeline-hit"
+                        };
                         rsx! {
                             div {
-                                class: if running && Some(*idx) == last_user_index {{ "timeline-hit streaming" }} else {{ "timeline-hit" }},
+                                class: "{hit_class}",
                                 "data-index": "{idx}",
                                 title: "{tooltip}",
                                 onclick: move |_| {{
@@ -232,6 +266,7 @@ fn render_segments(
     segments: &[StreamSegment],
     tool_calls: &[ToolCallRecord],
     markdown_to_html: fn(&str) -> String,
+    on_approve: EventHandler<(bool,)>,
 ) -> Vec<Element> {
     let mut items: Vec<Element> = Vec::new();
     let mut tc_idx = 0usize;
@@ -274,28 +309,72 @@ fn render_segments(
             StreamSegment::ToolCall => {
                 if let Some(call) = tool_calls.get(tc_idx) {
                     let sc = status_class(&call.status);
-                    let status_text = match call.status {
+                    let status_text = match &call.status {
                         ToolCallStatus::Running => "running",
                         ToolCallStatus::Success => "success",
                         ToolCallStatus::Failed(_) => "failed",
+                        ToolCallStatus::AwaitingApproval { .. } => "needs approval",
                     };
-                    buf.push(rsx! {
-                        details {
-                            class: "tool-call-details {sc}",
-                            summary {
-                                class: "tool-call-summary",
-                                span { class: "tool-call-name", "{call.tool_name}" }
-                                span {
-                                    class: "tool-call-args",
-                                    "{tool_args_summary(&call.tool_name, &call.args)}"
+                    let is_approval = matches!(&call.status, ToolCallStatus::AwaitingApproval { .. });
+                    let approval_reason = call.approval_reason.clone().unwrap_or_default();
+                    let tool_name = call.tool_name.clone();
+                    let args_summary = tool_args_summary(&call.tool_name, &call.args);
+                    let on_allow = on_approve;
+                    let on_deny = on_approve;
+
+                    buf.push(if is_approval {
+                        rsx! {
+                            div {
+                                class: "approval-card",
+                                div {
+                                    class: "approval-header",
+                                    span { class: "approval-title", "{tool_name} needs approval" }
                                 }
-                                span {
-                                    class: "tool-call-status {sc}",
-                                    "{status_text}"
+                                div {
+                                    class: "approval-body",
+                                    div {
+                                        class: "approval-args",
+                                        "{args_summary}"
+                                    }
+                                    div {
+                                        class: "approval-reason",
+                                        "{approval_reason}"
+                                    }
+                                }
+                                div {
+                                    class: "approval-actions",
+                                    button {
+                                        class: "approval-btn allow",
+                                        onclick: move |_| on_allow.call((true,)),
+                                        "allow"
+                                    }
+                                    button {
+                                        class: "approval-btn deny",
+                                        onclick: move |_| on_deny.call((false,)),
+                                        "deny"
+                                    }
                                 }
                             }
-                            if let Some(ref result) = call.result {
-                                pre { class: "tool-call-result", "{result}" }
+                        }
+                    } else {
+                        rsx! {
+                            details {
+                                class: "tool-call-details {sc}",
+                                summary {
+                                    class: "tool-call-summary",
+                                    span { class: "tool-call-name", "{call.tool_name}" }
+                                    span {
+                                        class: "tool-call-args",
+                                        "{tool_args_summary(&call.tool_name, &call.args)}"
+                                    }
+                                    span {
+                                        class: "tool-call-status {sc}",
+                                        "{status_text}"
+                                    }
+                                }
+                                if let Some(ref result) = call.result {
+                                    pre { class: "tool-call-result", "{result}" }
+                                }
                             }
                         }
                     });
@@ -314,6 +393,7 @@ fn status_class(status: &ToolCallStatus) -> &'static str {
         ToolCallStatus::Running => "status-running",
         ToolCallStatus::Success => "status-success",
         ToolCallStatus::Failed(_) => "status-failed",
+        ToolCallStatus::AwaitingApproval { .. } => "status-approval",
     }
 }
 
