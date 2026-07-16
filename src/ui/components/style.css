@@ -899,6 +899,98 @@ body {
 }
 
 /* ═══════════════════════════════════════════════
+   THINKING SECTION — collapsible reasoning
+   ═══════════════════════════════════════════════ */
+.thinking-section {
+  margin-bottom: var(--space-sm);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-sm);
+  background: oklch(10% 0.012 265);
+  transition: border-color var(--dur-fast) var(--ease-out);
+}
+
+.thinking-section:hover {
+  border-color: var(--color-rule-2);
+}
+
+.thinking-toggle {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-micro);
+  text-transform: uppercase;
+  color: var(--color-ink-3);
+  cursor: pointer;
+  user-select: none;
+  padding: var(--space-xs) var(--space-sm);
+  opacity: 0.65;
+  transition: color var(--dur-fast) var(--ease-out),
+              opacity var(--dur-fast) var(--ease-out);
+  list-style: none; /* hides the default triangle in most browsers */
+}
+
+.thinking-toggle::-webkit-details-marker {
+  display: none; /* Safari details marker */
+}
+
+.thinking-toggle::before {
+  content: "▸ ";
+  display: inline;
+  transition: transform var(--dur-base) var(--ease-soft);
+}
+
+.thinking-section[open] .thinking-toggle::before {
+  content: "▾ ";
+}
+
+.thinking-toggle:hover {
+  color: var(--color-accent);
+  opacity: 1;
+}
+
+.thinking-content {
+  padding: 0 var(--space-sm) var(--space-sm);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  color: var(--color-ink-3);
+  text-transform: none;
+  border-top: 1px solid var(--color-rule);
+  margin-top: 0;
+  padding-top: var(--space-xs);
+}
+
+.thinking-content p {
+  margin: var(--space-2xs) 0;
+}
+
+.thinking-content pre {
+  background: oklch(6% 0.01 265);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-sm);
+  padding: var(--space-sm);
+  margin: var(--space-2xs) 0;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  color: var(--color-ink-3);
+  text-transform: none;
+}
+
+.thinking-content code {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  background: oklch(6% 0.01 265);
+  padding: 1px 4px;
+  border-radius: var(--radius-sm);
+  text-transform: none;
+}
+
+.thinking-content pre code {
+  background: none;
+  padding: 0;
+}
+
+/* ═══════════════════════════════════════════════
    INPUT BAR
    ═══════════════════════════════════════════════ */
 .input-bar {

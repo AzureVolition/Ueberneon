@@ -17,6 +17,7 @@ use llm::{Chunk, Message, OpenAiProvider, Provider, Request, Role as LlmRole, To
 /// - `config`: 应用配置（模型、API key 等）
 /// - `messages`: 当前对话消息列表 signal
 /// - `streaming_content`: 当前流式输出内容 signal
+/// - `streaming_reasoning`: 当前流式推理内容 signal
 /// - `is_streaming`: 是否正在运行 signal
 /// - `active_tool_calls`: 当前活跃工具调用 signal
 pub async fn run_agent_loop(
@@ -24,6 +25,7 @@ pub async fn run_agent_loop(
     config: AppConfig,
     mut messages: Signal<Vec<ChatMessage>>,
     mut streaming_content: Signal<String>,
+    mut streaming_reasoning: Signal<String>,
     mut is_streaming: Signal<bool>,
     mut active_tool_calls: Signal<Vec<ToolCallRecord>>,
     mut projects: Signal<Vec<Project>>,
@@ -32,6 +34,7 @@ pub async fn run_agent_loop(
 ) {
     is_streaming.set(true);
     streaming_content.set(String::new());
+    streaming_reasoning.set(String::new());
     active_tool_calls.set(Vec::new());
 
     // ── 1. 构建 LLM provider ──
@@ -94,6 +97,7 @@ pub async fn run_agent_loop(
     };
 
     let mut final_output = String::new();
+    let mut final_reasoning = String::new();
 
     // ── 4. Agent 循环 ──
     loop {
@@ -111,6 +115,7 @@ pub async fn run_agent_loop(
         tokio::pin!(stream);
 
         let mut output = String::new();
+        let mut reasoning = String::new();
         let mut pending_tool_calls: Vec<ToolCall> = Vec::new();
 
         while let Some(result) = stream.next().await {
@@ -120,10 +125,8 @@ pub async fn run_agent_loop(
                     streaming_content.set(output.clone());
                 }
                 Ok(Chunk::Reasoning { text, .. }) => {
-                    // 推理内容也追加到输出中（带前缀）
-                    let reasoning = format!("> {text}");
-                    output.push_str(&reasoning);
-                    streaming_content.set(output.clone());
+                    reasoning.push_str(&text);
+                    streaming_reasoning.set(reasoning.clone());
                 }
                 Ok(Chunk::ToolCallComplete(tool)) => {
                     have_tool_calls = true;
@@ -208,6 +211,7 @@ pub async fn run_agent_loop(
         }
 
         final_output = output;
+        final_reasoning.push_str(&reasoning);
 
         if !have_tool_calls {
             break;
@@ -222,6 +226,7 @@ pub async fn run_agent_loop(
             content: final_content,
             timestamp: chrono::Local::now(),
             tool_calls: active_tool_calls.read().clone(),
+            reasoning: final_reasoning,
         });
 
         // 同步写入项目对话存储
@@ -242,5 +247,6 @@ pub async fn run_agent_loop(
     }
 
     streaming_content.set(String::new());
+    streaming_reasoning.set(String::new());
     is_streaming.set(false);
 }

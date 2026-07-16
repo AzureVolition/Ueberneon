@@ -43,6 +43,7 @@ pub fn App() -> Element {
     let mut active_conversation_id = use_signal(|| String::new());
     let mut messages = use_signal(Vec::<ChatMessage>::new);
     let mut streaming_content = use_signal(String::new);
+    let mut streaming_reasoning = use_signal(String::new);
     let mut is_streaming = use_signal(|| false);
     let mut active_tool_calls = use_signal(Vec::<ToolCallRecord>::new);
     let config = use_signal(|| AppConfig {
@@ -79,6 +80,7 @@ pub fn App() -> Element {
         // 没有对话，清空消息
         active_conversation_id.set(String::new());
         messages.set(Vec::new());
+        streaming_reasoning.set(String::new());
     };
 
     /// 返回项目列表
@@ -86,6 +88,7 @@ pub fn App() -> Element {
         sidebar_view.set(SidebarView::ProjectList);
         active_project_id.set(None);
         messages.set(Vec::new());
+        streaming_reasoning.set(String::new());
     };
 
     /// 新建项目
@@ -126,6 +129,7 @@ pub fn App() -> Element {
 
         active_conversation_id.set(conv_id);
         messages.set(Vec::new());
+        streaming_reasoning.set(String::new());
         active_tool_calls.set(Vec::new());
     };
 
@@ -137,6 +141,7 @@ pub fn App() -> Element {
         active_conversation_id.set(conv_id.clone());
         let msgs = load_messages_for_conversation(&projects.read(), proj_id, &conv_id);
         messages.set(msgs);
+        streaming_reasoning.set(String::new());
         active_tool_calls.set(Vec::new());
     };
 
@@ -153,6 +158,7 @@ pub fn App() -> Element {
             sidebar_view.set(SidebarView::ProjectList);
             active_project_id.set(None);
             messages.set(Vec::new());
+            streaming_reasoning.set(String::new());
         }
 
         {
@@ -187,6 +193,7 @@ pub fn App() -> Element {
                 ChatPanel {
                     messages,
                     streaming_content,
+                    streaming_reasoning,
                     is_streaming,
                     active_tool_calls,
                     markdown_to_html,
@@ -201,6 +208,7 @@ pub fn App() -> Element {
                             content: input.clone(),
                             timestamp: chrono::Local::now(),
                             tool_calls: vec![],
+                            reasoning: String::new(),
                         });
 
                         // 保存用户消息到当前对话（持久化）
@@ -217,6 +225,7 @@ pub fn App() -> Element {
                                                 content: input.clone(),
                                                 timestamp: chrono::Local::now(),
                                                 tool_calls: vec![],
+                                                reasoning: String::new(),
                                             });
                                         }
                                     }
@@ -235,6 +244,7 @@ pub fn App() -> Element {
                                 config_val,
                                 messages,
                                 streaming_content,
+                                streaming_reasoning,
                                 is_streaming,
                                 active_tool_calls,
                                 projects_sig,

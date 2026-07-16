@@ -7,12 +7,14 @@ use crate::ui::state::{ChatMessage, Role, ToolCallRecord, ToolCallStatus};
 pub fn ChatPanel(
     messages: Signal<Vec<ChatMessage>>,
     streaming_content: Signal<String>,
+    streaming_reasoning: Signal<String>,
     is_streaming: Signal<bool>,
     active_tool_calls: Signal<Vec<ToolCallRecord>>,
     markdown_to_html: fn(&str) -> String,
 ) -> Element {
     let msgs = messages.read();
     let streaming = streaming_content.read();
+    let streaming_reason = streaming_reasoning.read();
     let running = is_streaming();
     let active_calls = active_tool_calls.read();
 
@@ -70,11 +72,36 @@ pub fn ChatPanel(
                     role_class, role_label, formatted_time, content_html, tool_calls_section
                 );
 
+                let reasoning_html = if !msg.reasoning.is_empty() {
+                    markdown_to_html(&msg.reasoning)
+                } else {
+                    String::new()
+                };
+
                 rsx! {
                     div {
                         key: "{i}",
                         class: bubble_class,
-                        dangerous_inner_html: full_html,
+
+                        // 可折叠思考区域（历史消息）
+                        if !reasoning_html.is_empty() {
+                            details {
+                                class: "thinking-section",
+                                summary {
+                                    class: "thinking-toggle",
+                                    "thinking"
+                                }
+                                div {
+                                    class: "thinking-content",
+                                    dangerous_inner_html: reasoning_html,
+                                }
+                            }
+                        }
+
+                        // 主消息内容（header + content + tool calls）
+                        div {
+                            dangerous_inner_html: full_html,
+                        }
                     }
                 }
             })}
@@ -115,6 +142,25 @@ pub fn ChatPanel(
                 }
             })}
 
+            // 流式输出区
+            if running && !streaming_reason.is_empty() {
+                div {
+                    class: "message-bubble message-assistant",
+                    details {
+                        class: "thinking-section",
+                        open: true,
+                        summary {
+                            class: "thinking-toggle",
+                            "thinking"
+                        }
+                        div {
+                            class: "thinking-content",
+                            dangerous_inner_html: markdown_to_html(&streaming_reason),
+                        }
+                    }
+                }
+            }
+
             if running && !streaming.is_empty() {
                 div {
                     class: "message-bubble message-assistant streaming",
@@ -125,7 +171,7 @@ pub fn ChatPanel(
                 }
             }
 
-            if running && streaming.is_empty() {
+            if running && streaming.is_empty() && streaming_reason.is_empty() {
                 div {
                     class: "message-bubble message-assistant thinking",
                     div {

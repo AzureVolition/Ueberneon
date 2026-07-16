@@ -33,6 +33,9 @@ pub struct ChatMessage {
     pub content: String,
     pub timestamp: DateTime<Local>,
     pub tool_calls: Vec<ToolCallRecord>,
+    /// LLM 的推理/思考内容（渲染为可折叠区域）
+    #[serde(default)]
+    pub reasoning: String,
 }
 
 /// 对话
