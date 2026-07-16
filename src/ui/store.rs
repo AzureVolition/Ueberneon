@@ -1,6 +1,6 @@
 // ── 数据持久化层 ──
 //
-// 所有项目数据存储在 $CWD/.racpagent/ 目录下：
+// 所有项目数据存储在 ~/.racpagent/ 目录下：
 //   projects.json        ← 完整项目列表（含对话）
 //
 // 应用启动时自动加载，数据变更时自动写盘。
@@ -11,10 +11,10 @@ use anyhow::{Context, Result};
 
 use crate::ui::state::Project;
 
-/// 获取数据根目录 `$CWD/.racpagent/`
+/// 获取数据根目录 `~/.racpagent/`
 fn data_dir() -> PathBuf {
-    let cwd = std::env::current_dir().expect("failed to get cwd");
-    cwd.join(".racpagent")
+    let home = home_dir();
+    PathBuf::from(home).join(".racpagent")
 }
 
 /// 确保数据目录存在
@@ -121,6 +121,7 @@ mod tests {
                 id: "conv-1".into(),
                 title: "hello".into(),
                 messages: vec![],
+                updated_at: chrono::Local::now(),
             }],
         }];
 

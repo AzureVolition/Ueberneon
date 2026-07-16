@@ -4,6 +4,7 @@
 // 与 v1 的 encoding.rs 保持一致，使得含 CJK 的 Windows 文件
 // 可正常编辑而不会静默损坏其字节。
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::agent::{Tool, ToolContext, ToolResult};
@@ -27,12 +28,14 @@ use crate::permission::Decision;
 pub struct ReadFile {
     schema: Value ,
     read_only: bool,
+    /// 工作目录 —— 所有文件路径必须在此目录之下。
+    work_dir: PathBuf,
     /// 文件内容追踪器（陈旧锚点检查）。
     tracker: Arc<FileObserveTracker>,
 }
 
 impl ReadFile {
-    pub fn new(tracker: Arc<FileObserveTracker>) -> Self {
+    pub fn new(work_dir: PathBuf, tracker: Arc<FileObserveTracker>) -> Self {
         Self {
             schema: serde_json::json!({
                     "type": "object",
@@ -66,8 +69,27 @@ impl ReadFile {
                     "required": ["path"]
                 }),
             read_only: true,
+            work_dir,
             tracker,
         }
+    }
+
+    /// 解析文件路径：相对路径拼接到 work_dir 下，绝对路径必须在 work_dir 内
+    fn resolve_path(&self, path: &str) -> Result<PathBuf, String> {
+        let p = std::path::Path::new(path);
+        let abs = if p.is_relative() {
+            self.work_dir.join(p)
+        } else {
+            p.to_path_buf()
+        };
+        if !abs.starts_with(&self.work_dir) {
+            return Err(format!(
+                "path '{}' is outside the workspace directory '{}'",
+                abs.display(),
+                self.work_dir.display()
+            ));
+        }
+        Ok(abs)
     }
 }
 
@@ -80,7 +102,7 @@ impl Tool for ReadFile {
             None => return Err("read_file: missing required argument 'path'".into()),
         };
 
-        let path = std::path::Path::new(path_str);
+        let path = self.resolve_path(path_str)?;
 
         // 安全检查：拒绝访问 .git 目录和二进制文件（通过快速 BOM 检查）
         if path.components().any(|c| c.as_os_str() == ".git") {
@@ -234,7 +256,7 @@ mod tests {
     async fn read_utf8_file() {
         let content = b"hello\nworld\nthird line\n";
         let (path, _file) = create_temp_file(content);
-        let tool = ReadFile::new(make_tracker());
+        let tool = ReadFile::new(std::env::temp_dir(), make_tracker());
         let args = serde_json::json!({"path": path.to_str().unwrap()});
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
@@ -253,7 +275,7 @@ mod tests {
     async fn read_with_offset_limit() {
         let content = b"line1\nline2\nline3\nline4\nline5\n";
         let (path, _file) = create_temp_file(content);
-        let tool = ReadFile::new(make_tracker());
+        let tool = ReadFile::new(std::env::temp_dir(), make_tracker());
         let args = serde_json::json!({
             "path": path.to_str().unwrap(),
             "offset": 1,
@@ -276,7 +298,7 @@ mod tests {
     async fn read_head() {
         let content = b"line1\nline2\nline3\nline4\nline5\n";
         let (path, _file) = create_temp_file(content);
-        let tool = ReadFile::new(make_tracker());
+        let tool = ReadFile::new(std::env::temp_dir(), make_tracker());
         let args = serde_json::json!({
             "path": path.to_str().unwrap(),
             "head": 2
@@ -298,7 +320,7 @@ mod tests {
     async fn read_tail() {
         let content = b"line1\nline2\nline3\nline4\nline5\n";
         let (path, _file) = create_temp_file(content);
-        let tool = ReadFile::new(make_tracker());
+        let tool = ReadFile::new(std::env::temp_dir(), make_tracker());
         let args = serde_json::json!({
             "path": path.to_str().unwrap(),
             "tail": 2
@@ -320,20 +342,25 @@ mod tests {
 
     #[tokio::test]
     async fn reject_git_path() {
-        let tool = ReadFile::new(make_tracker());
-        let args = serde_json::json!({"path": "/tmp/repo/.git/config"});
+        let dir = std::env::temp_dir();
+        let repo_dir = dir.join("_test_git_repo");
+        let _ = std::fs::create_dir_all(repo_dir.join(".git"));
+        let tool = ReadFile::new(dir, make_tracker());
+        // 使用相对路径，resolve 后会拼到 work_dir 下
+        let args = serde_json::json!({"path": "_test_git_repo/.git/config"});
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: false,
             agent_mode: AgentMode::Ask,
             progress: None,
         }, &args).await;
+        let _ = std::fs::remove_dir_all(&repo_dir);
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn missing_path() {
-        let tool = ReadFile::new(make_tracker());
+        let tool = ReadFile::new(std::env::temp_dir(), make_tracker());
         let args = serde_json::json!({});
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
@@ -347,7 +374,7 @@ mod tests {
     #[tokio::test]
     async fn empty_file() {
         let (path, _file) = create_temp_file(b"");
-        let tool = ReadFile::new(make_tracker());
+        let tool = ReadFile::new(std::env::temp_dir(), make_tracker());
         let args = serde_json::json!({"path": path.to_str().unwrap()});
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
@@ -369,7 +396,7 @@ mod tests {
             b'w', 0x00, b'o', 0x00, b'r', 0x00, b'l', 0x00, b'd', 0x00,
         ];
         let (path, _file) = create_temp_file(&content);
-        let tool = ReadFile::new(make_tracker());
+        let tool = ReadFile::new(std::env::temp_dir(), make_tracker());
         let args = serde_json::json!({"path": path.to_str().unwrap()});
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),

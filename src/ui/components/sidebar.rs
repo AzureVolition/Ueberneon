@@ -15,6 +15,7 @@ pub fn Sidebar(
     on_select_conversation: EventHandler<String>,
     on_back_to_projects: EventHandler<()>,
     on_delete_project: EventHandler<String>,
+    on_delete_conversation: EventHandler<String>,
 ) -> Element {
     // ── 新建项目表单状态 ──
     let mut show_new_project_form = use_signal(|| false);
@@ -22,13 +23,14 @@ pub fn Sidebar(
     let mut new_project_path = use_signal(String::new);
 
     // ── 右键菜单状态 ──
-    let mut context_menu = use_signal(|| Option::<(f64, f64, String)>::None);
+    let mut project_context_menu = use_signal(|| Option::<(f64, f64, String)>::None);
+    let mut conv_context_menu = use_signal(|| Option::<(f64, f64, String)>::None);
 
     let view = sidebar_view.read().clone();
 
-    // ── 右键菜单计算 ──
-    let ctx_menu_overlay = {
-        let guard = context_menu.read();
+    // ── 项目右键菜单 ──
+    let project_menu_overlay = {
+        let guard = project_context_menu.read();
         let val = guard.as_ref().map(|(x, y, target_id)| {
             let is_default = *target_id == crate::ui::store::DEFAULT_PROJECT_ID;
             let tid = target_id.clone();
@@ -37,7 +39,7 @@ pub fn Sidebar(
             rsx! {
                 div {
                     class: "context-menu-overlay",
-                    onclick: move |_| { context_menu.set(None); },
+                    onclick: move |_| { project_context_menu.set(None); },
                     div {
                         class: "context-menu",
                         style: "left: {pos_x}px; top: {pos_y}px;",
@@ -46,7 +48,7 @@ pub fn Sidebar(
                                 class: "context-menu-item danger",
                                 onclick: move |_| {
                                     on_delete_project.call(tid.clone());
-                                    context_menu.set(None);
+                                    project_context_menu.set(None);
                                 },
                                 "delete project"
                             }
@@ -63,15 +65,44 @@ pub fn Sidebar(
         val
     };
 
+    // ── 对话右键菜单 ──
+    let conv_menu_overlay = {
+        let guard = conv_context_menu.read();
+        let val = guard.as_ref().map(|(x, y, target_id)| {
+            let tid = target_id.clone();
+            let pos_x = *x;
+            let pos_y = *y;
+            rsx! {
+                div {
+                    class: "context-menu-overlay",
+                    onclick: move |_| { conv_context_menu.set(None); },
+                    div {
+                        class: "context-menu",
+                        style: "left: {pos_x}px; top: {pos_y}px;",
+                        div {
+                            class: "context-menu-item danger",
+                            onclick: move |_| {
+                                on_delete_conversation.call(tid.clone());
+                                conv_context_menu.set(None);
+                            },
+                            "delete conversation"
+                        }
+                    }
+                }
+            }
+        });
+        val
+    };
+
     rsx! {
         div {
             class: "sidebar",
 
-            {ctx_menu_overlay}
+            {project_menu_overlay}
+            {conv_menu_overlay}
 
             match view {
                 SidebarView::ProjectList => {
-                    // ── 项目列表视图 ──
                     rsx! {
                         div {
                             class: "sidebar-header",
@@ -84,7 +115,7 @@ pub fn Sidebar(
                                     onclick: move |_| {
                                         let mut show = show_new_project_form.write();
                                         *show = !*show;
-                                                if *show {
+                                        if *show {
                                             new_project_name.set(String::new());
                                             new_project_path.set(String::new());
                                         }
@@ -94,7 +125,6 @@ pub fn Sidebar(
                             }
                         }
 
-                        // ── 新建项目内联表单 ──
                         if *show_new_project_form.read() {
                             div {
                                 class: "project-form",
@@ -133,7 +163,6 @@ pub fn Sidebar(
                                                         let path = folder.path();
                                                         let path_str = path.display().to_string();
                                                         path_signal.set(path_str);
-                                                        // 从路径提取文件夹名作为项目名
                                                         if let Some(folder_name) = path
                                                             .file_name()
                                                             .and_then(|n| n.to_str())
@@ -174,7 +203,6 @@ pub fn Sidebar(
                             }
                         }
 
-                        // ── 项目列表 ──
                         div {
                             class: "conversation-list",
                             for proj in projects.read().iter() {
@@ -194,7 +222,8 @@ pub fn Sidebar(
                                             onclick: {
                                                 let pid = proj_id.clone();
                                                 move |_| {
-                                                    context_menu.set(None);
+                                                    project_context_menu.set(None);
+                                                    conv_context_menu.set(None);
                                                     on_select_project.call(pid.clone());
                                                 }
                                             },
@@ -203,7 +232,7 @@ pub fn Sidebar(
                                                 move |evt| {
                                                     evt.prevent_default();
                                                     let coords = evt.client_coordinates();
-                                                    context_menu.set(Some((
+                                                    project_context_menu.set(Some((
                                                         coords.x,
                                                         coords.y,
                                                         pid.clone(),
@@ -225,7 +254,6 @@ pub fn Sidebar(
                     }
                 }
                 SidebarView::ConversationList(ref project_id) => {
-                    // ── 对话列表视图 ──
                     let proj_name = projects.read().iter()
                         .find(|p| p.id == *project_id)
                         .map(|p| p.name.clone())
@@ -263,8 +291,24 @@ pub fn Sidebar(
                                     for conv in convs.iter() {
                                         {
                                             let conv_id = conv.id.clone();
-                                            let conv_title = conv.title.clone();
+                                            let conv_title = if conv.title.is_empty() {
+                                                "new conversation".into()
+                                            } else {
+                                                conv.title.clone()
+                                            };
                                             let is_active = *active_conversation_id.read() == conv_id;
+                                            let title_class = if conv.title.is_empty() {
+                                                "conversation-title-placeholder"
+                                            } else {
+                                                "conversation-title"
+                                            };
+                                            let rounds = conversation_rounds(&conv.messages);
+                                            let rounds_label = if rounds == 1 {
+                                                "1 round".into()
+                                            } else {
+                                                format!("{rounds} rounds")
+                                            };
+                                            let time_str = format_relative_time(&conv.updated_at);
 
                                             rsx! {
                                                 div {
@@ -277,12 +321,38 @@ pub fn Sidebar(
                                                     onclick: {
                                                         let cid = conv_id.clone();
                                                         move |_| {
+                                                            conv_context_menu.set(None);
                                                             on_select_conversation.call(cid.clone());
                                                         }
                                                     },
-                                                    span {
-                                                        class: "conversation-title",
+                                                    oncontextmenu: {
+                                                        let cid = conv_id.clone();
+                                                        move |evt| {
+                                                            evt.prevent_default();
+                                                            let coords = evt.client_coordinates();
+                                                            conv_context_menu.set(Some((
+                                                                coords.x,
+                                                                coords.y,
+                                                                cid.clone(),
+                                                            )));
+                                                        }
+                                                    },
+                                                    div {
+                                                        class: "{title_class}",
                                                         "{conv_title}"
+                                                    }
+                                                    div {
+                                                        class: "conversation-meta",
+                                                        if rounds > 0 {
+                                                            span {
+                                                                class: "conv-rounds",
+                                                                "{rounds_label}"
+                                                            }
+                                                        }
+                                                        span {
+                                                            class: "conv-time",
+                                                            "{time_str}"
+                                                        }
                                                     }
                                                 }
                                             }

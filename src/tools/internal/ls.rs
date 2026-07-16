@@ -3,7 +3,7 @@
 // 支持递归模式和单层列表，自动跳过噪声目录。
 // 目录名后加 `/`，文件名后跟制表符和字节大小。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::agent::{Tool, ToolContext, ToolResult};
 #[cfg(test)]
@@ -21,6 +21,7 @@ use crate::permission::Decision;
 pub struct Ls {
     schema: Value,
     read_only: bool,
+    work_dir: PathBuf,
 }
 
 /// 递归遍历时要跳过的噪声目录名。
@@ -40,7 +41,7 @@ const NOISE_DIRS: &[&str] = &[
 ];
 
 impl Ls {
-    pub fn new() -> Self {
+    pub fn new(work_dir: PathBuf) -> Self {
         Self {
             schema: serde_json::json!({
                 "type": "object",
@@ -56,6 +57,7 @@ impl Ls {
                 }
             }),
             read_only: true,
+            work_dir,
         }
     }
 }
@@ -74,7 +76,12 @@ impl Tool for Ls {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let path = std::path::Path::new(path_str);
+        // 相对路径基于项目目录解析
+        let path = if path_str == "." || !path_str.starts_with('/') {
+            self.work_dir.join(path_str)
+        } else {
+            std::path::PathBuf::from(path_str)
+        };
 
         // 安全检查
         if path.components().any(|c| c.as_os_str() == ".git") {
@@ -90,9 +97,9 @@ impl Tool for Ls {
         }
 
         if recursive {
-            list_recursive(path, path_str)
+            list_recursive(&path, path_str)
         } else {
-            list_flat(path, path_str)
+            list_flat(&path, path_str)
         }
     }
 }
@@ -221,6 +228,10 @@ mod tests {
         }
     }
 
+    fn test_ls() -> Ls {
+        Ls::new(std::env::current_dir().unwrap())
+    }
+
     #[tokio::test]
     async fn list_flat_dir() {
         let dir = temp_dir();
@@ -229,7 +240,7 @@ mod tests {
         std::fs::write(dir.join("b.rs"), b"fn main() {}").unwrap();
         std::fs::create_dir(dir.join("subdir")).unwrap();
 
-        let tool = Ls::new();
+        let tool = test_ls();
         let result = tool.execute(
             &test_ctx(),
             &serde_json::json!({"path": dir.to_str().unwrap()}),
@@ -247,7 +258,7 @@ mod tests {
         let dir = temp_dir();
         std::fs::create_dir_all(&dir).unwrap();
 
-        let tool = Ls::new();
+        let tool = test_ls();
         let result = tool.execute(
             &test_ctx(),
             &serde_json::json!({"path": dir.to_str().unwrap()}),
@@ -266,7 +277,7 @@ mod tests {
         std::fs::create_dir(dir.join("sub")).unwrap();
         std::fs::write(dir.join("sub").join("nested.rs"), b"nested").unwrap();
 
-        let tool = Ls::new();
+        let tool = test_ls();
         let result = tool.execute(
             &test_ctx(),
             &serde_json::json!({
@@ -284,7 +295,7 @@ mod tests {
 
     #[tokio::test]
     async fn path_not_exists() {
-        let tool = Ls::new();
+        let tool = test_ls();
         let result = tool.execute(
             &test_ctx(),
             &serde_json::json!({"path": "/nonexistent_path_12345"}),
@@ -300,7 +311,7 @@ mod tests {
         let file = dir.join("test.txt");
         std::fs::write(&file, b"content").unwrap();
 
-        let tool = Ls::new();
+        let tool = test_ls();
         let result = tool.execute(
             &test_ctx(),
             &serde_json::json!({"path": file.to_str().unwrap()}),
@@ -312,7 +323,7 @@ mod tests {
 
     #[tokio::test]
     async fn reject_git_path() {
-        let tool = Ls::new();
+        let tool = test_ls();
         let result = tool.execute(
             &test_ctx(),
             &serde_json::json!({"path": "/tmp/repo/.git"}),
@@ -322,7 +333,7 @@ mod tests {
 
     #[test]
     fn schema_is_valid_json() {
-        let tool = Ls::new();
+        let tool = test_ls();
         let schema = tool.schema();
         assert!(schema.is_object());
         assert_eq!(schema["type"], "object");
@@ -331,7 +342,7 @@ mod tests {
 
     #[tokio::test]
     async fn default_path_is_dot() {
-        let tool = Ls::new();
+        let tool = test_ls();
         let result = tool.execute(
             &ToolContext { call_id: "test".into(), plan_mode: false, agent_mode: AgentMode::Ask, progress: None },
             &serde_json::json!({}),

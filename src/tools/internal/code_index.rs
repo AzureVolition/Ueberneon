@@ -3,6 +3,7 @@
 // 使用正则表达式从源文件中提取函数、结构体、类等符号定义。
 // 支持 outline（列出路径下所有符号）和 search（按名搜索）两种模式。
 
+use std::path::PathBuf;
 use std::path::Path;
 
 use crate::agent::{Tool, ToolContext, ToolResult};
@@ -23,6 +24,7 @@ use crate::permission::Decision;
 pub struct CodeIndex {
     schema: Value,
     read_only: bool,
+    work_dir: PathBuf,
 }
 
 /// 一个符号定义。
@@ -96,7 +98,7 @@ const LANGUAGES: &[LangDef] = &[
 ];
 
 impl CodeIndex {
-    pub fn new() -> Self {
+    pub fn new(work_dir: PathBuf) -> Self {
         Self {
             schema: serde_json::json!({
                 "type": "object",
@@ -127,7 +129,17 @@ impl CodeIndex {
                 "required": ["action"]
             }),
             read_only: true,
+            work_dir,
         }
+    }
+
+    fn resolve_path(&self, path: &str) -> Result<PathBuf, String> {
+        let p = Path::new(path);
+        let abs = if p.is_relative() { self.work_dir.join(p) } else { p.to_path_buf() };
+        if !abs.starts_with(&self.work_dir) {
+            return Err(format!("path '{}' is outside workspace '{}'", abs.display(), self.work_dir.display()));
+        }
+        Ok(abs)
     }
 
     /// 根据文件扩展名查找对应的语言定义。
@@ -458,7 +470,7 @@ impl Tool for CodeIndex {
             .map(|l| (l as usize).clamp(1, CODE_INDEX_MAX_LIMIT))
             .unwrap_or(CODE_INDEX_DEFAULT_LIMIT);
 
-        let path = std::path::Path::new(path_str);
+        let path = self.resolve_path(path_str)?;
 
         if !path.exists() {
             return Err(format!("code_index: path '{}' does not exist", path_str));
@@ -471,7 +483,7 @@ impl Tool for CodeIndex {
         if path.is_file() {
             if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                 if let Some(lang) = Self::lang_for_ext(ext) {
-                    symbols = Self::parse_file(path, lang);
+                    symbols = Self::parse_file(&path, lang);
                 }
             }
         } else if path.is_dir() {
@@ -598,7 +610,7 @@ mod my_mod;\n\
 const MAX: usize = 100;\n\
 macro_rules! my_macro {}\n").unwrap();
 
-        let tool = CodeIndex::new();
+        let tool = CodeIndex::new(std::env::temp_dir());
         let result = tool.execute(&test_ctx(), &serde_json::json!({
             "action": "outline", "path": dir.join("test.rs").to_str().unwrap()
         })).await;
@@ -621,7 +633,7 @@ pub fn add(a: i32, b: i32) -> i32 { a + b }\n\
 pub fn subtract(a: i32, b: i32) -> i32 { a - b }\n\
 struct Config {}\n").unwrap();
 
-        let tool = CodeIndex::new();
+        let tool = CodeIndex::new(std::env::temp_dir());
         let result = tool.execute(&test_ctx(), &serde_json::json!({
             "action": "search", "query": "add", "path": dir.to_str().unwrap()
         })).await;
@@ -638,7 +650,7 @@ struct Config {}\n").unwrap();
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("test.rs"), b"fn do_something() {}\nstruct Data {}\nenum Status {}\n").unwrap();
 
-        let tool = CodeIndex::new();
+        let tool = CodeIndex::new(std::env::temp_dir());
         let result = tool.execute(&test_ctx(), &serde_json::json!({
             "action": "outline", "path": dir.to_str().unwrap(), "kind": "struct"
         })).await;
@@ -655,7 +667,7 @@ struct Config {}\n").unwrap();
         let dir = temp_dir();
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("data.json"), b"{\"key\": \"value\"}").unwrap();
-        let tool = CodeIndex::new();
+        let tool = CodeIndex::new(std::env::temp_dir());
         let result = tool.execute(&test_ctx(), &serde_json::json!({
             "action": "outline", "path": dir.to_str().unwrap()
         })).await;
@@ -666,7 +678,7 @@ struct Config {}\n").unwrap();
 
     #[tokio::test]
     async fn missing_action() {
-        let tool = CodeIndex::new();
+        let tool = CodeIndex::new(std::env::temp_dir());
         let result = tool.execute(&test_ctx(), &serde_json::json!({})).await;
         assert!(result.error().is_some());
     }
@@ -676,7 +688,7 @@ struct Config {}\n").unwrap();
         let dir = temp_dir();
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("main.py"), b"class MyClass:\n    def method(self): pass\ndef top_level(): pass\n").unwrap();
-        let tool = CodeIndex::new();
+        let tool = CodeIndex::new(std::env::temp_dir());
         let result = tool.execute(&test_ctx(), &serde_json::json!({
             "action": "outline", "path": dir.to_str().unwrap()
         })).await;
@@ -693,7 +705,7 @@ struct Config {}\n").unwrap();
         std::fs::write(dir.join("app.ts"), b"\
 function greet(name: string): string { return ''; }\n\
 class App {}\ninterface Config {}\ntype Data = string;\nenum Color { Red }\nconst MAX = 100;\n").unwrap();
-        let tool = CodeIndex::new();
+        let tool = CodeIndex::new(std::env::temp_dir());
         let result = tool.execute(&test_ctx(), &serde_json::json!({
             "action": "outline", "path": dir.to_str().unwrap()
         })).await;
@@ -712,7 +724,7 @@ class App {}\ninterface Config {}\ntype Data = string;\nenum Color { Red }\ncons
         let dir = temp_dir();
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("main.go"), b"package main\nfunc hello() {}\ntype Config struct {}\ntype Reader interface {}\n").unwrap();
-        let tool = CodeIndex::new();
+        let tool = CodeIndex::new(std::env::temp_dir());
         let result = tool.execute(&test_ctx(), &serde_json::json!({
             "action": "outline", "path": dir.to_str().unwrap()
         })).await;
@@ -725,7 +737,7 @@ class App {}\ninterface Config {}\ntype Data = string;\nenum Color { Red }\ncons
 
     #[tokio::test]
     async fn search_requires_query() {
-        let tool = CodeIndex::new();
+        let tool = CodeIndex::new(std::env::temp_dir());
         let result = tool.execute(&test_ctx(), &serde_json::json!({"action": "search"})).await;
         assert!(result.error().is_some());
         assert!(result.error().unwrap().contains("query"));
@@ -733,7 +745,7 @@ class App {}\ninterface Config {}\ntype Data = string;\nenum Color { Red }\ncons
 
     #[test]
     fn schema_is_valid_json() {
-        let tool = CodeIndex::new();
+        let tool = CodeIndex::new(std::env::temp_dir());
         let schema = tool.schema();
         assert!(schema.is_object());
         assert_eq!(schema["type"], "object");

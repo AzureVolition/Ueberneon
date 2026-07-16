@@ -76,7 +76,8 @@ impl ProcessRunner {
         cmd.args(&sandbox_args)
             .current_dir(&self.work_dir)
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
+            .stderr(std::process::Stdio::piped())
+            .stdin(std::process::Stdio::null());
 
         // 应用自定义环境变量
         if let Some(ref env) = self.env {

@@ -66,7 +66,7 @@ pub struct Request {
     pub max_tokens: u32,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Chunk {
     Text(String),
     Reasoning { text: String, signature: Option<String> },

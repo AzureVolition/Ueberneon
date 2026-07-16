@@ -60,7 +60,7 @@ impl From<&str> for AgentEvent {
 
 // ── Hook trait ───────────────────────────────────────────────────────────────
 
-pub trait Hook {
+pub trait Hook: Send + Sync {
     fn on_event(&self, event: &AgentEvent);
 }
 
@@ -70,14 +70,14 @@ pub trait Hook {
 pub struct CustomizedHook {
     listen_event: AgentEvent,
     listen_tools_name: Option<String>,
-    callback: Box<dyn Fn(&AgentEvent)>,
+    callback: Box<dyn Fn(&AgentEvent) + Send + Sync>,
 }
 
 impl CustomizedHook {
     pub fn new(
         listen_event: AgentEvent,
         listen_tools_name: Option<String>,
-        callback: Box<dyn Fn(&AgentEvent)>,
+        callback: Box<dyn Fn(&AgentEvent) + Send + Sync>,
     ) -> Self {
         Self {
             listen_event,

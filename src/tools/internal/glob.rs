@@ -3,6 +3,7 @@
 // 支持 ** 递归匹配，结果排序后输出，最多返回 1000 条。
 
 use crate::agent::{Tool, ToolContext, ToolResult};
+use std::path::PathBuf;
 #[cfg(test)]
 use crate::agent::{AgentMode, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
@@ -18,13 +19,14 @@ use crate::permission::Decision;
 pub struct Glob {
     schema: Value,
     read_only: bool,
+    work_dir: PathBuf,
 }
 
 /// 最大返回结果数。
 const GLOB_MAX_RESULTS: usize = 1000;
 
 impl Glob {
-    pub fn new() -> Self {
+    pub fn new(work_dir: PathBuf) -> Self {
         Self {
             schema: serde_json::json!({
                 "type": "object",
@@ -37,6 +39,7 @@ impl Glob {
                 "required": ["pattern"]
             }),
             read_only: true,
+            work_dir,
         }
     }
 }
@@ -47,6 +50,13 @@ impl Tool for Glob {
         let pattern = match args.get("pattern").and_then(|v| v.as_str()) {
             Some(p) if !p.is_empty() => p,
             _ => return Err("glob: missing required argument 'pattern'".into()),
+        };
+
+        // 相对 pattern 拼接到 work_dir 下
+        let pattern = if std::path::Path::new(pattern).is_relative() {
+            self.work_dir.join(pattern).to_string_lossy().to_string()
+        } else {
+            pattern.to_string()
         };
 
         // 安全检查：拒绝 .git 路径
@@ -66,7 +76,7 @@ impl Tool for Glob {
         let mut results: Vec<String> = Vec::new();
 
         // 使用 glob 库进行匹配
-        match glob::glob(pattern) {
+        match glob::glob(&pattern) {
             Ok(entries) => {
                 for entry in entries {
                     if results.len() >= GLOB_MAX_RESULTS {
@@ -150,7 +160,7 @@ mod tests {
         std::fs::write(dir.join("sub").join("c.rs"), b"").unwrap();
 
         let pattern = format!("{}/**/*.rs", dir.to_str().unwrap());
-        let tool = Glob::new();
+        let tool = Glob::new(std::env::temp_dir());
         let result = tool.execute(
             &test_ctx(),
             &serde_json::json!({"pattern": pattern}),
@@ -171,7 +181,7 @@ mod tests {
         std::fs::write(dir.join("README.md"), b"# readme").unwrap();
 
         let pattern = format!("{}/*.toml", dir.to_str().unwrap());
-        let tool = Glob::new();
+        let tool = Glob::new(std::env::temp_dir());
         let result = tool.execute(
             &test_ctx(),
             &serde_json::json!({"pattern": pattern}),
@@ -189,7 +199,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         let pattern = format!("{}/*.xyz", dir.to_str().unwrap());
-        let tool = Glob::new();
+        let tool = Glob::new(std::env::temp_dir());
         let result = tool.execute(
             &test_ctx(),
             &serde_json::json!({"pattern": pattern}),
@@ -202,7 +212,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_pattern() {
-        let tool = Glob::new();
+        let tool = Glob::new(std::env::temp_dir());
         // 使用含无效字符的 pattern
         let result = tool.execute(
             &test_ctx(),
@@ -214,7 +224,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_pattern() {
-        let tool = Glob::new();
+        let tool = Glob::new(std::env::temp_dir());
         let result = tool.execute(&test_ctx(), &serde_json::json!({})).await;
         assert!(result.error().is_some());
         assert!(result.error().unwrap().contains("missing"));
@@ -222,14 +232,14 @@ mod tests {
 
     #[tokio::test]
     async fn empty_pattern() {
-        let tool = Glob::new();
+        let tool = Glob::new(std::env::temp_dir());
         let result = tool.execute(&test_ctx(), &serde_json::json!({"pattern": ""})).await;
         assert!(result.error().is_some());
     }
 
     #[test]
     fn schema_is_valid_json() {
-        let tool = Glob::new();
+        let tool = Glob::new(std::env::temp_dir());
         let schema = tool.schema();
         assert!(schema.is_object());
         assert_eq!(schema["type"], "object");

@@ -27,9 +27,19 @@
   --color-rule-2:      oklch(96% 0.006 262 / 0.14);  /* stronger hairline */
   --color-rule-blueprint: oklch(96% 0.006 262 / 0.04); /* grid line */
 
-  --color-success:     oklch(68% 0.18 145);   /* tool call success */
-  --color-error:       oklch(62% 0.20 28);    /* tool call error */
-  --color-focus:       oklch(72% 0.20 200);    /* focus ring = neon cyan */
+  --color-success:       oklch(62% 0.08 170);   /* cool sage — success, harmonised with cyan */
+  --color-error:         oklch(68% 0.22 330);   /* neon pink — error as signal (reuse accent-2) */
+  --color-status-running: oklch(72% 0.20 200);  /* neon cyan — machine is working */
+  --color-focus:         oklch(72% 0.20 200);   /* focus ring = neon cyan */
+
+  /* ── Warm signal tokens (hue 50 — streaming / live state) ── */
+  --color-paper-warm:      oklch(16% 0.012 265);
+  --color-paper-warm-2:    oklch(19% 0.014 265);
+  --color-warm-glow:       oklch(72% 0.16 265 / 0.10);
+  --color-warm-glow-soft:  oklch(72% 0.16 265 / 0.05);
+  --color-warm-rule:       oklch(96% 0.006 265 / 0.12);
+  --color-warm-cursor:     oklch(74% 0.17 265);
+  --color-warm-transition-dur: 3000ms;
 
   /* ── Typography ── */
   --font-display:      "Instrument Serif", "Georgia", "Cambria", ui-serif, serif;

@@ -8,7 +8,10 @@ use crate::ui::store;
 
 /// Markdown 转 HTML 辅助函数
 fn markdown_to_html(md: &str) -> String {
-    let parser = pulldown_cmark::Parser::new(md);
+    let parser = pulldown_cmark::Parser::new_ext(
+        md,
+        pulldown_cmark::Options::ENABLE_TABLES,
+    );
     let mut html = String::new();
     pulldown_cmark::html::push_html(&mut html, parser);
     html
@@ -42,8 +45,7 @@ pub fn App() -> Element {
     // ── 当前对话状态 ──
     let mut active_conversation_id = use_signal(|| String::new());
     let mut messages = use_signal(Vec::<ChatMessage>::new);
-    let mut streaming_content = use_signal(String::new);
-    let mut streaming_reasoning = use_signal(String::new);
+    let mut streaming_segments = use_signal(Vec::<StreamSegment>::new);
     let mut is_streaming = use_signal(|| false);
     let mut active_tool_calls = use_signal(Vec::<ToolCallRecord>::new);
     let config = use_signal(|| AppConfig {
@@ -80,7 +82,7 @@ pub fn App() -> Element {
         // 没有对话，清空消息
         active_conversation_id.set(String::new());
         messages.set(Vec::new());
-        streaming_reasoning.set(String::new());
+        streaming_segments.set(Vec::new());
     };
 
     /// 返回项目列表
@@ -88,7 +90,7 @@ pub fn App() -> Element {
         sidebar_view.set(SidebarView::ProjectList);
         active_project_id.set(None);
         messages.set(Vec::new());
-        streaming_reasoning.set(String::new());
+        streaming_segments.set(Vec::new());
     };
 
     /// 新建项目
@@ -109,19 +111,29 @@ pub fn App() -> Element {
 
     /// 新建对话
     let on_new_conversation = move |_| {
-        let proj_id = active_project_id.read().clone();
-        let Some(ref proj_id) = proj_id else { return };
+        let current_proj = active_project_id.read().clone();
+        let proj_id = match current_proj {
+            Some(id) => id,
+            None => {
+                let def_id = store::DEFAULT_PROJECT_ID.to_string();
+                active_project_id.set(Some(def_id.clone()));
+                sidebar_view.set(SidebarView::ConversationList(def_id.clone()));
+                def_id
+            }
+        };
 
         let conv_id = format!("conv-{}", chrono::Local::now().timestamp_millis());
+        let now = chrono::Local::now();
         let conversation = Conversation {
             id: conv_id.clone(),
-            title: "新对话".into(),
+            title: String::new(),
             messages: Vec::new(),
+            updated_at: now,
         };
 
         {
             let mut projs = projects.write();
-            if let Some(proj) = projs.iter_mut().find(|p| p.id == *proj_id) {
+            if let Some(proj) = projs.iter_mut().find(|p| p.id == proj_id) {
                 proj.conversations.push(conversation);
             }
         }
@@ -129,20 +141,45 @@ pub fn App() -> Element {
 
         active_conversation_id.set(conv_id);
         messages.set(Vec::new());
-        streaming_reasoning.set(String::new());
+        streaming_segments.set(Vec::new());
         active_tool_calls.set(Vec::new());
     };
 
     /// 选择对话
     let on_select_conversation = move |conv_id: String| {
-        let proj_id = active_project_id.read().clone();
-        let Some(ref proj_id) = proj_id else { return };
+        let proj_id = active_project_id.read().clone()
+            .unwrap_or_else(|| store::DEFAULT_PROJECT_ID.to_string());
 
         active_conversation_id.set(conv_id.clone());
-        let msgs = load_messages_for_conversation(&projects.read(), proj_id, &conv_id);
+        let msgs = load_messages_for_conversation(&projects.read(), &proj_id, &conv_id);
         messages.set(msgs);
-        streaming_reasoning.set(String::new());
+        streaming_segments.set(Vec::new());
         active_tool_calls.set(Vec::new());
+    };
+
+    /// 删除对话
+    let on_delete_conversation = move |conv_id: String| {
+        let proj_id = active_project_id.read().clone()
+            .unwrap_or_else(|| store::DEFAULT_PROJECT_ID.to_string());
+
+        // 如果正在查看该对话，清空
+        if *active_conversation_id.read() == conv_id {
+            active_conversation_id.set(String::new());
+            messages.set(Vec::new());
+            streaming_segments.set(Vec::new());
+            active_tool_calls.set(Vec::new());
+        }
+
+        {
+            let mut projs = projects.write();
+            if let Some(proj) = projs.iter_mut().find(|p| p.id == proj_id) {
+                proj.conversations.retain(|c| c.id != conv_id);
+            }
+        }
+        store::save_projects_quiet(&projects.read());
+        // 触发重渲染
+        let curr = sidebar_view.read().clone();
+        sidebar_view.set(curr);
     };
 
     /// 删除项目
@@ -158,7 +195,7 @@ pub fn App() -> Element {
             sidebar_view.set(SidebarView::ProjectList);
             active_project_id.set(None);
             messages.set(Vec::new());
-            streaming_reasoning.set(String::new());
+            streaming_segments.set(Vec::new());
         }
 
         {
@@ -185,6 +222,7 @@ pub fn App() -> Element {
                 on_select_conversation,
                 on_back_to_projects,
                 on_delete_project,
+                on_delete_conversation,
             }
 
             div {
@@ -192,8 +230,7 @@ pub fn App() -> Element {
 
                 ChatPanel {
                     messages,
-                    streaming_content,
-                    streaming_reasoning,
+                    streaming_segments,
                     is_streaming,
                     active_tool_calls,
                     markdown_to_html,
@@ -209,25 +246,70 @@ pub fn App() -> Element {
                             timestamp: chrono::Local::now(),
                             tool_calls: vec![],
                             reasoning: String::new(),
+                            segments: Vec::new(),
                         });
 
                         // 保存用户消息到当前对话（持久化）
+                        // 如果未选中项目/对话，自动在默认项目创建新对话
                         {
                             let proj_id = active_project_id.read().clone();
                             let conv_id = active_conversation_id.read().clone();
-                            if let (Some(ref pid), cid) = (proj_id, conv_id) {
-                                if !cid.is_empty() {
+
+                            // 确保有项目
+                            let pid = match proj_id {
+                                Some(ref id) => id.clone(),
+                                None => {
+                                    let default_id = store::DEFAULT_PROJECT_ID.to_string();
+                                    active_project_id.set(Some(default_id.clone()));
+                                    sidebar_view.set(SidebarView::ConversationList(default_id.clone()));
+                                    default_id
+                                }
+                            };
+
+                            // 确保有对话，没有则新建
+                            let cid = if conv_id.is_empty() {
+                                let new_cid = format!("conv-{}", chrono::Local::now().timestamp_millis());
+                                let now = chrono::Local::now();
+                                let conversation = Conversation {
+                                    id: new_cid.clone(),
+                                    title: String::new(),
+                                    messages: Vec::new(),
+                                    updated_at: now,
+                                };
+                                {
                                     let mut projs = projects.write();
-                                    if let Some(proj) = projs.iter_mut().find(|p| p.id == *pid) {
-                                        if let Some(conv) = proj.conversations.iter_mut().find(|c| c.id == cid) {
-                                            conv.messages.push(ChatMessage {
-                                                role: Role::User,
-                                                content: input.clone(),
-                                                timestamp: chrono::Local::now(),
-                                                tool_calls: vec![],
-                                                reasoning: String::new(),
-                                            });
-                                        }
+                                    if let Some(proj) = projs.iter_mut().find(|p| p.id == pid) {
+                                        proj.conversations.push(conversation);
+                                    }
+                                }
+                                store::save_projects_quiet(&projects.read());
+                                active_conversation_id.set(new_cid.clone());
+                                new_cid
+                            } else {
+                                conv_id
+                            };
+
+                            let is_first_msg = {
+                                let msgs = messages.read();
+                                msgs.len() == 1
+                            };
+
+                            let mut projs = projects.write();
+                            if let Some(proj) = projs.iter_mut().find(|p| p.id == pid) {
+                                if let Some(conv) = proj.conversations.iter_mut().find(|c| c.id == cid) {
+                                    conv.messages.push(ChatMessage {
+                                        role: Role::User,
+                                        content: input.clone(),
+                                        timestamp: chrono::Local::now(),
+                                        tool_calls: vec![],
+                                        reasoning: String::new(),
+                                        segments: Vec::new(),
+                                    });
+                                    conv.updated_at = chrono::Local::now();
+                                    // 首条消息：自动设置对话标题
+                                    if is_first_msg && conv.title.is_empty() {
+                                        let title = crate::ui::state::title_from_messages(&conv.messages);
+                                        conv.title = title;
                                     }
                                 }
                             }
@@ -243,8 +325,7 @@ pub fn App() -> Element {
                                 input,
                                 config_val,
                                 messages,
-                                streaming_content,
-                                streaming_reasoning,
+                                streaming_segments,
                                 is_streaming,
                                 active_tool_calls,
                                 projects_sig,

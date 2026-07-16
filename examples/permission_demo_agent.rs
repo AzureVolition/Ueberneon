@@ -58,7 +58,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── 只读工具 ──
     registry.add(Box::new(ReadFile::new(tracker.clone())));
-    registry.add(Box::new(Ls::new()));
     registry.add(Box::new(Grep::new()));
 
     // ── 文件变异工具（带 DenySystemPaths 检查）──

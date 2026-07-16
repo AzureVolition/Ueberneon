@@ -30,16 +30,18 @@ pub use registry::Registry;
 pub use sandbox::SandboxSpec;
 
 /// 注册所有内置工具到给定的 Registry 中。
-pub fn register_builtins(registry: &Registry) {
+/// `base_dir` 是工具的工作目录（即项目路径）。
+pub fn register_builtins(registry: &Registry, base_dir: &std::path::Path) {
     // 文件内容追踪器（陈旧锚点 + 循环守卫）
     let tracker = Arc::new(content_tracker::FileObserveTracker::new());
-    registry.add(Box::new(ReadFile::new(tracker.clone())));
 
     // 共享状态：JobManager（后台任务）、SnapshotStore（文件快照）
     let job_manager = Arc::new(JobManager::new());
     let snapshot = Arc::new(SnapshotStore::new());
 
-    let work_dir = std::env::current_dir().unwrap_or_else(|_| "..".into());
+    let work_dir = base_dir.to_path_buf();
+
+    registry.add(Box::new(ReadFile::new(work_dir.clone(), tracker.clone())));
 
     // 沙箱：默认基于工作目录创建沙箱配置
     let sandbox = SandboxSpec::defaults(&work_dir);
@@ -76,23 +78,23 @@ pub fn register_builtins(registry: &Registry) {
         work_dir.clone(), snapshot.clone(), file_checks(), tracker.clone(),
     )));
     registry.add(Box::new(WriteFile::new(
-        work_dir, snapshot, file_checks(), tracker,
+        work_dir.clone(), snapshot, file_checks(), tracker,
     )));
 
     // 搜索工具
-    registry.add(Box::new(Grep::new()));
+    registry.add(Box::new(Grep::new(work_dir.clone())));
 
     // 代码浏览与索引工具
-    registry.add(Box::new(Ls::new()));
-    registry.add(Box::new(Glob::new()));
-    registry.add(Box::new(CodeIndex::new()));
+    registry.add(Box::new(Ls::new(work_dir.clone())));
+    registry.add(Box::new(Glob::new(work_dir.clone())));
+    registry.add(Box::new(CodeIndex::new(work_dir.clone())));
 
     // 网络工具
     registry.add(Box::new(WebFetch::new()));
 
     // 只读 bash（用于 subagent / explore）
     registry.add(Box::new(ReadOnlyBash::new(
-        std::env::current_dir().unwrap_or_else(|_| "..".into()),
+        work_dir.to_path_buf(),
         Duration::from_secs(30),
         Some(sandbox),
     )));

@@ -4,6 +4,7 @@
 // 自动跳过 .gitignore 匹配的文件和目录，以及二进制文件。
 // 支持编码检测（UTF-8/16/GB18030），最多返回 200 条匹配。
 
+use std::path::PathBuf;
 use std::path::Path;
 use std::time::Duration;
 
@@ -34,10 +35,11 @@ const GREP_MAX_TIMEOUT_SECS: u64 = 300;
 pub struct Grep {
     schema: Value,
     read_only: bool,
+    work_dir: PathBuf,
 }
 
 impl Grep {
-    pub fn new() -> Self {
+    pub fn new(work_dir: PathBuf) -> Self {
         Self {
             schema: serde_json::json!({
                 "type": "object",
@@ -59,7 +61,17 @@ impl Grep {
                 "required": ["pattern"]
             }),
             read_only: true,
+            work_dir,
         }
+    }
+
+    fn resolve_path(&self, path: &str) -> Result<PathBuf, String> {
+        let p = Path::new(path);
+        let abs = if p.is_relative() { self.work_dir.join(p) } else { p.to_path_buf() };
+        if !abs.starts_with(&self.work_dir) {
+            return Err(format!("path '{}' is outside workspace '{}'", abs.display(), self.work_dir.display()));
+        }
+        Ok(abs)
     }
 }
 
@@ -76,6 +88,8 @@ impl Tool for Grep {
             .and_then(|v| v.as_str())
             .filter(|p| !p.is_empty())
             .unwrap_or(".");
+
+        let path_buf = self.resolve_path(path_str)?;
         let timeout_secs = args
             .get("timeout_seconds")
             .and_then(|v| v.as_u64())
@@ -88,7 +102,7 @@ impl Tool for Grep {
             Err(e) => return Err(format!("grep: invalid regex pattern: {}", e)),
         };
 
-        let path_buf = std::path::PathBuf::from(path_str);
+
 
         // 3. 安全检查：拒绝搜索 .git 目录
         if path_buf.components().any(|c| c.as_os_str() == ".git") {
@@ -317,7 +331,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         create_test_file(&dir, "test.txt", b"hello world\nfoo bar\nbaz hello\n");
 
-        let tool = Grep::new();
+        let tool = Grep::new(std::env::temp_dir());
         let args = serde_json::json!({
             "pattern": "hello",
             "path": dir.to_str().unwrap(),
@@ -336,7 +350,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         create_test_file(&dir, "test.txt", b"hello world\n");
 
-        let tool = Grep::new();
+        let tool = Grep::new(std::env::temp_dir());
         let args = serde_json::json!({
             "pattern": "nonexistent",
             "path": dir.to_str().unwrap(),
@@ -349,7 +363,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_pattern() {
-        let tool = Grep::new();
+        let tool = Grep::new(std::env::temp_dir());
         let args = serde_json::json!({"path": "."});
         let result = tool.execute(&test_ctx(), &args).await;
         assert!(result.error().is_some());
@@ -358,7 +372,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_regex() {
-        let tool = Grep::new();
+        let tool = Grep::new(std::env::temp_dir());
         let args = serde_json::json!({"pattern": "[invalid"});
         let result = tool.execute(&test_ctx(), &args).await;
         assert!(result.error().is_some());
@@ -371,7 +385,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = create_test_file(&dir, "test.txt", b"abc\ndef\nabc\n");
 
-        let tool = Grep::new();
+        let tool = Grep::new(std::env::temp_dir());
         let args = serde_json::json!({
             "pattern": "abc",
             "path": path.to_str().unwrap(),
@@ -386,7 +400,7 @@ mod tests {
 
     #[tokio::test]
     async fn reject_git_path() {
-        let tool = Grep::new();
+        let tool = Grep::new(std::env::temp_dir());
         let args = serde_json::json!({"pattern": "test", "path": "/tmp/repo/.git/config"});
         let result = tool.execute(&test_ctx(), &args).await;
         assert!(result.is_err());
@@ -404,7 +418,7 @@ mod tests {
         // 同时创建一个文本文件确保搜索仍会进行
         create_test_file(&dir, "text.txt", b"hello text\n");
 
-        let tool = Grep::new();
+        let tool = Grep::new(std::env::temp_dir());
         let args = serde_json::json!({
             "pattern": "hello",
             "path": dir.to_str().unwrap(),
@@ -429,7 +443,7 @@ mod tests {
         }
         create_test_file(&dir, "utf16.txt", &content);
 
-        let tool = Grep::new();
+        let tool = Grep::new(std::env::temp_dir());
         let args = serde_json::json!({
             "pattern": "hello",
             "path": dir.to_str().unwrap(),
@@ -442,7 +456,7 @@ mod tests {
 
     #[tokio::test]
     async fn path_not_exists() {
-        let tool = Grep::new();
+        let tool = Grep::new(std::env::temp_dir());
         let args = serde_json::json!({
             "pattern": "test",
             "path": "/nonexistent/path",
@@ -454,7 +468,7 @@ mod tests {
 
     #[test]
     fn schema_is_valid_json() {
-        let tool = Grep::new();
+        let tool = Grep::new(std::env::temp_dir());
         let schema = tool.schema();
         assert!(schema.is_object());
         assert_eq!(schema["type"], "object");
@@ -492,7 +506,7 @@ mod tests {
         create_test_file(&dir, "b.rs", b"fn test() {\n    // hello\n}\n");
         create_test_file(&dir, "c.rs", b"fn other() {\n    println!(\"bye\");\n}\n");
 
-        let tool = Grep::new();
+        let tool = Grep::new(std::env::temp_dir());
         let args = serde_json::json!({
             "pattern": "hello",
             "path": dir.to_str().unwrap(),
@@ -511,7 +525,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         create_test_file(&dir, "test.txt", b"Hello\nhello\nHELLO\n");
 
-        let tool = Grep::new();
+        let tool = Grep::new(std::env::temp_dir());
         let args = serde_json::json!({
             "pattern": "Hello",
             "path": dir.to_str().unwrap(),

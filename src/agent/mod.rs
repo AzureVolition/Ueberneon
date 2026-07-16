@@ -1,4 +1,5 @@
 pub mod hook;
+pub mod main_agent;
 pub use llm::tool::ToolMeta;
 
 // ── Tool trait ──────────────────────────────────────────────────────────────
@@ -132,6 +133,23 @@ impl std::fmt::Display for BlockedKind {
 
 // —— agent ————————————————————————————————————————————————————————————————————
 
+use std::path::PathBuf;
+use crate::tools::Registry;
+use hook::HookRegister;
+use llm::Provider;
+
+/// Agent —— 拥有 provider 和 registry，通过 mpsc channel 输出流式事件。
 pub struct Agent {
-    
+    /// LLM provider（所有权）
+    pub provider: Box<dyn Provider>,
+    /// 工具注册表（所有权）
+    pub registry: Registry,
+    /// 事件钩子注册表
+    pub hook_register: HookRegister,
+    /// 是否在 plan mode
+    pub plan_mode: bool,
+    /// 全局门控模式
+    pub agent_mode: AgentMode,
+    /// 工具执行的工作目录（即项目路径）
+    pub project_path: PathBuf,
 }
