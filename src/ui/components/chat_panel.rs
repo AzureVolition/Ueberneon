@@ -120,6 +120,9 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
 
     let streaming_key = "streaming-bubble";
 
+    // 当前对话是否确实在等回复（最后一条是用户消息）
+    let awaiting_response = msgs.last().map(|m| matches!(m.role, Role::User)).unwrap_or(false);
+
     rsx! {
         div {
             class: "chat-panel",
@@ -148,40 +151,6 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
                     Role::System => "message-bubble message-system",
                 };
                 let msg_id = format!("msg-{i}");
-                let content_html = markdown_to_html(&msg.content);
-                let tool_calls_html: Vec<_> = msg.tool_calls.iter().map(|call| {
-                    let sc = status_class(&call.status);
-                    let status_text = match call.status {
-                        ToolCallStatus::Running => "running",
-                        ToolCallStatus::Success => "success",
-                        ToolCallStatus::Failed(_) => "failed",
-                    };
-                    let args_summary = tool_args_summary(&call.tool_name, &call.args);
-                    let result_html = call.result.as_ref().map(|r| {
-                        format!("<pre class=\"tool-call-result\">{}</pre>", html_escape(r))
-                    }).unwrap_or_default();
-                    format!(
-                        "<details class=\"tool-call-details {sc}\"><summary class=\"tool-call-summary\"><span class=\"tool-call-name\">{}</span><span class=\"tool-call-args\">{}</span><span class=\"tool-call-status {sc}\">{}</span></summary>{}</details>",
-                        html_escape(&call.tool_name), html_escape(&args_summary), status_text, result_html
-                    )
-                }).collect();
-
-                let tool_calls_section = if tool_calls_html.is_empty() {
-                    String::new()
-                } else {
-                    format!("<div class=\"tool-calls\">{}</div>", tool_calls_html.join(""))
-                };
-
-                let full_html = format!(
-                    "<div class=\"message-header\"><span class=\"message-role {}\">{}</span><span class=\"message-time\">{}</span></div><div class=\"message-content\">{}</div>{}",
-                    role_class, role_label, formatted_time, content_html, tool_calls_section
-                );
-
-                let reasoning_html = if !msg.reasoning.is_empty() {
-                    markdown_to_html(&msg.reasoning)
-                } else {
-                    String::new()
-                };
 
                 rsx! {
                     div {
@@ -189,28 +158,20 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
                         id: "{msg_id}",
                         class: bubble_class,
 
-                        // 有 segments 时按 LLM 返回顺序渲染，否则 fallback 到旧格式
-                        if !msg.segments.is_empty() {
-                            {render_segments(false, &msg.segments, &msg.tool_calls, markdown_to_html).into_iter()}
-                        } else {
-                            // 旧格式兼容
-                            if !reasoning_html.is_empty() {
-                                details {
-                                    class: "thinking-section",
-                                    summary {
-                                        class: "thinking-toggle",
-                                        "thinking"
-                                    }
-                                    div {
-                                        class: "thinking-content",
-                                        dangerous_inner_html: reasoning_html,
-                                    }
-                                }
+                        // 消息头
+                        div {
+                            class: "message-header",
+                            span {
+                                class: "message-role {role_class}",
+                                "{role_label}"
                             }
-                            div {
-                                dangerous_inner_html: full_html,
+                            span {
+                                class: "message-time",
+                                "{formatted_time}"
                             }
                         }
+                        // 按 LLM 返回的 StreamSegment 顺序渲染
+                        {render_segments(false, &msg.segments, &msg.tool_calls, markdown_to_html).into_iter()}
                     }
                 }
             })}
@@ -224,7 +185,7 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
                 }
             }
 
-            if running && segments.is_empty() {
+            if running && segments.is_empty() && awaiting_response {
                 div {
                     class: "message-bubble message-assistant thinking",
                     div {
@@ -264,12 +225,6 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
     }
 }
 
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
 
 /// 将连续的 Reasoning + ToolCall segments 归组到可折叠的 think-watch 块中
 fn render_segments(

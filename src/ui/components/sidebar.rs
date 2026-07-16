@@ -9,6 +9,7 @@ pub fn Sidebar(
     active_project_id: Signal<Option<String>>,
     sidebar_view: Signal<SidebarView>,
     active_conversation_id: Signal<String>,
+    streaming_project_id: Signal<Option<String>>,
     on_new_project: EventHandler<(String, String)>,
     on_new_conversation: EventHandler<()>,
     on_select_project: EventHandler<String>,
@@ -16,6 +17,7 @@ pub fn Sidebar(
     on_back_to_projects: EventHandler<()>,
     on_delete_project: EventHandler<String>,
     on_delete_conversation: EventHandler<String>,
+    on_change_indicator_color: EventHandler<(String, String)>,
 ) -> Element {
     // ── 新建项目表单状态 ──
     let mut show_new_project_form = use_signal(|| false);
@@ -28,6 +30,16 @@ pub fn Sidebar(
 
     let view = sidebar_view.read().clone();
 
+    let COLOR_SWATCHES: [(&str, &str, &str); 7] = [
+        ("cyan",   "oklch(72% 0.20 200)",   "cyan"),
+        ("pink",   "oklch(68% 0.22 330)",   "pink"),
+        ("green",  "oklch(66% 0.18 145)",   "green"),
+        ("orange", "oklch(70% 0.18 50)",    "orange"),
+        ("violet", "oklch(65% 0.16 280)",   "violet"),
+        ("blue",   "oklch(60% 0.20 240)",   "blue"),
+        ("gold",   "oklch(72% 0.16 85)",    "gold"),
+    ];
+
     // ── 项目右键菜单 ──
     let project_menu_overlay = {
         let guard = project_context_menu.read();
@@ -36,6 +48,12 @@ pub fn Sidebar(
             let tid = target_id.clone();
             let pos_x = *x;
             let pos_y = *y;
+            // 当前项目的颜色键
+            let current_color: String = projects.read().iter()
+                .find(|p| p.id == *target_id)
+                .map(|p| if p.indicator_color.is_empty() { "cyan".into() } else { p.indicator_color.clone() })
+                .unwrap_or_else(|| "cyan".into());
+            let color_cloned = current_color.clone();
             rsx! {
                 div {
                     class: "context-menu-overlay",
@@ -43,6 +61,32 @@ pub fn Sidebar(
                     div {
                         class: "context-menu",
                         style: "left: {pos_x}px; top: {pos_y}px;",
+                        // ── 颜色选择器 ──
+                        div {
+                            class: "context-menu-label",
+                            "indicator color"
+                        }
+                        div {
+                            class: "context-menu-color-grid",
+                            for (key, color_val, _label) in COLOR_SWATCHES {
+                                {
+                                    let is_sel = color_cloned == key;
+                                    let skey = key;
+                                    let stid = tid.clone();
+                                    rsx! {
+                                        div {
+                                            class: if is_sel { "context-menu-color-swatch selected" } else { "context-menu-color-swatch" },
+                                            style: "background: {color_val};",
+                                            onclick: move |_| {
+                                                project_context_menu.set(None);
+                                                on_change_indicator_color.call((stid.clone(), skey.to_string()));
+                                            },
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        div { class: "context-menu-divider" }
                         if !is_default {
                             div {
                                 class: "context-menu-item danger",
@@ -210,6 +254,17 @@ pub fn Sidebar(
                                     let proj_id = proj.id.clone();
                                     let proj_name = proj.name.clone();
                                     let is_active = active_project_id.read().as_deref() == Some(&proj_id);
+                                    // 3 天内有活动 → recent
+                                    let is_recent = proj.last_activity_at
+                                        .map(|t| (chrono::Local::now() - t).num_hours() < 72)
+                                        .unwrap_or(false);
+                                    let data_color = if proj.indicator_color.is_empty() {
+                                        "cyan".to_string()
+                                    } else {
+                                        proj.indicator_color.clone()
+                                    };
+                                    // 当前项目是否正在生成对话
+                                    let is_streaming_this = *streaming_project_id.read() == Some(proj_id.clone());
 
                                     rsx! {
                                         div {
@@ -219,6 +274,9 @@ pub fn Sidebar(
                                             } else {
                                                 "project-item"
                                             },
+                                            "data-color": "{data_color}",
+                                            "data-recent": if is_recent { "true" } else { "false" },
+                                            "data-streaming": if is_streaming_this { "true" } else { "false" },
                                             onclick: {
                                                 let pid = proj_id.clone();
                                                 move |_| {

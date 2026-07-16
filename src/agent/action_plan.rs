@@ -5,7 +5,7 @@ use chrono::Utc;
 
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct ActionPlan {
+pub struct Plan {
     pub goal:String,
     pub steps:Vec<ActionStep>,
     pub difficulty:Difficulty,
@@ -38,6 +38,7 @@ pub enum PlanStatus {
     InProgress,
     Completed,
     Failed,
+    Canceled,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]

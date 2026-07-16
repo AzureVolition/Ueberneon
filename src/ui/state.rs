@@ -71,6 +71,12 @@ pub struct Project {
     pub path: String,
     pub created_at: DateTime<Local>,
     pub conversations: Vec<Conversation>,
+    /// 自定义 indicator 颜色键（""=默认 cyan）
+    #[serde(default)]
+    pub indicator_color: String,
+    /// 项目最近活跃时间（删对话也不丢失）
+    #[serde(default)]
+    pub last_activity_at: Option<DateTime<Local>>,
 }
 
 /// 侧边栏视图状态

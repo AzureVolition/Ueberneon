@@ -91,6 +91,8 @@ pub fn ensure_default_project(projects: &mut Vec<Project>) {
             path: format!("{home}/.racpagent"),
             created_at: chrono::Local::now(),
             conversations: Vec::new(),
+            indicator_color: String::new(),
+            last_activity_at: None,
         };
         projects.insert(0, default_project);
         save_projects_quiet(projects);
@@ -123,6 +125,8 @@ mod tests {
                 messages: vec![],
                 updated_at: chrono::Local::now(),
             }],
+            indicator_color: String::new(),
+            last_activity_at: None,
         }];
 
         let json = serde_json::to_string_pretty(&projects).unwrap();

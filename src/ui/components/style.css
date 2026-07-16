@@ -331,17 +331,55 @@ body {
   color: var(--color-ink);
 }
 
+/* ── Project indicator — color pair driven by data-color + data-recent ── */
+.project-item[data-color="cyan"]   { --indicator-resting: oklch(50% 0.14 200 / 0.35); --indicator-active: oklch(72% 0.20 200); --indicator-glow: oklch(72% 0.20 200 / 0.40); }
+.project-item[data-color="pink"]   { --indicator-resting: oklch(48% 0.14 330 / 0.35); --indicator-active: oklch(68% 0.22 330); --indicator-glow: oklch(68% 0.22 330 / 0.40); }
+.project-item[data-color="green"]  { --indicator-resting: oklch(48% 0.10 145 / 0.35); --indicator-active: oklch(66% 0.18 145); --indicator-glow: oklch(66% 0.18 145 / 0.40); }
+.project-item[data-color="orange"] { --indicator-resting: oklch(50% 0.12 50 / 0.35);  --indicator-active: oklch(70% 0.18 50);  --indicator-glow: oklch(70% 0.18 50 / 0.40);  }
+.project-item[data-color="violet"] { --indicator-resting: oklch(46% 0.10 280 / 0.35); --indicator-active: oklch(65% 0.16 280); --indicator-glow: oklch(65% 0.16 280 / 0.40); }
+.project-item[data-color="blue"]   { --indicator-resting: oklch(44% 0.12 240 / 0.35); --indicator-active: oklch(60% 0.20 240); --indicator-glow: oklch(60% 0.20 240 / 0.40); }
+.project-item[data-color="gold"]   { --indicator-resting: oklch(50% 0.10 85 / 0.35);  --indicator-active: oklch(72% 0.16 85);  --indicator-glow: oklch(72% 0.16 85 / 0.40);  }
+
 .project-item-indicator {
   flex-shrink: 0;
   width: 3px;
   height: 16px;
   border-radius: 2px;
-  background: var(--color-rule);
-  transition: background var(--dur-fast) var(--ease-out);
+  background: var(--indicator-resting, var(--color-rule));
+  /* 移走时缓慢熄灭（延长） */
+  transition: background 1400ms var(--ease-out);
 }
 
-.project-item.active .project-item-indicator {
-  background: var(--color-accent);
+/* 3 天内有活动 → 亮色 */
+.project-item[data-recent="true"] .project-item-indicator {
+  background: var(--indicator-active, var(--color-accent));
+}
+
+/* 非活跃项目悬停：从暗色平滑过渡到对应的亮色 */
+.project-item:not([data-recent="true"]):hover .project-item-indicator {
+  background: var(--indicator-active, var(--color-accent));
+  /* 悬停亮起（缩短）：ease-in 先慢后快 */
+  transition: background 350ms var(--ease-in);
+}
+
+/* ── 生成对话时呼吸光晕 ── */
+@keyframes indicator-breath {
+  0%, 100% {
+    background: var(--indicator-active, var(--color-accent));
+    box-shadow: none;
+  }
+  50% {
+    background: var(--indicator-active, var(--color-accent));
+    box-shadow:
+      0 0 4px var(--indicator-active, var(--color-accent)),
+      0 0 12px var(--indicator-active, var(--color-accent)),
+      0 0 24px var(--indicator-active, var(--color-accent)),
+      0 0 40px var(--indicator-active, var(--color-accent));
+  }
+}
+
+.project-item[data-streaming="true"] .project-item-indicator {
+  animation: indicator-breath 3s ease-in-out infinite;
 }
 
 .project-item-name {
@@ -413,6 +451,51 @@ body {
 
 .context-menu-item.disabled:hover {
   background: transparent;
+}
+
+/* ── Context menu: color picker for project indicator ── */
+.context-menu-label {
+  padding: var(--space-xs) var(--space-md);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-micro);
+  text-transform: uppercase;
+  color: var(--color-ink-3);
+  opacity: 0.55;
+  user-select: none;
+}
+
+.context-menu-color-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: var(--space-2xs) var(--space-md) var(--space-xs);
+}
+
+.context-menu-color-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1.5px solid transparent;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease-out),
+              transform var(--dur-fast) var(--ease-out);
+}
+
+.context-menu-color-swatch:hover {
+  border-color: var(--color-ink-2);
+  transform: scale(1.15);
+}
+
+.context-menu-color-swatch.selected {
+  border-color: var(--color-ink);
+  box-shadow: 0 0 0 1.5px var(--color-paper-2), 0 0 0 3px var(--color-ink);
+}
+
+.context-menu-divider {
+  height: 1px;
+  background: var(--color-rule-2);
+  margin: var(--space-2xs) var(--space-md);
 }
 
 /* ── Back navigation ── */

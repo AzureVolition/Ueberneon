@@ -47,6 +47,7 @@ pub fn App() -> Element {
     let mut messages = use_signal(Vec::<ChatMessage>::new);
     let mut streaming_segments = use_signal(Vec::<StreamSegment>::new);
     let mut is_streaming = use_signal(|| false);
+    let mut streaming_project_id = use_signal(|| Option::<String>::None);
     let mut active_tool_calls = use_signal(Vec::<ToolCallRecord>::new);
     let config = use_signal(|| AppConfig {
         model: std::env::var("OPENAI_MODEL")
@@ -89,6 +90,7 @@ pub fn App() -> Element {
     let on_back_to_projects = move |_| {
         sidebar_view.set(SidebarView::ProjectList);
         active_project_id.set(None);
+        active_conversation_id.set(String::new());
         messages.set(Vec::new());
         streaming_segments.set(Vec::new());
     };
@@ -102,6 +104,8 @@ pub fn App() -> Element {
             path,
             created_at: chrono::Local::now(),
             conversations: Vec::new(),
+            indicator_color: String::new(),
+            last_activity_at: None,
         };
         projects.write().push(project);
         store::save_projects_quiet(&projects.read());
@@ -135,6 +139,7 @@ pub fn App() -> Element {
             let mut projs = projects.write();
             if let Some(proj) = projs.iter_mut().find(|p| p.id == proj_id) {
                 proj.conversations.push(conversation);
+                proj.last_activity_at = Some(now);
             }
         }
         store::save_projects_quiet(&projects.read());
@@ -155,6 +160,14 @@ pub fn App() -> Element {
         messages.set(msgs);
         streaming_segments.set(Vec::new());
         active_tool_calls.set(Vec::new());
+        // 更新项目活跃时间
+        {
+            let mut projs = projects.write();
+            if let Some(proj) = projs.iter_mut().find(|p| p.id == proj_id) {
+                proj.last_activity_at = Some(chrono::Local::now());
+            }
+        }
+        store::save_projects_quiet(&projects.read());
     };
 
     /// 删除对话
@@ -205,6 +218,16 @@ pub fn App() -> Element {
         store::save_projects_quiet(&projects.read());
     };
 
+    /// 更改项目 indicator 颜色
+    let on_change_indicator_color = move |(project_id, color_key): (String, String)| {
+        let mut projs = projects.write();
+        if let Some(proj) = projs.iter_mut().find(|p| p.id == project_id) {
+            proj.indicator_color = color_key;
+        }
+        drop(projs);
+        store::save_projects_quiet(&projects.read());
+    };
+
     rsx! {
         style { {include_str!("style.css")} }
 
@@ -216,6 +239,7 @@ pub fn App() -> Element {
                 active_project_id,
                 sidebar_view,
                 active_conversation_id,
+                streaming_project_id,
                 on_new_project,
                 on_new_conversation,
                 on_select_project,
@@ -223,6 +247,7 @@ pub fn App() -> Element {
                 on_back_to_projects,
                 on_delete_project,
                 on_delete_conversation,
+                on_change_indicator_color,
             }
 
             div {
@@ -306,6 +331,7 @@ pub fn App() -> Element {
                                         segments: Vec::new(),
                                     });
                                     conv.updated_at = chrono::Local::now();
+                                    proj.last_activity_at = Some(chrono::Local::now());
                                     // 首条消息：自动设置对话标题
                                     if is_first_msg && conv.title.is_empty() {
                                         let title = crate::ui::state::title_from_messages(&conv.messages);
@@ -313,11 +339,13 @@ pub fn App() -> Element {
                                     }
                                 }
                             }
+                            streaming_project_id.set(Some(pid.clone()));
                         }
 
                         let projects_sig = projects;
                         let active_project_id_sig = active_project_id;
                         let active_conversation_id_sig = active_conversation_id;
+                        let streaming_project_id_sig = streaming_project_id;
                         let config_val = config.read().clone();
 
                         spawn(async move {
@@ -331,6 +359,7 @@ pub fn App() -> Element {
                                 projects_sig,
                                 active_project_id_sig,
                                 active_conversation_id_sig,
+                                streaming_project_id_sig,
                             )
                             .await;
                         });
