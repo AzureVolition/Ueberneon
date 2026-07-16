@@ -269,7 +269,7 @@ pub async fn run_agent_loop(
                 use racpagent::agent::ToolContext;
                 let ctx = ToolContext {
                     call_id: tool.id.clone(),
-                    plan_mode: false,
+                    plan_mode: PlanMode::Regular,
                     agent_mode: AgentMode::Ask,
                     progress: None,
                 };

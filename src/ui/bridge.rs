@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 
 use crate::agent::hook::HookRegister;
 use crate::agent::main_agent::{AgentOutput, StreamEvent};
-use crate::agent::{Agent, AgentMode};
+use crate::agent::{Agent, AgentMode, ActionMode};
 use crate::tools::Registry;
 use crate::ui::state::*;
 use llm::{Message, OpenAiProvider, Provider, Role as LlmRole};
@@ -88,7 +88,7 @@ pub async fn run_agent_loop(
 
     // ── 4. 构建 Agent ──
     let hook_register = HookRegister::new();
-    let agent = Agent::new(provider, registry, hook_register, false, AgentMode::Ask, project_path.into());
+    let agent = Agent::new(provider, registry, hook_register, ActionMode::Regular, AgentMode::Ask, project_path.into());
 
     // ── 5. 构建 LLM 消息历史 ──
     let mut history: Vec<Message> = vec![Message {

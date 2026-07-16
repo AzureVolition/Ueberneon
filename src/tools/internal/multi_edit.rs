@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::agent::{Tool, ToolContext, ToolResult};
+use crate::agent::{ActionMode, Tool, ToolContext, ToolResult};
 use llm::tool::ToolMeta;
 #[cfg(test)]
 use crate::agent::{AgentMode, ToolResultExt};
@@ -240,8 +240,9 @@ impl CheckableTool for MultiEdit {
             Decision::Allow => {}
             decision => return decision,
         }
-        if ctx.plan_mode {
-            return Decision::Deny("multi_edit is not allowed in plan mode".into());
+        match ctx.plan_mode {
+            ActionMode::Plan => return Decision::Deny("multi_edit is not allowed in plan mode".into()),
+            ActionMode::Regular => {}
         }
         Decision::Allow
     }
@@ -263,7 +264,7 @@ mod tests {
     fn test_ctx() -> ToolContext {
         ToolContext {
             call_id: "test".into(),
-            plan_mode: false,
+            plan_mode: ActionMode::Regular,
             agent_mode: AgentMode::Ask,
             progress: None,
         }

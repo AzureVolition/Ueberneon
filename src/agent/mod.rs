@@ -74,6 +74,18 @@ impl ToolResultExt for Result<ToolResult, String> {
 }
 
 
+// ── PlanMode ──────────────────────────────────────────────────────────────
+
+/// Plan mode 枚举：控制工具在计划阶段的可执行性。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ActionMode {
+    /// 常规模式：所有工具均可正常执行
+    #[default]
+    Regular,
+    /// 计划模式：仅只读工具可执行，写工具被阻止
+    Plan,
+}
+
 // ── AgentMode ──────────────────────────────────────────────────────────────
 
 /// Agent 的全局门控模式，影响权限决策的升降级。
@@ -98,8 +110,8 @@ pub enum AgentMode {
 pub struct ToolContext {
     /// 工具调用的唯一 ID（stream 中 LLM 返回的 tool_call_id）
     pub call_id: String,
-    /// 是否在 plan mode（写工具被阻止）
-    pub plan_mode: bool,
+    /// 计划模式（常规/计划），写工具在计划模式被阻止
+    pub plan_mode: ActionMode,
     /// Agent 的全局门控模式
     pub agent_mode: AgentMode,
     /// 流式输出回调，长运行工具推送实时输出到前端
@@ -147,8 +159,8 @@ pub struct Agent {
     pub registry: Registry,
     /// 事件钩子注册表
     pub hook_register: HookRegister,
-    /// 是否在 plan mode
-    pub plan_mode: bool,
+    /// 计划模式（常规/计划）
+    pub plan_mode: ActionMode,
     /// 全局门控模式
     pub agent_mode: AgentMode,
     /// 工具执行的工作目录（即项目路径）

@@ -5,7 +5,7 @@
 
 use crate::agent::{Tool, ToolContext, ToolResult};
 #[cfg(test)]
-use crate::agent::{AgentMode, ToolResultExt};
+use crate::agent::{AgentMode, ActionMode, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
 use std::sync::Arc;
@@ -113,7 +113,7 @@ mod tests {
         let args = serde_json::json!({"job_id": job_id});
         let ctx = ToolContext {
             call_id: "test".into(),
-            plan_mode: false,
+            plan_mode: ActionMode::Regular,
             agent_mode: AgentMode::Ask,
             progress: None,
         };
@@ -133,7 +133,7 @@ mod tests {
         let args = serde_json::json!({"job_id": "bg-99999"});
         let ctx = ToolContext {
             call_id: "test".into(),
-            plan_mode: false,
+            plan_mode: ActionMode::Regular,
             agent_mode: AgentMode::Ask,
             progress: None,
         };
@@ -150,7 +150,7 @@ mod tests {
         let args = serde_json::json!({});
         let ctx = ToolContext {
             call_id: "test".into(),
-            plan_mode: false,
+            plan_mode: ActionMode::Regular,
             agent_mode: AgentMode::Ask,
             progress: None,
         };

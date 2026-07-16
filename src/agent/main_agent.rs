@@ -6,7 +6,7 @@ use futures::StreamExt;
 use tokio::sync::mpsc;
 
 use super::hook::{AgentEvent, HookRegister};
-use super::{AgentMode, ToolContext, ToolResult};
+use super::{AgentMode, ActionMode, ToolContext, ToolResult};
 use crate::tools::Registry;
 use crate::ui::state::ToolCallRecord;
 use llm::{Chunk, Message, Provider, Request, Role as LlmRole, ToolCall};
@@ -56,7 +56,7 @@ impl Agent {
         provider: Box<dyn Provider>,
         registry: Registry,
         hook_register: HookRegister,
-        plan_mode: bool,
+        plan_mode: ActionMode,
         agent_mode: AgentMode,
         project_path: PathBuf,
     ) -> Self {

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::agent::{Tool, ToolContext, ToolResult};
 #[cfg(test)]
-use crate::agent::{AgentMode, ToolResultExt};
+use crate::agent::{AgentMode, ActionMode, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
 use crate::tools::internal::common::checkable_tool::CheckableTool;
@@ -222,7 +222,7 @@ mod tests {
     fn test_ctx() -> ToolContext {
         ToolContext {
             call_id: "test".into(),
-            plan_mode: false,
+            plan_mode: ActionMode::Regular,
             agent_mode: AgentMode::Ask,
             progress: None,
         }
@@ -344,7 +344,7 @@ mod tests {
     async fn default_path_is_dot() {
         let tool = test_ls();
         let result = tool.execute(
-            &ToolContext { call_id: "test".into(), plan_mode: false, agent_mode: AgentMode::Ask, progress: None },
+            &ToolContext { call_id: "test".into(), plan_mode: ActionMode::Regular, agent_mode: AgentMode::Ask, progress: None },
             &serde_json::json!({}),
         ).await;
         // 应该成功列出当前目录

@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use crate::agent::{Tool, ToolContext, ToolResult};
 #[cfg(test)]
-use crate::agent::{AgentMode, ToolResultExt};
+use crate::agent::{AgentMode, ActionMode, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
 
@@ -200,7 +200,7 @@ mod tests {
     fn test_ctx() -> ToolContext {
         ToolContext {
             call_id: "test".into(),
-            plan_mode: false,
+            plan_mode: ActionMode::Regular,
             agent_mode: AgentMode::Ask,
             progress: None,
         }

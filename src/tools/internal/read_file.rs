@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use crate::agent::{Tool, ToolContext, ToolResult};
 #[cfg(test)]
-use crate::agent::{AgentMode, ToolResultExt};
+use crate::agent::{AgentMode, ActionMode, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
 
@@ -260,7 +260,7 @@ mod tests {
         let args = serde_json::json!({"path": path.to_str().unwrap()});
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
-            plan_mode: false,
+            plan_mode: ActionMode::Regular,
             agent_mode: AgentMode::Ask,
             progress: None,
         }, &args).await;
@@ -283,7 +283,7 @@ mod tests {
         });
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
-            plan_mode: false,
+            plan_mode: ActionMode::Regular,
             agent_mode: AgentMode::Ask,
             progress: None,
         }, &args).await;
@@ -305,7 +305,7 @@ mod tests {
         });
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
-            plan_mode: false,
+            plan_mode: ActionMode::Regular,
             agent_mode: AgentMode::Ask,
             progress: None,
         }, &args).await;
@@ -327,7 +327,7 @@ mod tests {
         });
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
-            plan_mode: false,
+            plan_mode: ActionMode::Regular,
             agent_mode: AgentMode::Ask,
             progress: None,
         }, &args).await;
@@ -350,7 +350,7 @@ mod tests {
         let args = serde_json::json!({"path": "_test_git_repo/.git/config"});
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
-            plan_mode: false,
+            plan_mode: ActionMode::Regular,
             agent_mode: AgentMode::Ask,
             progress: None,
         }, &args).await;
@@ -364,7 +364,7 @@ mod tests {
         let args = serde_json::json!({});
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
-            plan_mode: false,
+            plan_mode: ActionMode::Regular,
             agent_mode: AgentMode::Ask,
             progress: None,
         }, &args).await;
@@ -378,7 +378,7 @@ mod tests {
         let args = serde_json::json!({"path": path.to_str().unwrap()});
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
-            plan_mode: false,
+            plan_mode: ActionMode::Regular,
             agent_mode: AgentMode::Ask,
             progress: None,
         }, &args).await;
@@ -400,7 +400,7 @@ mod tests {
         let args = serde_json::json!({"path": path.to_str().unwrap()});
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
-            plan_mode: false,
+            plan_mode: ActionMode::Regular,
             agent_mode: AgentMode::Ask,
             progress: None,
         }, &args).await;

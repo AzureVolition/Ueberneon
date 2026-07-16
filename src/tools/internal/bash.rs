@@ -5,7 +5,7 @@
 // 前台：ProcessRunner 同步执行；后台：JobManager 异步 spawn，返回 job ID。
 // 支持沙箱隔离（macOS Seatbelt / Linux bubblewrap）和环境变量安全处理。
 
-use crate::agent::{Tool, ToolContext, ToolResult, ToolResultExt};
+use crate::agent::{ActionMode, Tool, ToolContext, ToolResult, ToolResultExt};
 use llm::tool::ToolMeta;
 use racpagent_macros::ToolMetaImpl;
 use serde::Deserialize;
@@ -175,7 +175,7 @@ impl CheckableTool for Bash {
             Decision::Allow => {}
             decision => return decision,
         }
-        if ctx.plan_mode {
+        if let ActionMode::Plan = ctx.plan_mode {
             let command = args.get("command").and_then(|v| v.as_str()).unwrap_or("");
             if let Some(reason) = Self::check_plan_mode(command) {
                 return Decision::Deny(reason);
@@ -266,7 +266,7 @@ mod tests {
         let args = serde_json::json!({"command": "echo hello"});
         let ctx = ToolContext {
             call_id: "test".into(),
-            plan_mode: false,
+            plan_mode: ActionMode::Regular,
             agent_mode: AgentMode::Ask,
             progress: None,
         };
@@ -283,7 +283,7 @@ mod tests {
         let args = serde_json::json!({"command": "echo to_stderr >&2"});
         let ctx = ToolContext {
             call_id: "test".into(),
-            plan_mode: false,
+            plan_mode: ActionMode::Regular,
             agent_mode: AgentMode::Ask,
             progress: None,
         };
@@ -298,7 +298,7 @@ mod tests {
         let args = serde_json::json!({"command": "exit 42"});
         let ctx = ToolContext {
             call_id: "test".into(),
-            plan_mode: false,
+            plan_mode: ActionMode::Regular,
             agent_mode: AgentMode::Ask,
             progress: None,
         };
@@ -314,7 +314,7 @@ mod tests {
         let args = serde_json::json!({"command": "   "});
         let ctx = ToolContext {
             call_id: "test".into(),
-            plan_mode: false,
+            plan_mode: ActionMode::Regular,
             agent_mode: AgentMode::Ask,
             progress: None,
         };
@@ -329,7 +329,7 @@ mod tests {
         let args = serde_json::json!({"command": "sleep 1; echo done", "run_in_background": true});
         let ctx = ToolContext {
             call_id: "test".into(),
-            plan_mode: false,
+            plan_mode: ActionMode::Regular,
             agent_mode: AgentMode::Ask,
             progress: None,
         };
@@ -346,7 +346,7 @@ mod tests {
         let args = serde_json::json!({"command": "rm -rf /tmp"});
         let ctx = ToolContext {
             call_id: "test".into(),
-            plan_mode: true,
+            plan_mode: ActionMode::Plan,
             agent_mode: AgentMode::Ask,
             progress: None,
         };
@@ -361,7 +361,7 @@ mod tests {
         let args = serde_json::json!({"command": "ls"});
         let ctx = ToolContext {
             call_id: "test".into(),
-            plan_mode: true,
+            plan_mode: ActionMode::Plan,
             agent_mode: AgentMode::Ask,
             progress: None,
         };

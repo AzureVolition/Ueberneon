@@ -1,6 +1,6 @@
 use racpagent::agent::Tool;
 use llm::tool::ToolMeta as _;
-use racpagent::agent::AgentMode;
+use racpagent::agent::{AgentMode, ActionMode};
 use racpagent_macros::ToolMetaImpl;
 
 /// Reads a file from disk with automatic encoding detection.
@@ -85,7 +85,7 @@ async fn execute_returns_ok() {
     let tool = make_read_file();
     let ctx = racpagent::agent::ToolContext {
         call_id: "test".into(),
-        plan_mode: false,
+        plan_mode: ActionMode::Regular,
             agent_mode: AgentMode::Ask,
         progress: None,
     };

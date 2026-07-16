@@ -11,7 +11,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use racpagent::agent::{AgentMode, ToolContext};
+use racpagent::agent::{AgentMode, ActionMode, ToolContext};
 use racpagent::permission::Check;
 use racpagent::permission::checks::*;
 use racpagent::tools::content_tracker::FileObserveTracker;
@@ -65,7 +65,7 @@ async fn main() {
 
     let ctx = ToolContext {
         call_id: "demo".into(),
-        plan_mode: false,
+        plan_mode: ActionMode::Regular,
         agent_mode: AgentMode::Ask,
         progress: None,
     };
@@ -75,13 +75,13 @@ async fn main() {
     let ctx_unrestrained = ToolContext {
         agent_mode: AgentMode::Unrestrained,
         call_id: "demo-unrestrained".into(),
-        plan_mode: false,
+        plan_mode: ActionMode::Regular,
         progress: None,
     };
     let ctx_cautious = ToolContext {
         agent_mode: AgentMode::Cautious,
         call_id: "demo-cautious".into(),
-        plan_mode: false,
+        plan_mode: ActionMode::Regular,
         progress: None,
     };
 

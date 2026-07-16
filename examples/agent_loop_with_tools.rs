@@ -5,7 +5,7 @@ use std::time::Duration;
 use llm::{
     Chunk, Message, OpenAiProvider, Provider, Request, Role, ToolCall,
 };
-use racpagent::agent::{AgentMode, ToolContext};
+use racpagent::agent::{AgentMode, ActionMode, ToolContext};
 use futures::StreamExt;
 use racpagent::tools::{SnapshotStore, Bash, BashOutput, KillShell, JobManager, Registry, SandboxSpec, WriteFile};
 use racpagent::tools::content_tracker::FileObserveTracker;
@@ -124,7 +124,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(t) = registry.get(&tool.name) {
                 let ctx = ToolContext {
                     call_id: tool.id.clone(),
-                    plan_mode: false,
+                    plan_mode: ActionMode::Regular,
                     agent_mode: AgentMode::Ask,
                     progress: None,
                 };
