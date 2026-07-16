@@ -28,12 +28,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let registry = Registry::new();
     let tracker = Arc::new(FileObserveTracker::new());
-    registry.add(Box::new(ReadFile::new(tracker.clone())));
-
+    
     let job_manager = Arc::new(JobManager::new());
     let snapshot = Arc::new(SnapshotStore::new());
 
     let work_dir = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    registry.add(Box::new(ReadFile::new(work_dir.clone(), tracker.clone())));
 
     // 沙箱：默认基于工作目录创建沙箱配置
     let sandbox = SandboxSpec::defaults(&work_dir);

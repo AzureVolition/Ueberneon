@@ -57,8 +57,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sandbox = SandboxSpec::defaults(&work_dir);
 
     // ── 只读工具 ──
-    registry.add(Box::new(ReadFile::new(tracker.clone())));
-    registry.add(Box::new(Grep::new()));
+    registry.add(Box::new(ReadFile::new(work_dir.clone(), tracker.clone())));
+    registry.add(Box::new(Grep::new(work_dir.clone())));
 
     // ── 文件变异工具（带 DenySystemPaths 检查）──
     let file_checks = || -> Vec<Box<dyn racpagent::permission::Check>> {

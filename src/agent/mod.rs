@@ -1,5 +1,6 @@
 pub mod hook;
 pub mod main_agent;
+pub mod action_plan;
 pub use llm::tool::ToolMeta;
 
 // ── Tool trait ──────────────────────────────────────────────────────────────

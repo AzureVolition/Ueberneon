@@ -44,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let work_dir = std::env::current_dir().unwrap_or_else(|_| ".".into());
 
     // 注册搜索和执行工具
-    registry.add(Box::new(Grep::new()));
+    registry.add(Box::new(Grep::new(work_dir.clone())));
     registry.add(Box::new(Bash::new(
         work_dir,
         Duration::from_secs(120),

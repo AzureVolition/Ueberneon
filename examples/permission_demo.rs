@@ -61,7 +61,7 @@ async fn main() {
     registry.add(Box::new(WriteFile::new(
         work_dir.clone(), snapshot, file_checks(), tracker,
     )));
-    registry.add(Box::new(Grep::new()));
+    registry.add(Box::new(Grep::new(work_dir.clone())));
 
     let ctx = ToolContext {
         call_id: "demo".into(),
