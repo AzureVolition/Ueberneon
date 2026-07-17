@@ -44,7 +44,7 @@ pub fn Sidebar(
     let project_menu_overlay = {
         let guard = project_context_menu.read();
         let val = guard.as_ref().map(|(x, y, target_id)| {
-            let is_default = *target_id == crate::ui::store::DEFAULT_PROJECT_ID;
+            let is_default = *target_id == crate::db::DEFAULT_PROJECT_ID;
             let tid = target_id.clone();
             let pos_x = *x;
             let pos_y = *y;
@@ -360,7 +360,7 @@ pub fn Sidebar(
                                             } else {
                                                 "conversation-title"
                                             };
-                                            let rounds = conversation_rounds(&conv.messages);
+                                            let rounds = conv.message_count;
                                             let rounds_label = if rounds == 1 {
                                                 "1 round".into()
                                             } else {

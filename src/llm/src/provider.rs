@@ -1,5 +1,6 @@
 use std::fmt;
 
+use chrono::{DateTime, Utc};
 use futures::stream::Stream;
 use serde::{Serialize, Deserialize};
 use std::pin::Pin;
@@ -39,6 +40,9 @@ pub struct Message {
     pub name: Option<String>,        // tool result 消息的工具名
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub images: Vec<String>,         // data:image/...;base64,...
+    /// 消息创建时间（LLM 返回/工具执行完毕的时间），用于 DB 排序
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub timestamp: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

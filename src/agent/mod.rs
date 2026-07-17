@@ -1,7 +1,10 @@
 pub mod hook;
 pub mod main_agent;
 pub mod action_plan;
+pub mod manager;
+use anyhow::Context;
 pub use llm::tool::ToolMeta;
+pub use main_agent::main_agent_prompt;
 
 // ── Tool trait ──────────────────────────────────────────────────────────────
 
@@ -197,10 +200,12 @@ impl std::fmt::Display for BlockedKind {
 
 use std::path::PathBuf;
 use crate::tools::Registry;
+use crate::model::{ChatMessage, StreamSegment, ToolCallRecord, ToolCallStatus};
 use hook::HookRegister;
-use llm::Provider;
+use llm::{Message, Provider, Role as LlmRole};
 
 /// Agent —— 拥有 provider 和 registry，通过 mpsc channel 输出流式事件。
+/// 自己管理消息历史 + 本地持久化，与 UI 层解耦。
 pub struct Agent {
     /// LLM provider（所有权）
     pub provider: Box<dyn Provider>,
@@ -214,4 +219,126 @@ pub struct Agent {
     pub agent_mode: AgentMode,
     /// 工具执行的工作目录（即项目路径）
     pub project_path: PathBuf,
+    /// 项目 ID（用于持久化）
+    pub project_id: Option<String>,
+    /// 对话 ID（用于持久化）
+    pub conversation_id: String,
+    /// LLM 消息历史（Agent 自己管理）
+    pub messages: Vec<Message>,
+    /// 内部流式状态（由 create_streaming() 初始化）
+    pub streaming_handle: Option<crate::model::StreamingState>,
+}
+
+impl Agent {
+    /// 创建 Agent，获得 provider 和 registry 的所有权。
+    pub fn new(
+        provider: Box<dyn Provider>,
+        registry: Registry,
+        hook_register: HookRegister,
+        plan_mode: ActionMode,
+        agent_mode: AgentMode,
+        project_path: PathBuf,
+        project_id: Option<String>,
+        conversation_id: String,
+    ) -> Self {
+        Self {
+            provider,
+            registry,
+            hook_register,
+            plan_mode,
+            agent_mode,
+            project_path,
+            project_id,
+            conversation_id,
+            messages: Vec::new(),
+            streaming_handle: None,
+        }
+    }
+
+    pub fn push_message(&mut self, msg: Message) -> anyhow::Result<()> {
+        if let Ok(conn) = crate::db::get_db().lock() {
+            self.save_message(&conn, &msg).context("save message")?;
+            self.touch_conversation(&conn).context("touch conversation")?;
+        }
+        self.messages.push(msg);
+        Ok(())
+    }
+
+    /// 初始化消息历史：写入 system prompt，清空旧历史。
+    pub fn init_history(&mut self, system_prompt: String) {
+        self.messages.clear();
+        self.messages.push(Message {
+            role: LlmRole::System,
+            content: Some(system_prompt),
+            ..Default::default()
+        });
+    }
+
+    /// 从 UI 层消息加载对话历史（不含当前用户输入）。
+    /// 调用者应确保传入的消息不包含未处理的用户输入。
+    pub fn load_history(&mut self, chat_messages: &[ChatMessage]) {
+        for m in chat_messages {
+            self.messages.push(Message {
+                role: match m.role {
+                    crate::model::Role::User => LlmRole::User,
+                    crate::model::Role::Assistant => LlmRole::Assistant,
+                    crate::model::Role::System => LlmRole::System,
+                },
+                content: Some(m.content.clone()),
+                ..Default::default()
+            });
+        }
+    }
+
+    /// 从 LLM 消息历史导出 ChatMessage 列表（供 UI 显示）。
+    /// 不含 segments/tool_result，使用纯文本 content + reasoning。
+    pub fn chat_messages(&self) -> Vec<ChatMessage> {
+        let mut result = Vec::new();
+        for m in &self.messages {
+            match m.role {
+                LlmRole::User => {
+                    result.push(ChatMessage {
+                        role: crate::model::Role::User,
+                        content: m.content.clone().unwrap_or_default(),
+                        timestamp: chrono::Local::now(),
+                        tool_calls: Vec::new(),
+                        reasoning: String::new(),
+                        segments: Vec::new(),
+                    });
+                }
+                LlmRole::Assistant => {
+                    let content = m.content.clone().unwrap_or_default();
+                    let tcs: Vec<ToolCallRecord> = m.tool_calls.iter().map(|tc| ToolCallRecord {
+                        tool_name: tc.name.clone(),
+                        args: serde_json::from_str(&tc.arguments).unwrap_or_default(),
+                        result: None,
+                        status: ToolCallStatus::Success,
+                        approval_reason: None,
+                    }).collect();
+                    // 构建 segments：reasoning → text → tool call markers
+                    let mut segs: Vec<StreamSegment> = Vec::new();
+                    let reasoning_text = m.reasoning_content.clone().unwrap_or_default();
+                    if !reasoning_text.is_empty() {
+                        segs.push(StreamSegment::Reasoning(reasoning_text.clone()));
+                    }
+                    if !content.is_empty() {
+                        segs.push(StreamSegment::Text(content.clone()));
+                    }
+                    for _ in 0..tcs.len() {
+                        segs.push(StreamSegment::ToolCall);
+                    }
+                    result.push(ChatMessage {
+                        role: crate::model::Role::Assistant,
+                        content,
+                        timestamp: chrono::Local::now(),
+                        tool_calls: tcs,
+                        reasoning: reasoning_text,
+                        segments: segs,
+                    });
+                }
+                _ => {}
+            }
+        }
+        result
+    }
 }

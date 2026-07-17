@@ -1,129 +1,104 @@
 // ── Agent 主循环 ──
 //
-// Agent 通过 mpsc channel 输出流式事件，与前端（Dioxus Signal / 未来 ACP）解耦。
+// Agent 自己管理消息历史 + 本地持久化。
+// 流式数据通过 Arc 共享给 UI，不再使用 mpsc channel。
 
 use futures::StreamExt;
-use tokio::sync::mpsc;
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use tokio_util::sync::CancellationToken;
 
 use super::hook::{AgentEvent, HookRegister};
 use super::{AgentMode, ActionMode, ToolContext, ToolResult};
+use crate::model::{ChatMessage, Role as ChatRole, StreamSegment, ToolCallRecord, ToolCallStatus, UiMessage};
 use crate::permission::Decision;
-use crate::tools::Registry;
-use crate::ui::state::ToolCallRecord;
 use llm::{Chunk, Message, Provider, Request, Role as LlmRole, ToolCall};
 
-// ── StreamEvent ──────────────────────────────────────────────────────────────
+// ── select! 辅助枚举 ────────────────────────────────────────────────────────
 
-/// Agent 运行时通过 mpsc 发出的流式事件。
-///
-/// 复用 llm::Chunk 表示 LLM 流式输出，附加工具执行生命周期和循环状态。
-#[derive(Debug)]
-pub enum StreamEvent {
-    /// LLM 流式事件（Text / Reasoning / ToolCallStart/Delta/Complete / Usage）
-    Chunk(Chunk),
-    /// 工具开始执行
-    ToolExecuting {
-        tool_name: String,
-        args: serde_json::Value,
-    },
-    /// 工具执行完毕
-    ToolExecuted {
-        tool_name: String,
-        result: Result<ToolResult, String>,
-    },
-    /// 工具需要用户审批（Ask 决策），携带 oneshot sender 等待 UI 回传
-    ToolNeedsApproval {
-        tool_name: String,
-        args: serde_json::Value,
-        reason: String,
-        approval_tx: tokio::sync::oneshot::Sender<bool>,
-    },
-    /// 循环正常结束
-    Done,
-    /// 错误
-    Error(String),
+enum StreamOrCancel<T> {
+    Chunk(T),
+    Cancelled,
 }
 
-// ── AgentOutput ──────────────────────────────────────────────────────────────
+// ── Agent::accept_message ────────────────────────────────────────────
 
-/// Agent 运行完毕后的最终产物（供持久化用）。
-pub struct AgentOutput {
-    pub output: String,
-    pub reasoning: String,
-    pub tool_records: Vec<ToolCallRecord>,
-}
-
-// ── Agent ────────────────────────────────────────────────────────────────────
-
-use std::path::PathBuf;
 use super::Agent;
 
 impl Agent {
-    /// 创建 Agent，获得 provider 和 registry 的所有权。
-    pub fn new(
-        provider: Box<dyn Provider>,
-        registry: Registry,
-        hook_register: HookRegister,
-        plan_mode: ActionMode,
-        agent_mode: AgentMode,
-        project_path: PathBuf,
-    ) -> Self {
-        Self {
-            provider,
-            registry,
-            hook_register,
-            plan_mode,
-            agent_mode,
-            project_path,
-        }
+    /// 创建内部流式状态，返回 UiMessage::Streaming 供 UI 显示。
+    /// 必须先调用此方法，再调用 accept_message。
+    pub fn create_streaming(&mut self) -> UiMessage {
+        let state = crate::model::StreamingState {
+            segments: Arc::new(Mutex::new(Vec::new())),
+            tool_calls: Arc::new(Mutex::new(Vec::new())),
+            version: Arc::new(AtomicU64::new(0)),
+            approval_tx: Arc::new(Mutex::new(None)),
+        };
+        let streaming = UiMessage::Streaming {
+            segments: state.segments.clone(),
+            tool_calls: state.tool_calls.clone(),
+            version: state.version.clone(),
+            approval_tx: state.approval_tx.clone(),
+        };
+        self.streaming_handle = Some(state);
+        streaming
     }
 
-    /// 运行 agent 循环。
+    /// 接受用户输入并运行 agent 循环。返回已完成的 UiMessage::Static。
     ///
-    /// - `user_input` — 用户本次输入
-    /// - `history` — 历史消息（不含本次输入）
-    /// - `tx` — 事件发送端，接收者收到 `StreamEvent::Done` 表示循环结束
-    ///
-    /// 返回最终产物 `AgentOutput`。
-    pub async fn run(
-        &self,
+    /// 调用前必须先调用 create_streaming() 初始化内部流式状态。
+    pub async fn accept_message(
+        &mut self,
         user_input: String,
-        history: &[Message],
-        tx: mpsc::UnboundedSender<StreamEvent>,
-    ) -> AgentOutput {
-        // ── 1. 分发 Hook 事件 ──
-        self.hook_register
-            .emit(&AgentEvent::UserPromptSubmit {
-                prompt: user_input.clone(),
-            });
+        cancel_token: CancellationToken,
+    ) -> anyhow::Result<UiMessage> {
 
-        // ── 2. 构建 LLM 消息历史 ──
-        let mut req = Request {
-            messages: history.to_vec(),
-            tools: self.registry.schemas(),
-            temperature: 0.7,
-            max_tokens: 16384,
-        };
-        // 追加用户新消息
-        req.messages.push(Message {
-            role: LlmRole::User,
-            content: Some(user_input),
-            ..Default::default()
-        });
+        let (segments_arc, tool_calls_arc, version_arc, approval_arc) =
+            match self.streaming_handle.as_ref(){
+                Some(ss) => (
+                    ss.segments.clone(),
+                    ss.tool_calls.clone(),
+                    ss.version.clone(),
+                    ss.approval_tx.clone(),
+                ),
+                None => {
+                    self.create_streaming();
+                    let ss = self.streaming_handle.as_ref().unwrap_or_else(|| {
+                        panic!("create_streaming() must be called first")
+                    });
+                    (
+                        ss.segments.clone(),
+                        ss.tool_calls.clone(),
+                        ss.version.clone(),
+                        ss.approval_tx.clone(),
+                    )
+                },
+            };
+        
+        self.hook_register.emit(&AgentEvent::UserPromptSubmit { prompt: user_input.clone() });
+
+        self.push_message(Message { role: LlmRole::User, content: Some(user_input), timestamp: Some(chrono::Utc::now()), ..Default::default() })?;
 
         let mut final_output = String::new();
         let mut final_reasoning = String::new();
+        let mut cancelled = false;
 
-        // ── 3. Agent 循环 ──
         loop {
             let mut have_tool_calls = false;
 
-            // ── 3a. LLM 流式调用 ──
+            let req = Request {
+                messages: self.messages.clone(),
+                tools: self.registry.schemas(),
+                temperature: 0.7,
+                max_tokens: 65536,
+            };
+
             let mut stream = match self.provider.stream(&req).await {
                 Ok(s) => s,
                 Err(e) => {
                     let msg = format!("Stream error: {e}");
-                    let _ = tx.send(StreamEvent::Error(msg.clone()));
+                    push_text(&segments_arc, &msg, &version_arc);
                     final_output = msg;
                     break;
                 }
@@ -135,101 +110,125 @@ impl Agent {
             let mut reasoning = String::new();
             let mut pending_tool_calls: Vec<ToolCall> = Vec::new();
 
-            while let Some(result) = stream.next().await {
+            loop {
+                let result = tokio::select! {
+                    _ = cancel_token.cancelled() => StreamOrCancel::Cancelled,
+                    r = stream.next() => StreamOrCancel::Chunk(r),
+                };
+
                 match result {
-                    Ok(chunk @ Chunk::Text(_)) => {
-                        if let Chunk::Text(t) = &chunk {
-                            output.push_str(t);
-                        }
-                        let _ = tx.send(StreamEvent::Chunk(chunk));
+                    StreamOrCancel::Cancelled => { cancelled = true; break; }
+                    StreamOrCancel::Chunk(None) => break,
+                    StreamOrCancel::Chunk(Some(Ok(Chunk::Text(t)))) => {
+                        output.push_str(&t);
+                        push_text(&segments_arc, &t, &version_arc);
                     }
-                    Ok(chunk @ Chunk::Reasoning { .. }) => {
-                        if let Chunk::Reasoning { text, .. } = &chunk {
-                            reasoning.push_str(text);
-                        }
-                        let _ = tx.send(StreamEvent::Chunk(chunk));
+                    StreamOrCancel::Chunk(Some(Ok(Chunk::Reasoning { text, .. }))) => {
+                        reasoning.push_str(&text);
+                        push_reasoning(&segments_arc, &text, &version_arc);
                     }
-                    Ok(chunk @ Chunk::ToolCallComplete(_)) => {
-                        if let Chunk::ToolCallComplete(tool) = &chunk {
-                            have_tool_calls = true;
-                            pending_tool_calls.push(tool.clone());
-                        }
-                        let _ = tx.send(StreamEvent::Chunk(chunk));
+                    StreamOrCancel::Chunk(Some(Ok(Chunk::ToolCallComplete(tc)))) => {
+                        have_tool_calls = true;
+                        pending_tool_calls.push(tc.clone());
                     }
-                    Ok(chunk @ Chunk::ToolCallStart { .. })
-                    | Ok(chunk @ Chunk::ToolCallDelta { .. })
-                    | Ok(chunk @ Chunk::Usage(_)) => {
-                        let _ = tx.send(StreamEvent::Chunk(chunk));
-                    }
-                    Err(e) => {
+                    StreamOrCancel::Chunk(Some(Ok(_))) => {} // Start/Delta/Usage
+                    StreamOrCancel::Chunk(Some(Err(e))) => {
                         let msg = format!("Stream error: {e}");
-                        let _ = tx.send(StreamEvent::Error(msg.clone()));
                         output.push_str(&msg);
+                        push_text(&segments_arc, &msg, &version_arc);
                         break;
                     }
                 }
             }
 
-            // ── 3b. Assistant 消息推入请求历史 ──
+            if cancelled {
+                let output_empty = output.is_empty();
+                let reasoning_empty = reasoning.is_empty();
+                final_output = output.clone();
+                final_reasoning.push_str(&reasoning);
+                if !output_empty || !pending_tool_calls.is_empty() {
+                    let msg = Message {
+                        role: LlmRole::Assistant,
+                        content: if output_empty { None } else { Some(output.clone()) },
+                        reasoning_content: if reasoning_empty { None } else { Some(reasoning.clone()) },
+                        tool_calls: if pending_tool_calls.is_empty() { Vec::new() } else { pending_tool_calls.clone() },
+                        timestamp: Some(chrono::Utc::now()),
+                        ..Default::default()
+                    };
+                    self.push_message(msg)?;
+                }
+                break;
+            }
+
+            // Assistant 消息入 self.messages
             {
                 let mut msg = Message {
                     role: LlmRole::Assistant,
-                    content: if output.is_empty() {
-                        None
-                    } else {
-                        Some(output.clone())
-                    },
+                    content: if output.is_empty() { None } else { Some(output.clone()) },
+                    reasoning_content: if reasoning.is_empty() { None } else { Some(reasoning.clone()) },
+                    timestamp: Some(chrono::Utc::now()),
                     ..Default::default()
                 };
                 if !pending_tool_calls.is_empty() {
                     msg.tool_calls = pending_tool_calls.clone();
                 }
-                req.messages.push(msg);
+                self.push_message(msg)?;
             }
 
-            // ── 3c. 执行工具调用 ──
+            // 执行工具调用
             for tool_call in &pending_tool_calls {
                 let tool_name = tool_call.name.clone();
-
-                // 分发 PreToolUse Hook
                 self.hook_register.emit(&AgentEvent::PreToolUse {
                     tool_name: tool_name.clone(),
                     args: serde_json::from_str(&tool_call.arguments).unwrap_or_default(),
                 });
 
                 if let Some(tool) = self.registry.get(&tool_name) {
-                    let args: serde_json::Value =
-                        serde_json::from_str(&tool_call.arguments).unwrap_or_default();
+                    let args: serde_json::Value = serde_json::from_str(&tool_call.arguments).unwrap_or_default();
 
-                    // 通知前端：工具开始执行
-                    let _ = tx.send(StreamEvent::ToolExecuting {
-                        tool_name: tool_name.clone(),
-                        args: args.clone(),
-                    });
+                    // push tool record + ToolCall marker
+                    {
+                        let mut tcs = tool_calls_arc.lock().unwrap();
+                        tcs.push(ToolCallRecord {
+                            tool_name: tool_name.clone(), args: args.clone(),
+                            result: None, status: ToolCallStatus::Running, approval_reason: None,
+                        });
+                    }
+                    push_tool_marker(&segments_arc, &version_arc);
 
-                    // ── 权限预检 + 审批分流 ──
-                    let ctx = ToolContext {
-                        call_id: tool_call.id.clone(),
-                        plan_mode: self.plan_mode,
-                        agent_mode: self.agent_mode,
-                        progress: None,
-                    };
+                    let ctx = ToolContext { call_id: tool_call.id.clone(), plan_mode: self.plan_mode, agent_mode: self.agent_mode, progress: None };
                     let decision = tool.pre_check(&ctx, &args);
+                    let is_denied = matches!(decision, Decision::Deny(_));
                     let result = match decision {
-                        Decision::Allow => {
-                            tool.execute(&ctx, &args).await
-                        }
+                        Decision::Allow => tool.execute(&ctx, &args).await,
                         Decision::Ask => {
                             let reason = format!("{} needs approval", tool_name);
-                            let (approval_tx, approval_rx) = tokio::sync::oneshot::channel();
-                            let _ = tx.send(StreamEvent::ToolNeedsApproval {
-                                tool_name: tool_name.clone(),
-                                args: args.clone(),
-                                reason: reason.clone(),
-                                approval_tx,
-                            });
-                            match approval_rx.await {
-                                Ok(true) => tool.execute(&ctx, &args).await,
+                            {
+                                let mut tcs = tool_calls_arc.lock().unwrap();
+                                if let Some(rec) = tcs.iter_mut().rev().find(|tc| tc.tool_name == tool_name && tc.status == ToolCallStatus::Running) {
+                                    rec.status = ToolCallStatus::AwaitingApproval { reason: reason.clone() };
+                                    rec.approval_reason = Some(reason.clone());
+                                }
+                            }
+                            push_tool_marker(&segments_arc, &version_arc);
+
+                            let (atx, arx) = tokio::sync::oneshot::channel();
+                            *approval_arc.lock().unwrap() = Some(atx);
+                            match arx.await {
+                                Ok(true) => {
+                                    // 立即更新状态为 Running，让 UI 及时响应
+                                    {
+                                        let mut tcs = tool_calls_arc.lock().unwrap();
+                                        if let Some(rec) = tcs.iter_mut().rev().find(|tc| {
+                                            tc.tool_name == tool_name && matches!(tc.status, ToolCallStatus::AwaitingApproval { .. })
+                                        }) {
+                                            rec.status = ToolCallStatus::Running;
+                                        }
+                                    }
+                                    *approval_arc.lock().unwrap() = None;
+                                    inc_version_atomic(&version_arc);
+                                    tool.execute(&ctx, &args).await
+                                }
                                 Ok(false) => Err(format!("denied by user: {reason}")),
                                 Err(_) => Err("approval channel closed".into()),
                             }
@@ -237,52 +236,132 @@ impl Agent {
                         Decision::Deny(msg) => Err(msg),
                     };
 
-                    // 通知前端：工具执行完毕
-                    let _ = tx.send(StreamEvent::ToolExecuted {
-                        tool_name: tool_name.clone(),
-                        result: result.clone(),
-                    });
+                    // 更新 tool record 状态
+                    {
+                        let mut tcs = tool_calls_arc.lock().unwrap();
+                        if let Some(rec) = tcs.iter_mut().rev().find(|tc| {
+                            tc.tool_name == tool_name
+                                && (tc.status == ToolCallStatus::Running || matches!(tc.status, ToolCallStatus::AwaitingApproval { .. }))
+                        }) {
+                            rec.result = Some(match &result { Ok(tr) => tr.output.clone(), Err(e) => e.clone() });
+                            rec.status = match &result {
+                                Ok(_) => ToolCallStatus::Success,
+                                Err(e) if is_denied || e.starts_with("denied by user:") || e == "approval channel closed" => {
+                                    ToolCallStatus::Denied(e.clone())
+                                }
+                                Err(e) => ToolCallStatus::Failed(e.clone()),
+                            };
+                        }
+                    }
+                    *approval_arc.lock().unwrap() = None;
+                    inc_version_atomic(&version_arc);
 
-                    // 分发 PostToolUse Hook
-                    self.hook_register.emit(&AgentEvent::PostToolUse {
-                        tool_name: tool_name.clone(),
-                        result: result.clone(),
-                    });
-
-                    // 工具结果推入请求历史
-                    req.messages.push(Message {
+                    self.hook_register.emit(&AgentEvent::PostToolUse { tool_name: tool_name.clone(), result: result.clone() });
+                    let tool_message = Message {
                         role: LlmRole::Tool,
-                        content: Some(match &result {
-                            Ok(tr) => tr.output.clone(),
-                            Err(e) => format!("error: {e}"),
-                        }),
-                        tool_call_id: Some(tool_call.id.clone()),
-                        name: Some(tool_name),
+                        content: Some(match &result { Ok(tr) => tr.output.clone(), Err(e) => format!("error: {e}") }),
+                        tool_call_id: Some(tool_call.id.clone()), name: Some(tool_name),
+                        timestamp: Some(chrono::Utc::now()),
                         ..Default::default()
-                    });
+                    };
+                    self.push_message(tool_message)?;
                 }
             }
 
             final_output = output;
             final_reasoning.push_str(&reasoning);
-
-            if !have_tool_calls {
-                break;
-            }
+            if !have_tool_calls { break; }
         }
 
-        // ── 4. 结束 ──
-        let _ = tx.send(StreamEvent::Done);
+        // ── 更新对话时间 ──
+        if let Ok(conn) = crate::db::get_db().lock() {
+            self.touch_conversation(&conn).ok();
+        }
 
-        self.hook_register
-            .emit(&AgentEvent::Stop {
-                reason: "completed".into(),
-            });
+        self.hook_register.emit(&AgentEvent::Stop { reason: if cancelled { "cancelled" } else { "completed" }.into() });
 
-        AgentOutput {
-            output: final_output,
+        // ── 构建 Static 消息 ──
+        let segments_snapshot = segments_arc.lock().unwrap().clone();
+        let tool_records_snapshot = tool_calls_arc.lock().unwrap().clone();
+
+        let content = build_content_from_segments(&segments_snapshot);
+        let content = if content.is_empty() { final_output.clone() } else { content };
+
+        Ok(UiMessage::Static(ChatMessage {
+            role: ChatRole::Assistant, content,
+            timestamp: chrono::Local::now(),
+            tool_calls: tool_records_snapshot,
             reasoning: final_reasoning,
-            tool_records: Vec::new(), // bridge 层会从 channel 事件中累积
-        }
+            segments: segments_snapshot,
+        }))
     }
+
+    /// 将 self.messages 转换为 DB 行（日后复用）
+    pub fn to_message_rows(&self) -> Vec<crate::db::metadata::message::MessageRow> {
+        self.messages
+            .iter()
+            .filter(|m| matches!(m.role, LlmRole::User | LlmRole::Assistant | LlmRole::Tool))
+            .map(|m| crate::db::metadata::message::MessageRow::from_llm(m, &self.conversation_id))
+            .collect()
+    }
+
+    /// 将单条 llm::Message 持久化到 messages 表（不删旧消息）。
+    pub fn save_message(&self, conn: &rusqlite::Connection, msg: &llm::Message) -> rusqlite::Result<()> {
+        use crate::db::metadata::message;
+        let row = message::MessageRow::from_llm(msg, &self.conversation_id);
+        message::create(conn, &self.conversation_id, &row)?;
+        Ok(())
+    }
+
+    /// 单独更新 conversations.updated_at 为当前时间。
+    pub fn touch_conversation(&self, conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+        conn.execute(
+            "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+            rusqlite::params![chrono::Local::now().to_rfc3339(), self.conversation_id],
+        )?;
+        Ok(())
+    }
+}
+
+// ── Arc 辅助操作 ─────────────────────────────────────────────────────────────
+
+fn inc_version_atomic(version: &Arc<AtomicU64>) {
+    version.fetch_add(1, Ordering::Relaxed);
+}
+
+fn push_text(segments: &Arc<Mutex<Vec<StreamSegment>>>, text: &str, version: &Arc<AtomicU64>) {
+    let mut segs = segments.lock().unwrap();
+    match segs.last_mut() {
+        Some(StreamSegment::Text(t)) => t.push_str(text),
+        _ => segs.push(StreamSegment::Text(text.to_string())),
+    }
+    drop(segs);
+    inc_version_atomic(version);
+}
+
+fn push_reasoning(segments: &Arc<Mutex<Vec<StreamSegment>>>, text: &str, version: &Arc<AtomicU64>) {
+    let mut segs = segments.lock().unwrap();
+    match segs.last_mut() {
+        Some(StreamSegment::Reasoning(t)) => t.push_str(text),
+        _ => segs.push(StreamSegment::Reasoning(text.to_string())),
+    }
+    drop(segs);
+    inc_version_atomic(version);
+}
+
+fn push_tool_marker(segments: &Arc<Mutex<Vec<StreamSegment>>>, version: &Arc<AtomicU64>) {
+    segments.lock().unwrap().push(StreamSegment::ToolCall);
+    inc_version_atomic(version);
+}
+
+fn build_content_from_segments(segments: &[StreamSegment]) -> String {
+    let mut content = String::new();
+    for seg in segments {
+        if let StreamSegment::Text(t) = seg { content.push_str(t); }
+    }
+    content
+}
+
+pub fn main_agent_prompt() -> String {
+    "You are a helpful assistant.".to_string()
 }

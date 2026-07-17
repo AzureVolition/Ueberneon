@@ -1898,3 +1898,475 @@ body {
     transition: none;
   }
 }
+
+/* ═══════════════════════════════════════════════
+   ERROR NOTIFICATION SYSTEM
+   ── ErrorModal · ErrorBanner · ErrorToast ──
+   Hallmark · Lumen (Night Foundry) · error = neon pink
+   ═══════════════════════════════════════════════ */
+
+/* ── ErrorModal ── */
+.error-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: grid;
+  place-items: center;
+  background: oklch(0% 0 0 / 0.62);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: modal-backdrop-in var(--dur-base) var(--ease-out) both;
+}
+
+@keyframes modal-backdrop-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.error-modal {
+  position: relative;
+  width: min(90vw, 480px);
+  max-height: 85vh;
+  overflow-y: auto;
+  background: var(--color-paper-2);
+  border: 1px solid var(--color-rule-2);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 12px 48px oklch(0% 0 0 / 0.55),
+              0 0 0 1px oklch(68% 0.22 330 / 0.12);
+  animation: modal-panel-in 280ms var(--ease-out) both;
+  display: flex;
+  flex-direction: column;
+}
+
+@keyframes modal-panel-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.error-modal-accent-bar {
+  height: 3px;
+  background: var(--color-error);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  flex-shrink: 0;
+}
+
+.error-modal-body {
+  padding: var(--space-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  flex: 1;
+}
+
+.error-modal-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-micro);
+  text-transform: uppercase;
+}
+
+.error-modal-icon {
+  color: var(--color-error);
+  font-size: var(--text-md);
+  line-height: 1;
+}
+
+.error-modal-code {
+  color: var(--color-error);
+  font-weight: 500;
+}
+
+.error-modal-time {
+  color: var(--color-ink-4);
+  margin-left: auto;
+}
+
+.error-modal-title {
+  font-family: var(--font-display);
+  font-size: var(--text-xl);
+  font-weight: 400;
+  color: var(--color-ink);
+  line-height: 1.25;
+  letter-spacing: var(--tracking-tight);
+  margin: 0;
+  text-transform: lowercase;
+}
+
+.error-modal-message {
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  color: var(--color-ink-2);
+  line-height: 1.55;
+  margin: 0;
+  text-transform: lowercase;
+}
+
+/* detail toggle */
+.error-modal-detail-toggle {
+  align-self: flex-start;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-micro);
+  text-transform: uppercase;
+  color: var(--color-ink-3);
+  background: transparent;
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2xs) var(--space-xs);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-out),
+              border-color var(--dur-fast) var(--ease-out),
+              background var(--dur-fast) var(--ease-out);
+  min-height: 28px;
+}
+
+.error-modal-detail-toggle:hover {
+  color: var(--color-ink-2);
+  border-color: var(--color-rule-2);
+  background: var(--color-paper-3);
+}
+
+.error-modal-detail-toggle:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+}
+
+.error-modal-detail-toggle:active {
+  transform: translateY(1px);
+}
+
+.error-modal-toggle-icon {
+  display: inline-block;
+  width: 1em;
+  text-align: center;
+}
+
+.error-modal-detail {
+  background: oklch(8% 0.01 265);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-sm);
+  padding: var(--space-sm);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-ink-3);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  text-transform: none;
+}
+
+/* actions */
+.error-modal-actions {
+  padding: var(--space-sm) var(--space-lg) var(--space-lg);
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-xs);
+  border-top: 1px solid var(--color-rule);
+  margin-top: auto;
+}
+
+.error-modal-btn {
+  padding: var(--space-xs) var(--space-xl);
+  border-radius: var(--radius-md);
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  text-transform: lowercase;
+  cursor: pointer;
+  outline: none;
+  border: 1px solid transparent;
+  transition: background var(--dur-fast) var(--ease-out),
+              color var(--dur-fast) var(--ease-out),
+              transform 100ms var(--ease-out),
+              border-color var(--dur-fast) var(--ease-out);
+  line-height: 1.5;
+  min-height: 36px;
+}
+
+.error-modal-btn:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.error-modal-btn:active {
+  transform: translateY(1px);
+}
+
+.error-modal-btn--primary {
+  background: var(--color-accent);
+  color: var(--color-paper);
+  border-color: var(--color-accent);
+}
+
+.error-modal-btn--primary:hover {
+  background: oklch(76% 0.22 200);
+  box-shadow: 0 0 10px var(--color-glow-2);
+}
+
+.error-modal-btn--secondary {
+  background: transparent;
+  color: var(--color-ink-2);
+  border-color: var(--color-rule);
+}
+
+.error-modal-btn--secondary:hover {
+  background: var(--color-paper-3);
+  border-color: var(--color-rule-2);
+  color: var(--color-ink);
+}
+
+/* ── ErrorBanner ── */
+.error-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: calc(var(--z-dropdown) + 10);
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-md);
+  background: oklch(16% 0.016 265 / 0.96);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--color-rule);
+  border-left: 3px solid var(--color-error);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-micro);
+  animation: banner-slide-in 320ms var(--ease-out) both;
+  min-height: 36px;
+}
+
+@keyframes banner-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(-100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.error-banner--warn {
+  border-left-color: oklch(72% 0.20 200);
+}
+
+.error-banner-label {
+  text-transform: uppercase;
+  color: var(--color-error);
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.error-banner--warn .error-banner-label {
+  color: var(--color-accent);
+}
+
+.error-banner-code {
+  color: var(--color-ink-4);
+  flex-shrink: 0;
+}
+
+.error-banner-text {
+  color: var(--color-ink-2);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-transform: lowercase;
+}
+
+.error-banner-close {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--color-ink-4);
+  font-size: var(--text-md);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: color var(--dur-fast) var(--ease-out),
+              background var(--dur-fast) var(--ease-out);
+  line-height: 1;
+  padding: 0;
+}
+
+.error-banner-close:hover {
+  color: var(--color-ink-2);
+  background: var(--color-paper-3);
+}
+
+.error-banner-close:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+}
+
+.error-banner-close:active {
+  transform: scale(0.9);
+}
+
+/* ── ErrorToast ── */
+.error-toast {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--color-paper-2);
+  border: 1px solid var(--color-rule-2);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 16px oklch(0% 0 0 / 0.4),
+              0 0 0 1px oklch(68% 0.22 330 / 0.08);
+  min-width: 280px;
+  max-width: 380px;
+  animation: toast-slide-in 280ms var(--ease-out) both;
+}
+
+@keyframes toast-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(40px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.error-toast-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-error);
+  flex-shrink: 0;
+  box-shadow: 0 0 8px var(--color-glow-pink-strong);
+}
+
+.error-toast-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.error-toast-title {
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--color-ink);
+  text-transform: lowercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.error-toast-msg {
+  font-family: var(--font-body);
+  font-size: var(--text-xs);
+  color: var(--color-ink-3);
+  text-transform: lowercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.error-toast-close {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--color-ink-4);
+  font-size: var(--text-md);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: color var(--dur-fast) var(--ease-out),
+              background var(--dur-fast) var(--ease-out);
+  line-height: 1;
+  padding: 0;
+}
+
+.error-toast-close:hover {
+  color: var(--color-ink-2);
+  background: var(--color-paper-3);
+}
+
+.error-toast-close:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+}
+
+.error-toast-close:active {
+  transform: scale(0.9);
+}
+
+/* toast stack — multiple toasts don't push each other */
+.error-toast-stack {
+  position: fixed;
+  bottom: var(--space-lg);
+  right: var(--space-lg);
+  z-index: calc(var(--z-dropdown) + 20);
+  display: flex;
+  flex-direction: column-reverse;
+  gap: var(--space-sm);
+  pointer-events: none;
+}
+
+.error-toast-stack > * {
+  pointer-events: auto;
+}
+
+/* ═══════════════════════════════════════════════
+   ERROR SYSTEM — reduced motion
+   ═══════════════════════════════════════════════ */
+@media (prefers-reduced-motion: reduce) {
+  .error-modal-backdrop {
+    animation: none;
+    opacity: 1;
+  }
+
+  .error-modal {
+    animation: none;
+  }
+
+  .error-banner {
+    animation: none;
+  }
+
+  .error-toast {
+    animation: none;
+  }
+
+  .error-modal-btn:active {
+    transform: none;
+  }
+
+  .error-banner-close:active,
+  .error-toast-close:active {
+    transform: none;
+  }
+
+  .error-modal-detail-toggle:active {
+    transform: none;
+  }
+}

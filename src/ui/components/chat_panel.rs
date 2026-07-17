@@ -1,45 +1,44 @@
 use dioxus::desktop::use_window;
 use dioxus::prelude::*;
+use std::sync::atomic::Ordering;
 
-use crate::ui::state::{ChatMessage, Role, StreamSegment, ToolCallRecord, ToolCallStatus};
+use crate::model::{ChatMessage, Role, StreamSegment, ToolCallRecord, ToolCallStatus, UiMessage};
 
 /// 对话面板 —— 消息列表 + 流式输出 + 空状态 + 时序导航
 #[component]
 pub fn ChatPanel(
-    messages: Signal<Vec<ChatMessage>>,
-    streaming_segments: Signal<Vec<StreamSegment>>,
+    messages: Signal<Vec<UiMessage>>,
+    tick: Signal<u64>,
     is_streaming: Signal<bool>,
-    active_tool_calls: Signal<Vec<ToolCallRecord>>,
     markdown_to_html: fn(&str) -> String,
     on_approve: EventHandler<(bool,)>,
 ) -> Element {
     let msgs = messages.read();
-    let segments = streaming_segments.read();
+    let _tick = tick(); // 绑定 tick，变化时触发重渲染
     let running = is_streaming();
-    let active_calls = active_tool_calls.read();
     let window = use_window();
     let win = window.clone();
     let win2 = win.clone();
 
-    // 收集所有用户消息的索引和内容预览
+    // 收集用户消息索引
     let user_messages: Vec<(usize, String)> = msgs
         .iter()
         .enumerate()
-        .filter(|(_, m)| matches!(m.role, Role::User))
+        .filter(|(_, m)| match m {
+            UiMessage::Static(cm) => matches!(cm.role, Role::User),
+            _ => false,
+        })
         .map(|(i, m)| {
-            let text = m.content.trim();
-            let preview: String = text.chars().take(60).collect();
-            let preview = if text.chars().count() > 60 {
-                format!("{preview}…")
-            } else {
-                preview
+            let text = match m {
+                UiMessage::Static(cm) => cm.content.trim().to_string(),
+                _ => String::new(),
             };
-            (i, preview)
+            let preview: String = text.chars().take(60).collect();
+            (i, if text.chars().count() > 60 { format!("{preview}…") } else { preview })
         })
         .collect();
-    let last_user_index = user_messages.last().map(|(i, _)| *i);
 
-    // 注入滚动监听：自动高亮当前可见消息对应的 timeline hit
+    // 注入滚动监听
     use_effect(move || {
         let script = r#"
 (function(){
@@ -71,19 +70,16 @@ p.addEventListener('scroll',upd,{passive:true});
 window.addEventListener('resize',upd,{passive:true});
 upd();
 })();
-// auto-scroll during streaming — MutationObserver-driven, no Rust bridge jitter
 (function(){
 var p=document.querySelector('.chat-panel');if(!p)return;
 var wasStreaming=false;
 var ob=new MutationObserver(function(){
-// auto-scroll during streaming
 if(p._autoFollow!==0){
 requestAnimationFrame(function(){
 p.scrollTo({top:p.scrollHeight,behavior:'auto'});
 });
 }
 var now=!!document.querySelector('.message-assistant.streaming');
-// streaming started → sync bubble animation with timeline
 if(!wasStreaming&&now){
 var bubble=document.querySelector('.message-assistant.streaming');
 var hit=document.querySelector('.timeline-hit.streaming');
@@ -97,7 +93,6 @@ if(typeof t==='number')bubble.style.animationDelay=(-(t%3000))+'ms';
 }
 }
 }
-// streaming ended → trigger warm→cool cooldown
 if(wasStreaming&&!now){
 var msgs=document.querySelectorAll('.message-assistant:not(.streaming)');
 var last=msgs[msgs.length-1];
@@ -120,130 +115,108 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
     });
 
     let streaming_key = "streaming-bubble";
+    let awaiting_response = msgs.last().map(|m| matches!(m, UiMessage::Static(cm) if matches!(cm.role, Role::User))).unwrap_or(false);
 
-    // 当前对话是否确实在等回复（最后一条是用户消息）
-    let awaiting_response = msgs.last().map(|m| matches!(m.role, Role::User)).unwrap_or(false);
+    // 检查是否有正在等待审批的 tool call
+    let has_approval_pending = msgs.iter().any(|m| {
+        matches!(m, UiMessage::Streaming { tool_calls, .. }
+            if tool_calls.lock().unwrap().iter().any(|tc| matches!(tc.status, ToolCallStatus::AwaitingApproval { .. })))
+    });
+    let last_user_idx = user_messages.last().map(|(i, _)| *i);
 
     rsx! {
         div {
             class: "chat-panel",
 
-            if msgs.is_empty() && segments.is_empty() {
+            if msgs.is_empty() {
                 div {
                     class: "chat-empty",
                     span { class: "empty-eyebrow", "CHAT" }
-                    h2 {
-                        dangerous_inner_html: "ready to <em>think</em> with you."
-                    }
+                    h2 { dangerous_inner_html: "ready to <em>think</em> with you." }
                     p { "start a conversation — type your message below." }
                 }
             }
 
             {msgs.iter().enumerate().map(|(i, msg)| {
-                let formatted_time = msg.timestamp.format("%H:%M:%S").to_string();
-                let (role_label, role_class) = match msg.role {
-                    Role::User => ("USER", "user-role"),
-                    Role::Assistant => ("ASSISTANT", ""),
-                    Role::System => ("SYSTEM", ""),
-                };
-                let bubble_class = match msg.role {
-                    Role::User => "message-bubble message-user",
-                    Role::Assistant => "message-bubble message-assistant",
-                    Role::System => "message-bubble message-system",
-                };
-                let msg_id = format!("msg-{i}");
-
-                rsx! {
-                    div {
-                        key: "{i}",
-                        id: "{msg_id}",
-                        class: bubble_class,
-
-                        // 消息头
-                        div {
-                            class: "message-header",
-                            span {
-                                class: "message-role {role_class}",
-                                "{role_label}"
-                            }
-                            span {
-                                class: "message-time",
-                                "{formatted_time}"
-                            }
-                        }
-                        // 按 LLM 返回的 StreamSegment 顺序渲染
-                        // 如果 segments 为空但 content 非空（用户消息），直接渲染 content
-                        {
-                            if msg.segments.is_empty() && !msg.content.is_empty() {
-                                rsx! {
-                                    div {
-                                        class: "message-content",
-                                        dangerous_inner_html: markdown_to_html(&msg.content),
+                match msg {
+                    UiMessage::Static(chat_msg) => {
+                        let formatted_time = chat_msg.timestamp.format("%H:%M:%S").to_string();
+                        let (role_label, role_class) = match chat_msg.role {
+                            Role::User => ("USER", "user-role"),
+                            Role::Assistant => ("ASSISTANT", ""),
+                            Role::System => ("SYSTEM", ""),
+                        };
+                        let bubble_class = match chat_msg.role {
+                            Role::User => "message-bubble message-user",
+                            Role::Assistant => "message-bubble message-assistant",
+                            Role::System => "message-bubble message-system",
+                        };
+                        let msg_id = format!("msg-{i}");
+                        let segments = chat_msg.segments.clone();
+                        let tool_calls = chat_msg.tool_calls.clone();
+                        let content = chat_msg.content.clone();
+                        rsx! {
+                            div { key: "{i}", id: "{msg_id}", class: bubble_class,
+                                div { class: "message-header",
+                                    span { class: "message-role {role_class}", "{role_label}" }
+                                    span { class: "message-time", "{formatted_time}" }
+                                }
+                                {
+                                    if segments.is_empty() && !content.is_empty() {
+                                        rsx! { div { class: "message-content", dangerous_inner_html: markdown_to_html(&content) } }
+                                    } else {
+                                        rsx! { {render_segments(false, &segments, &tool_calls, markdown_to_html, on_approve).into_iter()} }
                                     }
                                 }
-                            } else {
-                                rsx! {
-                                    {render_segments(false, &msg.segments, &msg.tool_calls, markdown_to_html, on_approve).into_iter()}
-                                }
+                            }
+                        }
+                    }
+                    UiMessage::Streaming { segments, tool_calls, approval_tx, .. } => {
+                        let segs = segments.lock().unwrap().clone();
+                        let tcs = tool_calls.lock().unwrap().clone();
+                        let has_approval = tcs.iter().any(|tc| matches!(tc.status, ToolCallStatus::AwaitingApproval { .. }));
+                        let streaming_class = if has_approval {
+                            "message-bubble message-assistant streaming awaiting-approval"
+                        } else {
+                            "message-bubble message-assistant streaming"
+                        };
+                        // 审批处理
+                        let atx = approval_tx.clone();
+                        let on_stream_approve = move |(allowed,): (bool,)| {
+                            if let Some(tx) = atx.lock().unwrap().take() {
+                                let _ = tx.send(allowed);
+                            }
+                        };
+                        rsx! {
+                            div { key: "{streaming_key}", class: "{streaming_class}",
+                                {render_segments(true, &segs, &tcs, markdown_to_html, EventHandler::new(on_stream_approve)).into_iter()}
                             }
                         }
                     }
                 }
             })}
 
-            // 流式输出区 —— 按 LLM 返回的 StreamSegment 顺序渲染
-            if running && !segments.is_empty() {
-                {
-                    let has_approval = active_calls.iter().any(|tc| matches!(tc.status, ToolCallStatus::AwaitingApproval { .. }));
-                    let streaming_class = if has_approval {
-                        "message-bubble message-assistant streaming awaiting-approval"
-                    } else {
-                        "message-bubble message-assistant streaming"
-                    };
-                    rsx! {
-                        div {
-                            key: "{streaming_key}",
-                            class: "{streaming_class}",
-                            {render_segments(true, &segments, &active_calls, markdown_to_html, on_approve).into_iter()}
-                        }
+            if running && awaiting_response && !msgs.iter().any(|m| matches!(m, UiMessage::Streaming { .. })) {
+                div { class: "message-bubble message-assistant thinking",
+                    div { class: "thinking-dots",
+                        span { "." } span { "." } span { "." }
                     }
                 }
             }
 
-            if running && segments.is_empty() && awaiting_response {
-                div {
-                    class: "message-bubble message-assistant thinking",
-                    div {
-                        class: "thinking-dots",
-                        span { "." }
-                        span { "." }
-                        span { "." }
-                    }
-                }
-            }
-
-            // ── Minimap heatbar ──
             if !user_messages.is_empty() {
-                div {
-                    class: "chat-timeline",
+                div { class: "chat-timeline",
                     {user_messages.iter().map(|(idx, preview)| {
                         let i = *idx;
                         let tooltip = preview.clone();
                         let w = win.clone();
-                        let is_streaming = running && Some(*idx) == last_user_index;
-                        let has_approval = is_streaming && active_calls.iter().any(|tc| matches!(tc.status, ToolCallStatus::AwaitingApproval { .. }));
-                        let hit_class = if has_approval {
+                        let timeline_class = if has_approval_pending && Some(*idx) == last_user_idx {
                             "timeline-hit streaming awaiting-approval"
-                        } else if is_streaming {
-                            "timeline-hit streaming"
                         } else {
                             "timeline-hit"
                         };
                         rsx! {
-                            div {
-                                class: "{hit_class}",
-                                "data-index": "{idx}",
-                                title: "{tooltip}",
+                            div { class: "{timeline_class}", "data-index": "{idx}", title: "{tooltip}",
                                 onclick: move |_| {{
                                     let script = format!(
                                         "(function(){{var el=document.getElementById('msg-{i}');if(!el)return;var p=el.closest('.chat-panel');if(!p){{el.scrollIntoView({{behavior:'smooth',block:'center'}});return;}}p.scrollTop=el.offsetTop-p.offsetHeight/2;}})()",
@@ -259,8 +232,6 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
     }
 }
 
-
-/// 将连续的 Reasoning + ToolCall segments 归组到可折叠的 think-watch 块中
 fn render_segments(
     streaming: bool,
     segments: &[StreamSegment],
@@ -276,10 +247,7 @@ fn render_segments(
         if !buf.is_empty() {
             let children: Vec<Element> = buf.drain(..).collect();
             items.push(rsx! {
-                details {
-                    class: "think-watch",
-                    open: streaming,
-                    summary { class: "think-watch-toggle", "think watch write" }
+                details { class: "think-watch", open: streaming,                    summary { class: "think-watch-toggle", "think watch write" }
                     {children.into_iter()}
                 }
             });
@@ -290,21 +258,11 @@ fn render_segments(
         match seg {
             StreamSegment::Text(t) => {
                 flush(&mut buf, &mut items);
-                items.push(rsx! {
-                    div {
-                        class: "message-content",
-                        dangerous_inner_html: markdown_to_html(t),
-                    }
-                });
+                items.push(rsx! { div { class: "message-content", dangerous_inner_html: markdown_to_html(t) } });
             }
             StreamSegment::Reasoning(text) => {
                 let html = markdown_to_html(text);
-                buf.push(rsx! {
-                    div {
-                        class: "thinking-content",
-                        dangerous_inner_html: html,
-                    }
-                });
+                buf.push(rsx! { div { class: "thinking-content", dangerous_inner_html: html } });
             }
             StreamSegment::ToolCall => {
                 if let Some(call) = tool_calls.get(tc_idx) {
@@ -313,6 +271,7 @@ fn render_segments(
                         ToolCallStatus::Running => "running",
                         ToolCallStatus::Success => "success",
                         ToolCallStatus::Failed(_) => "failed",
+                        ToolCallStatus::Denied(_) => "denied",
                         ToolCallStatus::AwaitingApproval { .. } => "needs approval",
                     };
                     let is_approval = matches!(&call.status, ToolCallStatus::AwaitingApproval { .. });
@@ -324,53 +283,25 @@ fn render_segments(
 
                     buf.push(if is_approval {
                         rsx! {
-                            div {
-                                class: "approval-card",
-                                div {
-                                    class: "approval-header",
-                                    span { class: "approval-title", "{tool_name} needs approval" }
+                            div { class: "approval-card",
+                                div { class: "approval-header", span { class: "approval-title", "{tool_name} needs approval" } }
+                                div { class: "approval-body",
+                                    div { class: "approval-args", "{args_summary}" }
+                                    div { class: "approval-reason", "{approval_reason}" }
                                 }
-                                div {
-                                    class: "approval-body",
-                                    div {
-                                        class: "approval-args",
-                                        "{args_summary}"
-                                    }
-                                    div {
-                                        class: "approval-reason",
-                                        "{approval_reason}"
-                                    }
-                                }
-                                div {
-                                    class: "approval-actions",
-                                    button {
-                                        class: "approval-btn allow",
-                                        onclick: move |_| on_allow.call((true,)),
-                                        "allow"
-                                    }
-                                    button {
-                                        class: "approval-btn deny",
-                                        onclick: move |_| on_deny.call((false,)),
-                                        "deny"
-                                    }
+                                div { class: "approval-actions",
+                                    button { class: "approval-btn allow", onclick: move |_| on_allow.call((true,)), "allow" }
+                                    button { class: "approval-btn deny", onclick: move |_| on_deny.call((false,)), "deny" }
                                 }
                             }
                         }
                     } else {
                         rsx! {
-                            details {
-                                class: "tool-call-details {sc}",
-                                summary {
-                                    class: "tool-call-summary",
+                            details { class: "tool-call-details {sc}",
+                                summary { class: "tool-call-summary",
                                     span { class: "tool-call-name", "{call.tool_name}" }
-                                    span {
-                                        class: "tool-call-args",
-                                        "{tool_args_summary(&call.tool_name, &call.args)}"
-                                    }
-                                    span {
-                                        class: "tool-call-status {sc}",
-                                        "{status_text}"
-                                    }
+                                    span { class: "tool-call-args", "{tool_args_summary(&call.tool_name, &call.args)}" }
+                                    span { class: "tool-call-status {sc}", "{status_text}" }
                                 }
                                 if let Some(ref result) = call.result {
                                     pre { class: "tool-call-result", "{result}" }
@@ -387,17 +318,16 @@ fn render_segments(
     items
 }
 
-/// 从工具调用状态获取 CSS class 后缀
 fn status_class(status: &ToolCallStatus) -> &'static str {
     match status {
         ToolCallStatus::Running => "status-running",
         ToolCallStatus::Success => "status-success",
         ToolCallStatus::Failed(_) => "status-failed",
+        ToolCallStatus::Denied(_) => "status-failed",
         ToolCallStatus::AwaitingApproval { .. } => "status-approval",
     }
 }
 
-/// 从工具调用的参数中提取简短摘要（用于在 summary 中显示入参）
 fn tool_args_summary(tool_name: &str, args: &serde_json::Value) -> String {
     let keys: &[&str] = match tool_name {
         "bash" | "read_only_bash" => &["command"],
@@ -410,11 +340,7 @@ fn tool_args_summary(tool_name: &str, args: &serde_json::Value) -> String {
     };
     for key in keys {
         if let Some(val) = args.get(key) {
-            if let Some(s) = val.as_str() {
-                if !s.is_empty() {
-                    return s.to_string();
-                }
-            }
+            if let Some(s) = val.as_str() { if !s.is_empty() { return s.to_string(); } }
         }
     }
     let json = serde_json::to_string(args).unwrap_or_default();

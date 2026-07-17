@@ -1,100 +1,199 @@
 use dioxus::prelude::*;
 use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
+use tokio_util::sync::CancellationToken;
 
+use crate::agent::manager::AgentManager;
 use crate::agent::{ActionMode, AgentMode};
-
 use crate::ui::components::chat_panel::ChatPanel;
 use crate::ui::components::input_bar::InputBar;
 use crate::ui::components::sidebar::Sidebar;
+use crate::ui::components::error::{ErrorSignal, ErrorModal, ErrorBanner, ErrorToast, ErrorInfo, ErrorSeverity, ErrorSource};
 use crate::ui::state::*;
-use crate::ui::store;
+use crate::agent::main_agent_prompt;
 
 /// Markdown 转 HTML 辅助函数
 fn markdown_to_html(md: &str) -> String {
-    let parser = pulldown_cmark::Parser::new_ext(
-        md,
-        pulldown_cmark::Options::ENABLE_TABLES,
-    );
+    let parser = pulldown_cmark::Parser::new_ext(md, pulldown_cmark::Options::ENABLE_TABLES);
     let mut html = String::new();
     pulldown_cmark::html::push_html(&mut html, parser);
     html
 }
 
-/// 从指定项目的对话列表中找出一条对话的消息
-fn load_messages_for_conversation(
-    projects: &[Project],
-    project_id: &str,
-    conv_id: &str,
-) -> Vec<ChatMessage> {
-    projects
-        .iter()
-        .find(|p| p.id == project_id)
-        .and_then(|p| p.conversations.iter().find(|c| c.id == conv_id))
-        .map(|c| c.messages.clone())
-        .unwrap_or_default()
+/// 从 DB 加载指定对话的消息
+fn load_messages_from_db(conv_id: &str) -> Vec<ChatMessage> {
+    let conn = crate::db::get_db().lock().unwrap();
+    let msgs = crate::db::metadata::message::list_as_llm_messages(&conn, conv_id).unwrap_or_default();
+    drop(conn);
+    let mut result = Vec::new();
+
+    for m in &msgs {
+        match m.role {
+            llm::Role::User => {
+                result.push(ChatMessage {
+                    role: Role::User,
+                    content: m.content.clone().unwrap_or_default(),
+                    timestamp: chrono::Local::now(),
+                    tool_calls: vec![], reasoning: String::new(), segments: Vec::new(),
+                });
+            }
+            llm::Role::Assistant => {
+                // 重建 ToolCallRecord（result 暂时为 None，由后续 Tool 消息回填）
+                let tool_calls: Vec<ToolCallRecord> = m.tool_calls.iter().map(|tc| {
+                    ToolCallRecord {
+                        tool_name: tc.name.clone(),
+                        args: serde_json::from_str(&tc.arguments).unwrap_or_default(),
+                        result: None,
+                        status: ToolCallStatus::Running,
+                        approval_reason: None,
+                    }
+                }).collect();
+
+                // 构建 segments：reasoning → text → tool call markers
+                let mut segments = Vec::new();
+                if let Some(ref r) = m.reasoning_content {
+                    if !r.is_empty() {
+                        segments.push(StreamSegment::Reasoning(r.clone()));
+                    }
+                }
+                if let Some(ref c) = m.content {
+                    if !c.is_empty() {
+                        segments.push(StreamSegment::Text(c.clone()));
+                    }
+                }
+                for _ in &m.tool_calls {
+                    segments.push(StreamSegment::ToolCall);
+                }
+
+                result.push(ChatMessage {
+                    role: Role::Assistant,
+                    content: m.content.clone().unwrap_or_default(),
+                    timestamp: chrono::Local::now(),
+                    reasoning: m.reasoning_content.clone().unwrap_or_default(),
+                    segments,
+                    tool_calls,
+                });
+            }
+            llm::Role::Tool => {
+                // 从后往前找匹配的 Assistant，回填 tool 结果
+                if let (Some(_tcid), Some(content)) = (&m.tool_call_id, &m.content) {
+                    let tool_name = m.name.as_deref();
+                    for cm in result.iter_mut().rev() {
+                        if cm.role != Role::Assistant { continue; }
+                        if let Some(tc) = cm.tool_calls.iter_mut().find(|tc| {
+                            tc.result.is_none()
+                                && tool_name.map_or(true, |n| tc.tool_name == n)
+                        }) {
+                            tc.result = Some(content.clone());
+                            tc.status = if content.starts_with("error: denied by user:")
+                                || content == "error: approval channel closed"
+                            {
+                                ToolCallStatus::Denied(content.clone())
+                            } else if content.starts_with("error:") {
+                                ToolCallStatus::Failed(content.clone())
+                            } else {
+                                ToolCallStatus::Success
+                            };
+                            break;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    result
 }
 
 #[component]
 pub fn App() -> Element {
-    // ── 项目状态（持久化）──
-    let mut projects = use_signal(|| {
-        let mut p = store::load_projects();
-        store::ensure_default_project(&mut p);
-        p
+    // ── 初始化全局 Agent 配置（目前写死）──
+    crate::agent::manager::init_global_config(
+        crate::agent::manager::AgentConfig {
+            model: std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "deepseek-chat".into()),
+            base_url: std::env::var("OPENAI_BASE_URL")
+                .unwrap_or_else(|_| "https://api.deepseek.com".into()),
+            api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
+        },
+    );
+
+    // ── 项目状态（从 DB 加载）──
+    let mut projects: Signal<Vec<Project>> = use_signal(|| {
+        let conn = crate::db::get_db().lock().unwrap();
+        let rows = crate::db::metadata::project::list(&conn).unwrap_or_default();
+        rows.into_iter()
+            .map(|r| Project {
+                id: r.id, name: r.name, path: r.path,
+                created_at: r.created_at, conversations: Vec::new(),
+                indicator_color: r.indicator_color,
+                last_activity_at: r.last_activity_at,
+            })
+            .collect()
     });
     let mut active_project_id = use_signal(|| Option::<String>::None);
     let mut sidebar_view = use_signal(|| SidebarView::ProjectList);
-
-    // ── 当前对话状态 ──
     let mut active_conversation_id = use_signal(|| String::new());
-    let mut messages = use_signal(Vec::<ChatMessage>::new);
+    let mut messages = use_signal(Vec::<UiMessage>::new);
     let mut streaming_segments = use_signal(Vec::<StreamSegment>::new);
     let mut is_streaming = use_signal(|| false);
+    let mut tick = use_signal(|| 0u64);
     let mut streaming_project_id = use_signal(|| Option::<String>::None);
     let mut active_tool_calls = use_signal(Vec::<ToolCallRecord>::new);
     let mut action_mode = use_signal(|| ActionMode::Regular);
     let mut agent_mode = use_signal(|| AgentMode::Ask);
     let mut pending_approval = use_signal(|| Option::<PendingApproval>::None);
-    let approval_responder: Signal<Arc<Mutex<Option<tokio::sync::oneshot::Sender<bool>>>>> = use_signal(|| Arc::new(Mutex::new(None)));
-    let config = use_signal(|| AppConfig {
-        model: std::env::var("OPENAI_MODEL")
-            .unwrap_or_else(|_| "deepseek-chat".into()),
-        base_url: std::env::var("OPENAI_BASE_URL")
-            .unwrap_or_else(|_| "https://api.deepseek.com".into()),
-        api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
-        temperature: 0.7,
-        max_tokens: 4096,
-        agent_mode: "ask".into(),
-    });
+    let approval_responder: Signal<Arc<Mutex<Option<tokio::sync::oneshot::Sender<bool>>>>> =
+        use_signal(|| Arc::new(Mutex::new(None)));
+    let mut cancel_token: Signal<Option<CancellationToken>> = use_signal(|| None);
+    let mut error_signal = use_signal(ErrorSignal::new);
 
+    // 流式状态缓存
+    let streaming_states: Arc<Mutex<HashMap<String, UiMessage>>> =
+        Arc::new(Mutex::new(HashMap::new()));
 
-    // ── 事件处理 ──
+    // ── 选择项目 ──
+    let mut on_select_project = {
+        let ss = streaming_states.clone();
+        move |project_id: String| {
+            active_project_id.set(Some(project_id.clone()));
+            sidebar_view.set(SidebarView::ConversationList(project_id.clone()));
 
-    /// 选择项目：加载该项目的对话
-    let mut on_select_project = move |project_id: String| {
-        // 设置当前项目
-        active_project_id.set(Some(project_id.clone()));
-        sidebar_view.set(SidebarView::ConversationList(project_id.clone()));
-
-        // 如果有对话，选中第一个
-        let projs = projects.read();
-        if let Some(proj) = projs.iter().find(|p| p.id == project_id) {
-            if let Some(first) = proj.conversations.first() {
-                let cid = first.id.clone();
+            // 从 DB 加载对话列表到 signal
+            if let Ok(conn) = crate::db::get_db().lock() {
+                let convs = crate::db::metadata::conversation::list_by_project(&conn, &project_id).unwrap_or_default();
+                let mut projs = projects.write();
+                if let Some(proj) = projs.iter_mut().find(|p| p.id == project_id) {
+                    proj.conversations = convs.into_iter().map(|c| Conversation {
+                        id: c.id, title: c.title, messages: Vec::new(), updated_at: c.updated_at,
+                        message_count: c.message_count as usize,
+                    }).collect();
+                    crate::db::metadata::project::touch(&conn, &project_id).ok();
+                }
                 drop(projs);
-                active_conversation_id.set(cid.clone());
-                let msgs = load_messages_for_conversation(&projects.read(), &project_id, &cid);
-                messages.set(msgs);
-                return;
             }
+
+            let projs = projects.read();
+            if let Some(proj) = projs.iter().find(|p| p.id == project_id) {
+                if let Some(first) = proj.conversations.first() {
+                    let cid = first.id.clone();
+                    drop(projs);
+                    active_conversation_id.set(cid.clone());
+                    let mut msgs: Vec<UiMessage> = {
+                        load_messages_from_db(&cid).into_iter().map(UiMessage::Static).collect()
+                    };
+                    if let Some(streaming) = ss.lock().unwrap_or_else(|e| e.into_inner()).get(&cid) {
+                        msgs.push(streaming.clone());
+                    }
+                    messages.set(msgs);
+                    return;
+                }
+            }
+            active_conversation_id.set(String::new());
+            messages.set(Vec::new());
+            streaming_segments.set(Vec::new());
         }
-        // 没有对话，清空消息
-        active_conversation_id.set(String::new());
-        messages.set(Vec::new());
-        streaming_segments.set(Vec::new());
     };
 
-    /// 返回项目列表
     let on_back_to_projects = move |_| {
         sidebar_view.set(SidebarView::ProjectList);
         active_project_id.set(None);
@@ -103,114 +202,106 @@ pub fn App() -> Element {
         streaming_segments.set(Vec::new());
     };
 
-    /// 新建项目
     let on_new_project = move |(name, path): (String, String)| {
-        let id = format!("proj-{}", chrono::Local::now().timestamp_millis());
-        let project = Project {
-            id: id.clone(),
-            name,
-            path,
-            created_at: chrono::Local::now(),
-            conversations: Vec::new(),
-            indicator_color: String::new(),
-            last_activity_at: None,
-        };
-        projects.write().push(project);
-        store::save_projects_quiet(&projects.read());
-        // 自动选中新项目
-        on_select_project(id);
+        let conn = crate::db::get_db().lock().unwrap();
+        let new_id = crate::db::metadata::project::create(&conn, &name, &path)
+            .unwrap_or_else(|_| String::new());
+        let rows = crate::db::metadata::project::list(&conn).unwrap_or_default();
+        drop(conn);
+        projects.set(
+            rows.into_iter().map(|r| Project {
+                id: r.id, name: r.name, path: r.path,
+                created_at: r.created_at, conversations: Vec::new(),
+                indicator_color: r.indicator_color, last_activity_at: r.last_activity_at,
+            }).collect(),
+        );
+        active_project_id.set(Some(new_id.clone()));
+        sidebar_view.set(SidebarView::ConversationList(new_id));
+        active_conversation_id.set(String::new());
+        messages.set(Vec::new());
+        streaming_segments.set(Vec::new());
     };
 
-    /// 新建对话
     let on_new_conversation = move |_| {
         let current_proj = active_project_id.read().clone();
         let proj_id = match current_proj {
             Some(id) => id,
             None => {
-                let def_id = store::DEFAULT_PROJECT_ID.to_string();
+                let def_id = crate::db::DEFAULT_PROJECT_ID.to_string();
                 active_project_id.set(Some(def_id.clone()));
                 sidebar_view.set(SidebarView::ConversationList(def_id.clone()));
                 def_id
             }
         };
-
-        let conv_id = format!("conv-{}", chrono::Local::now().timestamp_millis());
+        let conv_id = String::new(); // 占位，真实 id 在发送时由 init_or_get 生成
         let now = chrono::Local::now();
-        let conversation = Conversation {
-            id: conv_id.clone(),
-            title: String::new(),
-            messages: Vec::new(),
-            updated_at: now,
-        };
-
         {
             let mut projs = projects.write();
             if let Some(proj) = projs.iter_mut().find(|p| p.id == proj_id) {
-                proj.conversations.push(conversation);
+                proj.conversations.push(Conversation {
+                    id: String::new(),
+                    title: String::new(),
+                    messages: Vec::new(), updated_at: now,
+                    message_count: 0,
+                });
                 proj.last_activity_at = Some(now);
             }
         }
-        store::save_projects_quiet(&projects.read());
-
-        active_conversation_id.set(conv_id);
+        active_conversation_id.set(conv_id.clone());
         messages.set(Vec::new());
         streaming_segments.set(Vec::new());
         active_tool_calls.set(Vec::new());
     };
 
-    /// 选择对话
-    let on_select_conversation = move |conv_id: String| {
-        let proj_id = active_project_id.read().clone()
-            .unwrap_or_else(|| store::DEFAULT_PROJECT_ID.to_string());
+    let on_select_conversation = {
+        let ss = streaming_states.clone();
+        move |conv_id: String| {
+            let proj_id = active_project_id.read().clone()
+                .unwrap_or_else(|| crate::db::DEFAULT_PROJECT_ID.to_string());
+            active_conversation_id.set(conv_id.clone());
 
-        active_conversation_id.set(conv_id.clone());
-        let msgs = load_messages_for_conversation(&projects.read(), &proj_id, &conv_id);
-        messages.set(msgs);
-        streaming_segments.set(Vec::new());
-        active_tool_calls.set(Vec::new());
-        // 更新项目活跃时间
-        {
-            let mut projs = projects.write();
-            if let Some(proj) = projs.iter_mut().find(|p| p.id == proj_id) {
-                proj.last_activity_at = Some(chrono::Local::now());
+            let mut msgs: Vec<UiMessage> = {
+                load_messages_from_db(&conv_id).into_iter().map(UiMessage::Static).collect()
+            };
+            if msgs.is_empty() && !conv_id.is_empty() {
+                tracing::warn!("load_messages_from_db returned empty for conv={}", conv_id);
+            }
+            if let Some(streaming) = ss.lock().unwrap_or_else(|e| e.into_inner()).get(&conv_id) {
+                msgs.push(streaming.clone());
+            }
+            messages.set(msgs);
+            if let Ok(conn) = crate::db::get_db().lock() {
+                crate::db::metadata::project::touch(&conn, &proj_id).ok();
             }
         }
-        store::save_projects_quiet(&projects.read());
     };
 
-    /// 删除对话
     let on_delete_conversation = move |conv_id: String| {
         let proj_id = active_project_id.read().clone()
-            .unwrap_or_else(|| store::DEFAULT_PROJECT_ID.to_string());
-
-        // 如果正在查看该对话，清空
+            .unwrap_or_else(|| crate::db::DEFAULT_PROJECT_ID.to_string());
         if *active_conversation_id.read() == conv_id {
             active_conversation_id.set(String::new());
             messages.set(Vec::new());
             streaming_segments.set(Vec::new());
             active_tool_calls.set(Vec::new());
         }
-
+        if let Ok(conn) = crate::db::get_db().lock() {
+            crate::db::metadata::message::delete_by_conversation(&conn, &conv_id).ok();
+            crate::db::metadata::conversation::delete(&conn, &conv_id).ok();
+        }
         {
             let mut projs = projects.write();
             if let Some(proj) = projs.iter_mut().find(|p| p.id == proj_id) {
                 proj.conversations.retain(|c| c.id != conv_id);
             }
         }
-        store::save_projects_quiet(&projects.read());
-        // 触发重渲染
+        AgentManager::get().lock().unwrap().remove(&conv_id);
         let curr = sidebar_view.read().clone();
         sidebar_view.set(curr);
     };
 
-    /// 删除项目
     let on_delete_project = move |project_id: String| {
-        // 默认项目不允许删除（安全检查）
-        if project_id == store::DEFAULT_PROJECT_ID {
-            return;
-        }
-
-        // 如果正在查看该项目，返回项目列表
+        if project_id == crate::db::DEFAULT_PROJECT_ID { return; }
         let is_current = active_project_id.read().as_deref() == Some(&project_id);
         if is_current {
             sidebar_view.set(SidebarView::ProjectList);
@@ -218,31 +309,45 @@ pub fn App() -> Element {
             messages.set(Vec::new());
             streaming_segments.set(Vec::new());
         }
-
-        {
-            let mut projs = projects.write();
-            projs.retain(|p| p.id != project_id);
+        if let Ok(conn) = crate::db::get_db().lock() {
+            let convs = crate::db::metadata::conversation::list_by_project(&conn, &project_id).unwrap_or_default();
+            let mut mgr = AgentManager::get().lock().unwrap();
+            for conv in &convs { mgr.remove(&conv.id); }
+            crate::db::metadata::project::delete(&conn, &project_id).ok();
         }
-        store::save_projects_quiet(&projects.read());
+        let conn = crate::db::get_db().lock().unwrap();
+        let rows = crate::db::metadata::project::list(&conn).unwrap_or_default();
+        drop(conn);
+        projects.set(
+            rows.into_iter().map(|r| Project {
+                id: r.id, name: r.name, path: r.path,
+                created_at: r.created_at, conversations: Vec::new(),
+                indicator_color: r.indicator_color, last_activity_at: r.last_activity_at,
+            }).collect(),
+        );
     };
 
-    /// 更改项目 indicator 颜色
     let on_change_indicator_color = move |(project_id, color_key): (String, String)| {
-        let mut projs = projects.write();
-        if let Some(proj) = projs.iter_mut().find(|p| p.id == project_id) {
-            proj.indicator_color = color_key;
+        let conn = crate::db::get_db().lock().unwrap();
+        if let Some(mut row) = crate::db::metadata::project::get(&conn, &project_id).unwrap_or(None) {
+            row.indicator_color = color_key;
+            crate::db::metadata::project::update(&conn, &row).ok();
         }
-        drop(projs);
-        store::save_projects_quiet(&projects.read());
+        let rows = crate::db::metadata::project::list(&conn).unwrap_or_default();
+        drop(conn);
+        projects.set(
+            rows.into_iter().map(|r| Project {
+                id: r.id, name: r.name, path: r.path,
+                created_at: r.created_at, conversations: Vec::new(),
+                indicator_color: r.indicator_color, last_activity_at: r.last_activity_at,
+            }).collect(),
+        );
     };
-
 
     rsx! {
         style { {include_str!("style.css")} }
-
         div {
             class: "app-container",
-
             Sidebar {
                 projects,
                 active_project_id,
@@ -258,140 +363,163 @@ pub fn App() -> Element {
                 on_delete_conversation,
                 on_change_indicator_color,
             }
-
             div {
                 class: "main-area",
-
                 ChatPanel {
                     messages,
-                    streaming_segments,
+                    tick,
                     is_streaming,
-                    active_tool_calls,
-                    markdown_to_html,
+                    markdown_to_html: markdown_to_html,
                     on_approve: {
                         let resp = approval_responder;
                         move |(allowed,): (bool,)| {
-                            if let Some(tx) = resp.read().lock().unwrap().take() {
+                            if let Some(tx) = resp.read().lock().unwrap_or_else(|e| e.into_inner()).take() {
                                 let _ = tx.send(allowed);
                             }
                             pending_approval.set(None);
                         }
                     },
                 }
-
                 InputBar {
                     is_streaming,
                     action_mode,
                     agent_mode,
-                    on_send: move |input: String| {
-                        // 将用户消息写入 messages signal（UI 显示）
-                        messages.write().push(ChatMessage {
-                            role: Role::User,
-                            content: input.clone(),
-                            timestamp: chrono::Local::now(),
-                            tool_calls: vec![],
-                            reasoning: String::new(),
-                            segments: Vec::new(),
-                        });
-
-                        // 保存用户消息到当前对话（持久化）
-                        // 如果未选中项目/对话，自动在默认项目创建新对话
-                        {
+                    on_cancel: move |_| {
+                        if let Some(ref token) = *cancel_token.read() {
+                            token.cancel();
+                        }
+                    },
+                    on_send: {
+                        let cache = AgentManager::get();
+                        let projs = projects;
+                        let err_sig = error_signal;
+                        move |input: String| {
+                            let mut projs = projs;
                             let proj_id = active_project_id.read().clone();
                             let conv_id = active_conversation_id.read().clone();
 
-                            // 确保有项目
                             let pid = match proj_id {
                                 Some(ref id) => id.clone(),
                                 None => {
-                                    let default_id = store::DEFAULT_PROJECT_ID.to_string();
+                                    let default_id = crate::db::DEFAULT_PROJECT_ID.to_string();
                                     active_project_id.set(Some(default_id.clone()));
                                     sidebar_view.set(SidebarView::ConversationList(default_id.clone()));
                                     default_id
                                 }
                             };
 
-                            // 确保有对话，没有则新建
+                            // 用户消息 → UI
+                            let user_msg = ChatMessage {
+                                role: Role::User,
+                                content: input.clone(),
+                                timestamp: chrono::Local::now(),
+                                tool_calls: vec![], reasoning: String::new(), segments: Vec::new(),
+                            };
+                            messages.write().push(UiMessage::Static(user_msg.clone()));
+
+                            // 对话 ID
                             let cid = if conv_id.is_empty() {
-                                let new_cid = format!("conv-{}", chrono::Local::now().timestamp_millis());
+                                // 新对话：由 init_or_get 生成 id 并创建 DB 行
+                                let mut mgr = AgentManager::get().lock().unwrap();
+                                let new_cid = mgr.init_or_get(
+                                    None,
+                                    &main_agent_prompt(),
+                                    Some(pid.clone()),
+                                ).unwrap_or_else(|_| String::new());
+                                drop(mgr);
                                 let now = chrono::Local::now();
-                                let conversation = Conversation {
-                                    id: new_cid.clone(),
-                                    title: String::new(),
-                                    messages: Vec::new(),
-                                    updated_at: now,
-                                };
                                 {
-                                    let mut projs = projects.write();
-                                    if let Some(proj) = projs.iter_mut().find(|p| p.id == pid) {
-                                        proj.conversations.push(conversation);
+                                    let mut p = projs.write();
+                                    if let Some(proj) = p.iter_mut().find(|p| p.id == pid) {
+                                        proj.conversations.push(Conversation {
+                                            id: new_cid.clone(), title: crate::model::title_from_messages(&[user_msg.clone()]),
+                                            messages: Vec::new(), updated_at: now,
+                                            message_count: 0,
+                                        });
+                                        // 移除旧的占位条目（只删当前对话对应的占位）
+                                        if let Some(pos) = proj.conversations.iter().position(|c| c.id.is_empty()) {
+                                            proj.conversations.remove(pos);
+                                        }
                                     }
                                 }
-                                store::save_projects_quiet(&projects.read());
                                 active_conversation_id.set(new_cid.clone());
                                 new_cid
                             } else {
                                 conv_id
                             };
 
-                            let is_first_msg = {
-                                let msgs = messages.read();
-                                msgs.len() == 1
-                            };
+                 
 
-                            let mut projs = projects.write();
-                            if let Some(proj) = projs.iter_mut().find(|p| p.id == pid) {
-                                if let Some(conv) = proj.conversations.iter_mut().find(|c| c.id == cid) {
-                                    conv.messages.push(ChatMessage {
-                                        role: Role::User,
-                                        content: input.clone(),
-                                        timestamp: chrono::Local::now(),
-                                        tool_calls: vec![],
-                                        reasoning: String::new(),
-                                        segments: Vec::new(),
-                                    });
-                                    conv.updated_at = chrono::Local::now();
+                            // DB 更新对话标题 + 项目活跃时间
+                            if let Ok(conn) = crate::db::get_db().lock() {
+                                conn.execute(
+                                    "UPDATE conversations SET title = ?1 WHERE id = ?2 and (title = '' or title is null)",
+                                    rusqlite::params![crate::model::title_from_messages(&[user_msg.clone()]), cid],
+                                ).ok();
+                                crate::db::metadata::project::touch(&conn, &pid).ok();
+                            }
+                            // 刷新 signal（标题、轮数、last_activity_at 同步）
+                            if let Ok(conn) = crate::db::get_db().lock() {
+                                let convs = crate::db::metadata::conversation::list_by_project(&conn, &pid).unwrap_or_default();
+                                let mut p = projs.write();
+                                if let Some(proj) = p.iter_mut().find(|pr| pr.id == pid) {
+                                    proj.conversations = convs.into_iter().map(|c| Conversation {
+                                        id: c.id, title: c.title, messages: Vec::new(),
+                                        updated_at: c.updated_at, message_count: c.message_count as usize,
+                                    }).collect();
                                     proj.last_activity_at = Some(chrono::Local::now());
-                                    // 首条消息：自动设置对话标题
-                                    if is_first_msg && conv.title.is_empty() {
-                                        let title = crate::ui::state::title_from_messages(&conv.messages);
-                                        conv.title = title;
-                                    }
                                 }
+                                drop(p);
                             }
                             streaming_project_id.set(Some(pid.clone()));
+
+                            
+                            let cur_action_mode = action_mode();
+                            let cur_agent_mode = agent_mode();
+                            let bridge_cancel = CancellationToken::new();
+                            cancel_token.set(Some(bridge_cancel.clone()));
+
+                            let ss = streaming_states.clone();
+                            let cid2 = cid.clone();
+                            let streaming_proj_sig = streaming_project_id;
+
+                            spawn(async move {
+                                crate::ui::bridge::run_agent_loop(
+                                    input,
+                                    cur_action_mode,
+                                    cur_agent_mode,
+                                    messages,
+                                    is_streaming,
+                                    streaming_proj_sig,
+                                    bridge_cancel,
+                                    cid2.clone(),
+                                    ss,
+                                    tick,
+                                    err_sig,
+                                )
+                                .await;
+                            });
                         }
-
-                        let projects_sig = projects;
-                        let active_project_id_sig = active_project_id;
-                        let active_conversation_id_sig = active_conversation_id;
-                        let streaming_project_id_sig = streaming_project_id;
-                        let config_val = config.read().clone();
-                        let cur_action_mode = action_mode();
-                        let cur_agent_mode = agent_mode();
-                        let bridge_responder = approval_responder.read().clone();
-                        let bridge_pending = pending_approval;
-
-                        spawn(async move {
-                            crate::ui::bridge::run_agent_loop(
-                                input,
-                                config_val,
-                                cur_action_mode,
-                                cur_agent_mode,
-                                bridge_responder,
-                                bridge_pending,
-                                messages,
-                                streaming_segments,
-                                is_streaming,
-                                active_tool_calls,
-                                projects_sig,
-                                active_project_id_sig,
-                                active_conversation_id_sig,
-                                streaming_project_id_sig,
-                            )
-                            .await;
-                        });
                     },
+                }
+            }
+
+            if let Some(ref err) = error_signal.read().modal.clone() {
+                ErrorModal { error: err.clone(), on_dismiss: move |_| error_signal.write().dismiss_modal() }
+            }
+            if let Some(ref err) = error_signal.read().banner.clone() {
+                ErrorBanner { error: err.clone(), on_dismiss: move |_| error_signal.write().dismiss_banner() }
+            }
+            if !error_signal.read().toasts.is_empty() {
+                div {
+                    class: "error-toast-stack",
+                    for (i, toast) in error_signal.read().toasts.iter().enumerate() {
+                        ErrorToast {
+                            key: "toast-{i}",
+                            error: toast.clone(),
+                            on_dismiss: move |_| error_signal.write().dismiss_toast(i),
+                        }
+                    }
                 }
             }
         }

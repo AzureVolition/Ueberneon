@@ -43,6 +43,7 @@ pub fn InputBar(
     action_mode: Signal<ActionMode>,
     agent_mode: Signal<AgentMode>,
     on_send: EventHandler<String>,
+    on_cancel: EventHandler<()>,
 ) -> Element {
     let mut input = use_signal(String::new);
     let mut idle_pulse = use_signal(|| false);
@@ -155,7 +156,7 @@ pub fn InputBar(
                     button {
                         class: "btn btn-cancel",
                         onclick: move |_| {
-                            is_streaming.set(false);
+                            on_cancel.call(());
                         },
                         "cancel"
                     }

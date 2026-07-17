@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
-use crate::ui::state::Project;
+use crate::model::Project;
 
 /// 获取数据根目录 `~/.racpagent/`
 fn data_dir() -> PathBuf {
@@ -73,44 +73,10 @@ fn home_dir() -> String {
     std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())
 }
 
-/// 默认项目的固定 id
-pub const DEFAULT_PROJECT_ID: &str = "racpagent-default";
-
-/// 确保默认项目 "racpagent" 始终存在于列表首位
-///
-/// 默认项目路径为 `~/.racpagent`，只存放对话数据本身。
-pub fn ensure_default_project(projects: &mut Vec<Project>) {
-    // 检查是否已有默认项目
-    let has_default = projects.iter().any(|p| p.id == DEFAULT_PROJECT_ID);
-
-    if !has_default {
-        let home = home_dir();
-        let default_project = Project {
-            id: DEFAULT_PROJECT_ID.into(),
-            name: "racpagent".into(),
-            path: format!("{home}/.racpagent"),
-            created_at: chrono::Local::now(),
-            conversations: Vec::new(),
-            indicator_color: String::new(),
-            last_activity_at: None,
-        };
-        projects.insert(0, default_project);
-        save_projects_quiet(projects);
-    } else {
-        // 确保默认项目在第一位
-        if let Some(pos) = projects.iter().position(|p| p.id == DEFAULT_PROJECT_ID) {
-            if pos != 0 {
-                let item = projects.remove(pos);
-                projects.insert(0, item);
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::state::Conversation;
+    use crate::model::Conversation;
 
     #[test]
     fn test_roundtrip() {
@@ -124,6 +90,7 @@ mod tests {
                 title: "hello".into(),
                 messages: vec![],
                 updated_at: chrono::Local::now(),
+                message_count: 0,
             }],
             indicator_color: String::new(),
             last_activity_at: None,
