@@ -3,6 +3,39 @@ use dioxus::prelude::*;
 use std::time::Duration;
 use crate::agent::{ActionMode, AgentMode};
 
+impl ActionMode {
+    /// 用于 HTML option value 的键。
+    pub fn as_key(self) -> &'static str {
+        match self {
+            ActionMode::Regular => "regular",
+            ActionMode::Plan => "plan",
+        }
+    }
+
+    /// 所有变体，供 UI 遍历。
+    pub const ALL: &[ActionMode] = &[ActionMode::Regular, ActionMode::Plan];
+}
+
+impl AgentMode {
+    /// 用于 HTML option value 的键。
+    pub fn as_key(self) -> &'static str {
+        match self {
+            AgentMode::Cautious => "cautious",
+            AgentMode::Ask => "ask",
+            AgentMode::Auto => "auto",
+            AgentMode::Unrestrained => "unrestrained",
+        }
+    }
+
+    /// 所有变体，供 UI 遍历。
+    pub const ALL: &[AgentMode] = &[
+        AgentMode::Cautious,
+        AgentMode::Ask,
+        AgentMode::Auto,
+        AgentMode::Unrestrained,
+    ];
+}
+
 /// 底部输入栏 —— 模式选择 + 多行输入框 + 发送/取消按钮
 #[component]
 pub fn InputBar(

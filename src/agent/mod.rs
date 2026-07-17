@@ -86,18 +86,6 @@ pub enum ActionMode {
     Plan,
 }
 
-impl ActionMode {
-    /// 用于 HTML option value 的键。
-    pub fn as_key(self) -> &'static str {
-        match self {
-            ActionMode::Regular => "regular",
-            ActionMode::Plan => "plan",
-        }
-    }
-
-    /// 所有变体，供 UI 遍历。
-    pub const ALL: &[ActionMode] = &[ActionMode::Regular, ActionMode::Plan];
-}
 
 impl std::fmt::Display for ActionMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -138,25 +126,7 @@ pub enum AgentMode {
     Unrestrained,
 }
 
-impl AgentMode {
-    /// 用于 HTML option value 的键。
-    pub fn as_key(self) -> &'static str {
-        match self {
-            AgentMode::Cautious => "cautious",
-            AgentMode::Ask => "ask",
-            AgentMode::Auto => "auto",
-            AgentMode::Unrestrained => "unrestrained",
-        }
-    }
 
-    /// 所有变体，供 UI 遍历。
-    pub const ALL: &[AgentMode] = &[
-        AgentMode::Cautious,
-        AgentMode::Ask,
-        AgentMode::Auto,
-        AgentMode::Unrestrained,
-    ];
-}
 
 impl std::fmt::Display for AgentMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
