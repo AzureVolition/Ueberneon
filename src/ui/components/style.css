@@ -27,6 +27,7 @@
 
   --color-accent:      oklch(72% 0.20 200);    /* neon cyan — primary signal */
   --color-accent-2:    oklch(68% 0.22 330);    /* neon pink — verb landmark */
+  --color-accent-2-tint: oklch(68% 0.22 330 / 0.06); /* neon pink surface tint */
   --color-accent-3:    oklch(58% 0.18 230);   /* deep blue — secondary */
 
   --color-glow:        oklch(72% 0.20 200 / 0.40);  /* dense cyan halo */
@@ -60,7 +61,7 @@
   /* Type scale (4pt base) */
   --text-xs:   0.6875rem;  /* 11px — mono labels / eyebrows */
   --text-sm:   0.8125rem;  /* 13px — code, small print */
-  --text-base: 0.875rem;   /* 14px — body */
+  --text-base: 1rem;      /* 16px — body */
   --text-md:   1rem;       /* 16px — lede */
   --text-lg:   1.25rem;    /* 20px — h3 */
   --text-xl:   1.5rem;     /* 24px — h2 */
@@ -101,6 +102,12 @@
   /* ── Layout ── */
   --sidebar-width: 260px;
   --page-gutter: 20px;
+
+  /* ── z-index scale ── */
+  --z-sidebar:  1;
+  --z-timeline: 10;
+  --z-dropdown: 100;
+  --z-modal:    200;
 }
 
 /* ── reduced motion ── */
@@ -138,7 +145,6 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* ── Blueprint grid background (applied to the root container) ── */
 /* ═══════════════════════════════════════════════
    LAYOUT
    ═══════════════════════════════════════════════ */
@@ -146,10 +152,7 @@ body {
   display: flex;
   height: 100vh;
   width: 100vw;
-  background:
-    linear-gradient(var(--color-rule-blueprint) 1px, transparent 1px) 0 0 / 48px 48px,
-    linear-gradient(90deg, var(--color-rule-blueprint) 1px, transparent 1px) 0 0 / 48px 48px,
-    var(--color-paper);
+  background: var(--color-paper);
   position: relative;
 }
 
@@ -400,7 +403,7 @@ body {
 .context-menu-overlay {
   position: fixed;
   inset: 0;
-  z-index: 9999;
+  z-index: var(--z-dropdown);
 }
 
 .context-menu {
@@ -410,8 +413,8 @@ body {
   border: 1px solid var(--color-rule-2);
   border-radius: var(--radius-md);
   padding: var(--space-2xs);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-  z-index: 10000;
+  box-shadow: 0 8px 24px oklch(0% 0 0 / 0.45);
+  z-index: calc(var(--z-dropdown) + 1);
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -674,7 +677,7 @@ body {
   flex-direction: column;
   align-items: center;
   gap: 4px;
-  z-index: 10;
+  z-index: var(--z-timeline);
   padding: 4px 0;
 }
 
@@ -697,7 +700,7 @@ body {
   background: oklch(48% 0.06 265);
   cursor: pointer;
   flex-shrink: 0;
-  z-index: 1;
+  z-index: var(--z-sidebar);
   transition: background var(--dur-fast) var(--ease-out),
               box-shadow var(--dur-fast) var(--ease-out);
 }
@@ -784,7 +787,7 @@ body {
   text-overflow: ellipsis;
   text-transform: none;
   letter-spacing: 0;
-  z-index: 20;
+  z-index: calc(var(--z-timeline) + 1);
   pointer-events: none;
 }
 
@@ -1430,10 +1433,9 @@ body {
 /* ── Approval card (Hallmark · Lumen) ── */
 .approval-card {
   margin: var(--space-xs) 0;
-  border: 1px solid var(--color-rule);
-  border-left: 3px solid var(--color-accent-2);
+  border: 1px solid var(--color-accent-2);
   border-radius: var(--radius-sm);
-  background: var(--color-paper-2);
+  background: var(--color-accent-2-tint);
   font-family: var(--font-body);
   text-transform: none;
 }

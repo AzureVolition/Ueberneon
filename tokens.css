@@ -18,6 +18,7 @@
 
   --color-accent:      oklch(72% 0.20 200);    /* neon cyan — primary signal */
   --color-accent-2:    oklch(68% 0.22 330);    /* neon pink — verb landmark */
+  --color-accent-2-tint: oklch(68% 0.22 330 / 0.06); /* neon pink surface tint */
   --color-accent-3:    oklch(58% 0.18 230);   /* deep blue — secondary */
 
   --color-glow:        oklch(72% 0.20 200 / 0.40);  /* dense cyan halo */
@@ -49,7 +50,7 @@
   /* Type scale (4pt base) */
   --text-xs:   0.6875rem;  /* 11px — mono labels / eyebrows */
   --text-sm:   0.8125rem;  /* 13px — code, small print */
-  --text-base: 0.875rem;   /* 14px — body */
+  --text-base: 1rem;      /* 16px — body */
   --text-md:   1rem;       /* 16px — lede */
   --text-lg:   1.25rem;    /* 20px — h3 */
   --text-xl:   1.5rem;     /* 24px — h2 */
@@ -90,6 +91,12 @@
   /* ── Layout ── */
   --sidebar-width: 260px;
   --page-gutter: 20px;
+
+  /* ── z-index scale ── */
+  --z-sidebar:  1;
+  --z-timeline: 10;
+  --z-dropdown: 100;
+  --z-modal:    200;
 }
 
 /* ── reduced motion ── */

@@ -131,7 +131,7 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
             if msgs.is_empty() && segments.is_empty() {
                 div {
                     class: "chat-empty",
-                    span { class: "empty-eyebrow", "01 · CHAT" }
+                    span { class: "empty-eyebrow", "CHAT" }
                     h2 {
                         dangerous_inner_html: "ready to <em>think</em> with you."
                     }
