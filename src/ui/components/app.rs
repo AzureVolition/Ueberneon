@@ -8,6 +8,7 @@ use crate::agent::{ActionMode, AgentMode};
 use crate::ui::components::chat_panel::ChatPanel;
 use crate::ui::components::input_bar::InputBar;
 use crate::ui::components::sidebar::Sidebar;
+use crate::ui::components::settings_panel::SettingsPanel;
 use crate::ui::components::error::{ErrorSignal, ErrorModal, ErrorBanner, ErrorToast, ErrorInfo, ErrorSeverity, ErrorSource};
 use crate::ui::state::*;
 use crate::agent::main_agent_prompt;
@@ -105,17 +106,42 @@ fn load_messages_from_db(conv_id: &str) -> Vec<ChatMessage> {
     result
 }
 
+/// 从 DB 取第一个 provider 实例初始化全局 Agent 配置
+fn init_agent_from_first_instance() {
+    let conn = crate::db::get_db().lock().unwrap();
+    let instances = crate::db::metadata::provider_instance::list_all(&conn).unwrap_or_default();
+    if let Some(inst) = instances.first() {
+        if let Ok(Some(prov)) = crate::db::metadata::provider::get(&conn, &inst.provider_id) {
+            let models = crate::db::metadata::provider::list_models(&conn, &prov.id).unwrap_or_default();
+            let model = models.first().cloned().unwrap_or_else(|| {
+                crate::db::provider_presets::all_presets().iter()
+                    .find(|p| p.id == prov.id)
+                    .and_then(|p| p.models.first().copied())
+                    .unwrap_or("")
+                    .to_string()
+            });
+            let api_key = if !inst.api_key.is_empty() {
+                use base64::Engine;
+                base64::engine::general_purpose::STANDARD.decode(inst.api_key.as_bytes())
+                    .ok().and_then(|v| String::from_utf8(v).ok())
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            crate::agent::manager::init_global_config(crate::agent::manager::AgentConfig {
+                model,
+                base_url: prov.base_url,
+                api_key,
+            });
+        }
+    }
+    drop(conn);
+}
+
 #[component]
 pub fn App() -> Element {
-    // ── 初始化全局 Agent 配置（目前写死）──
-    crate::agent::manager::init_global_config(
-        crate::agent::manager::AgentConfig {
-            model: std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "deepseek-chat".into()),
-            base_url: std::env::var("OPENAI_BASE_URL")
-                .unwrap_or_else(|_| "https://api.deepseek.com".into()),
-            api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
-        },
-    );
+    // ── 初始化全局 Agent 配置（取第一个可用实例）──
+    init_agent_from_first_instance();
 
     // ── 项目状态（从 DB 加载）──
     let mut projects: Signal<Vec<Project>> = use_signal(|| {
@@ -200,6 +226,10 @@ pub fn App() -> Element {
         active_conversation_id.set(String::new());
         messages.set(Vec::new());
         streaming_segments.set(Vec::new());
+    };
+
+    let on_open_settings = move |_| {
+        sidebar_view.set(SidebarView::Settings);
     };
 
     let on_new_project = move |(name, path): (String, String)| {
@@ -362,14 +392,22 @@ pub fn App() -> Element {
                 on_delete_project,
                 on_delete_conversation,
                 on_change_indicator_color,
+                on_open_settings,
             }
             div {
                 class: "main-area",
-                ChatPanel {
-                    messages,
-                    tick,
-                    is_streaming,
-                    markdown_to_html: markdown_to_html,
+                if sidebar_view() == SidebarView::Settings {
+                    SettingsPanel {
+                        on_change: move |_| {
+                            init_agent_from_first_instance();
+                        },
+                    }
+                } else {
+                    ChatPanel {
+                        messages,
+                        tick,
+                        is_streaming,
+                        markdown_to_html: markdown_to_html,
                     on_approve: {
                         let resp = approval_responder;
                         move |(allowed,): (bool,)| {
@@ -502,6 +540,7 @@ pub fn App() -> Element {
                         }
                     },
                 }
+            }
             }
 
             if let Some(ref err) = error_signal.read().modal.clone() {

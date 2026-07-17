@@ -7,6 +7,8 @@
 // 后续可将 store.rs 替换为基于该模块的 CRUD 实现。
 
 pub mod metadata;
+pub mod model_fetch;
+pub mod provider_presets;
 
 use std::sync::{Mutex, OnceLock};
 
@@ -82,7 +84,33 @@ pub fn init_db() -> Result<Connection> {
             ON conversations(project_id);
 
         CREATE INDEX IF NOT EXISTS idx_messages_conversation
-            ON messages(conversation_id, timestamp);"
+            ON messages(conversation_id, timestamp);
+
+        CREATE TABLE IF NOT EXISTS providers (
+            id              TEXT PRIMARY KEY,
+            name            TEXT NOT NULL,
+            kind            TEXT NOT NULL DEFAULT 'openai',
+            base_url        TEXT NOT NULL,
+            models_url      TEXT DEFAULT '',
+            balance_url     TEXT DEFAULT '',
+            context_window  INTEGER NOT NULL DEFAULT 131072,
+            is_preset       INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS provider_models (
+            provider_id     TEXT NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+            model_name      TEXT NOT NULL,
+            PRIMARY KEY (provider_id, model_name)
+        );
+
+        CREATE TABLE IF NOT EXISTS provider_instances (
+            id              TEXT PRIMARY KEY,
+            provider_id     TEXT NOT NULL REFERENCES providers(id),
+            alias           TEXT NOT NULL,
+            api_key         TEXT NOT NULL DEFAULT '',
+            sort_order      INTEGER NOT NULL DEFAULT 0,
+            created_at      TEXT NOT NULL
+        );"
     )?;
 
     // ── 默认项目 ──────────────────────────────────────────────────────────
@@ -97,6 +125,68 @@ pub fn init_db() -> Result<Connection> {
             chrono::Local::now().to_rfc3339(),
         ],
     )?;
+
+    // ── Provider 预设 ─────────────────────────────────────────────────────
+    // 幂等插入所有内置 provider 预设
+    for preset in provider_presets::all_presets() {
+        conn.execute(
+            "INSERT OR IGNORE INTO providers (id, name, kind, base_url, models_url, context_window, is_preset)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)",
+            rusqlite::params![preset.id, preset.name, preset.kind, preset.base_url, preset.models_url, preset.context_window],
+        )?;
+        // 插入预设模型列表
+        if !preset.models.is_empty() {
+            let mut stmt = conn.prepare(
+                "INSERT OR IGNORE INTO provider_models (provider_id, model_name) VALUES (?1, ?2)"
+            )?;
+            for model in preset.models {
+                stmt.execute(rusqlite::params![preset.id, model])?;
+            }
+        }
+    }
+
+    // ── 迁移：将旧版 config.json 中的 provider_keys 转为实例 ────────────
+    // 为每个已有 key 的 provider 创建一条实例记录（幂等）
+    let config_path = std::path::PathBuf::from(
+        std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())
+    ).join(".racpagent").join("config.json");
+    if config_path.exists() {
+        if let Ok(json) = std::fs::read_to_string(&config_path) {
+            if let Ok(old_config) = serde_json::from_str::<serde_json::Value>(&json) {
+                if let Some(keys) = old_config.get("provider_keys").and_then(|v| v.as_object()) {
+                    let now = chrono::Local::now().to_rfc3339();
+                    for (prov_id, key_val) in keys {
+                        // 检查该 provider 是否存在
+                        let exists: bool = conn.query_row(
+                            "SELECT 1 FROM providers WHERE id = ?1",
+                            rusqlite::params![prov_id],
+                            |_| Ok(()),
+                        ).is_ok();
+                        if !exists { continue; }
+                        // 检查是否已创建过实例
+                        let already: bool = conn.query_row(
+                            "SELECT 1 FROM provider_instances WHERE provider_id = ?1",
+                            rusqlite::params![prov_id],
+                            |_| Ok(()),
+                        ).is_ok();
+                        if already { continue; }
+                        // 生成唯一 ID（时间戳 + 进程 ID）
+                        use std::time::{SystemTime, UNIX_EPOCH};
+                        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+                        let pid = std::process::id();
+                        let instance_id = format!("inst-{ts:x}-{pid:x}");
+                        let alias = prov_id.clone();
+                        let key_str = key_val.as_str().unwrap_or("");
+                        conn.execute(
+                            "INSERT INTO provider_instances (id, provider_id, alias, api_key, sort_order, created_at)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                            rusqlite::params![instance_id, prov_id, alias, key_str, 0, now],
+                        )?;
+                    }
+                }
+            }
+        }
+    }
 
     Ok(conn)
 }

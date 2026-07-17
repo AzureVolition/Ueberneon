@@ -4,14 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 
-[[example]]
-name = "run_llm"
-path = "examples/run_llm.rs"
-
-[[example]]
-name = "agent_loop"
-path = "examples/agent_loop.rs"
-
 [features]
 default = ["openai"]
 openai = []

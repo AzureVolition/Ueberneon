@@ -18,6 +18,7 @@ pub fn Sidebar(
     on_delete_project: EventHandler<String>,
     on_delete_conversation: EventHandler<String>,
     on_change_indicator_color: EventHandler<(String, String)>,
+    on_open_settings: EventHandler<()>,
 ) -> Element {
     // ── 新建项目表单状态 ──
     let mut show_new_project_form = use_signal(|| false);
@@ -146,6 +147,20 @@ pub fn Sidebar(
             {conv_menu_overlay}
 
             match view {
+                SidebarView::Settings => {
+                    // Settings 视图由 main-area 渲染，sidebar 仅显示返回入口
+                    rsx! {
+                        div {
+                            class: "sidebar-header",
+                            div {
+                                class: "sidebar-nav-back",
+                                onclick: move |_| on_back_to_projects.call(()),
+                                span { class: "sidebar-nav-label", "projects /" }
+                                span { class: "sidebar-nav-project", "settings" }
+                            }
+                        }
+                    }
+                }
                 SidebarView::ProjectList => {
                     rsx! {
                         div {
@@ -420,6 +435,20 @@ pub fn Sidebar(
                             }
                         }
                     }
+                }
+            }
+
+            // ── Settings footer ──
+            div {
+                class: "sidebar-settings-row",
+                onclick: move |_| on_open_settings.call(()),
+                span {
+                    class: "sidebar-settings-icon",
+                    "⚙"
+                }
+                span {
+                    class: "sidebar-settings-label",
+                    "settings"
                 }
             }
         }

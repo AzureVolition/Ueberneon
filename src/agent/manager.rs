@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 
 use super::hook::HookRegister;
 use super::{ActionMode, Agent, AgentMode};
@@ -16,22 +16,31 @@ use crate::tools::register_builtins;
 
 use llm::OpenAiProvider;
 
-/// 全局 Agent 配置（目前写死，后续从环境变量/文件读取）
+/// 全局 Agent 配置
+#[derive(Clone)]
 pub struct AgentConfig {
     pub model: String,
     pub base_url: String,
     pub api_key: String,
 }
 
-static GLOBAL_CONFIG: OnceLock<AgentConfig> = OnceLock::new();
+static GLOBAL_CONFIG: OnceLock<RwLock<AgentConfig>> = OnceLock::new();
 
-/// 初始化全局 Agent 配置。应在应用启动时调用一次。
+/// 初始化/更新全局 Agent 配置。首次调用设置锁，后续调用更新内部值。
 pub fn init_global_config(config: AgentConfig) {
-    GLOBAL_CONFIG.get_or_init(|| config);
+    let lock = GLOBAL_CONFIG.get_or_init(|| RwLock::new(config.clone()));
+    if let Ok(mut guard) = lock.write() {
+        *guard = config;
+    }
 }
 
-fn global_config() -> &'static AgentConfig {
-    GLOBAL_CONFIG.get().expect("AgentConfig not initialized")
+fn global_config() -> AgentConfig {
+    let guard = GLOBAL_CONFIG
+        .get()
+        .expect("AgentConfig not initialized")
+        .read()
+        .expect("AgentConfig lock poisoned");
+    (*guard).clone()
 }
 
 /// 全局 Agent 管理器

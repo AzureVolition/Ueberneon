@@ -4351,6 +4351,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "backon",
+ "base64",
  "chrono",
  "dioxus",
  "dotenvy",
