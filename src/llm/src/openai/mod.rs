@@ -91,6 +91,17 @@ impl Provider for OpenAiProvider {
         // 1. 构建请求体
         let body = self.build_request_body(req);
 
+        // ── 请求日志 ──
+        tracing::info!(
+            target: "llm",
+            model = %self.model,
+            messages = req.messages.len(),
+            tools = req.tools.len(),
+            temperature = req.temperature,
+            max_tokens = ?req.max_tokens,
+            "llm request"
+        );
+
         // 2. 带重试发送 POST
         let resp = retry::send_with_retry(
             &self.client,
@@ -225,7 +236,7 @@ impl OpenAiProvider {
             if let Some(ref id) = m.tool_call_id {
                 obj["tool_call_id"] = serde_json::json!(id);
             }
-            if let Some(ref name) = m.name {
+            if let Some(ref name) = m.tool_name {
                 obj["name"] = serde_json::json!(name);
             }
 

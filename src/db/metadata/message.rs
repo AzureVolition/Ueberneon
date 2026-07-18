@@ -1,9 +1,33 @@
 // ── Message CRUD（对齐 llm::Message 格式）──
+// 支持 active 字段：active / compressed，查询只返回 active 的消息。
 
 use chrono::{DateTime, Local};
 use rusqlite::{params, Connection, Result};
 
 use llm::{Message as LlmMessage, Role as LlmRole, ToolCall};
+
+/// 消息状态
+#[derive(Debug, Clone, PartialEq)]
+pub enum MessageStatus {
+    Active,
+    Compressed,
+}
+
+impl MessageStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            MessageStatus::Active => "active",
+            MessageStatus::Compressed => "compressed",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "compressed" => MessageStatus::Compressed,
+            _ => MessageStatus::Active,
+        }
+    }
+}
 
 /// 数据库行 —— 对齐 llm::Message 格式
 #[derive(Debug, Clone)]
@@ -17,8 +41,9 @@ pub struct MessageRow {
     pub reasoning_signature: Option<String>,
     pub tool_calls: Option<String>,  // JSON array of ToolCall
     pub tool_call_id: Option<String>,
-    pub name: Option<String>,
+    pub tool_name: Option<String>,
     pub images: Option<String>,      // JSON array of base64 strings
+    pub active: MessageStatus,
 }
 
 // ── 与 llm::Message 互转 ──────────────────────────────────────────────────
@@ -58,8 +83,9 @@ impl MessageRow {
             reasoning_signature: msg.reasoning_signature.clone(),
             tool_calls,
             tool_call_id: msg.tool_call_id.clone(),
-            name: msg.name.clone(),
+            tool_name: msg.tool_name.clone(),
             images,
+            active: MessageStatus::Active,
         }
     }
 
@@ -92,7 +118,7 @@ impl MessageRow {
             reasoning_signature: self.reasoning_signature.clone(),
             tool_calls,
             tool_call_id: self.tool_call_id.clone(),
-            name: self.name.clone(),
+            tool_name: self.tool_name.clone(),
             images,
             timestamp: None,
         }
@@ -108,8 +134,8 @@ pub fn create(conn: &Connection, conversation_id: &str, row: &MessageRow) -> Res
         "INSERT INTO messages
             (conversation_id, role, content, timestamp,
              reasoning_content, reasoning_signature,
-             tool_calls, tool_call_id, name, images)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             tool_calls, tool_call_id, tool_name, images, active)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             conversation_id,
             row.role,
@@ -119,8 +145,9 @@ pub fn create(conn: &Connection, conversation_id: &str, row: &MessageRow) -> Res
             row.reasoning_signature,
             row.tool_calls,
             row.tool_call_id,
-            row.name,
+            row.tool_name,
             row.images,
+            row.active.as_str(),
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -136,12 +163,12 @@ pub fn create_from_llm(
     create(conn, conversation_id, &row)
 }
 
-/// 按 id 查询消息
+/// 按 id 查询消息（不限 active）
 pub fn get(conn: &Connection, id: i64) -> Result<Option<MessageRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, conversation_id, role, content, timestamp,
                 reasoning_content, reasoning_signature,
-                tool_calls, tool_call_id, name, images
+                tool_calls, tool_call_id, tool_name, images, active
          FROM messages WHERE id = ?1",
     )?;
     let mut rows = stmt.query_map(params![id], row_mapper)?;
@@ -151,12 +178,26 @@ pub fn get(conn: &Connection, id: i64) -> Result<Option<MessageRow>> {
     }
 }
 
-/// 列出某对话下所有消息，按 timestamp 升序
+/// 列出某对话下所有 active 消息，按 timestamp 升序
 pub fn list_by_conversation(conn: &Connection, conversation_id: &str) -> Result<Vec<MessageRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, conversation_id, role, content, timestamp,
                 reasoning_content, reasoning_signature,
-                tool_calls, tool_call_id, name, images
+                tool_calls, tool_call_id, tool_name, images, active
+         FROM messages
+         WHERE conversation_id = ?1 AND active = 'active'
+         ORDER BY timestamp",
+    )?;
+    let rows = stmt.query_map(params![conversation_id], row_mapper)?;
+    rows.collect()
+}
+
+/// 列出某对话下所有消息（不限 active），按 timestamp 升序
+pub fn list_all_by_conversation(conn: &Connection, conversation_id: &str) -> Result<Vec<MessageRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, conversation_id, role, content, timestamp,
+                reasoning_content, reasoning_signature,
+                tool_calls, tool_call_id, tool_name, images, active
          FROM messages WHERE conversation_id = ?1
          ORDER BY timestamp",
     )?;
@@ -164,7 +205,7 @@ pub fn list_by_conversation(conn: &Connection, conversation_id: &str) -> Result<
     rows.collect()
 }
 
-/// 将某对话下所有消息转换为 llm::Message 列表（直接用于 LLM 请求）
+/// 将某对话下所有 active 消息转换为 llm::Message 列表
 pub fn list_as_llm_messages(
     conn: &Connection,
     conversation_id: &str,
@@ -204,8 +245,9 @@ fn row_mapper(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRow> {
         reasoning_signature: row.get(6)?,
         tool_calls: row.get(7)?,
         tool_call_id: row.get(8)?,
-        name: row.get(9)?,
+        tool_name: row.get(9)?,
         images: row.get(10)?,
+        active: MessageStatus::from_str(&row.get::<_, String>(11)?),
     })
 }
 
@@ -224,7 +266,8 @@ mod tests {
             );
             CREATE TABLE conversations (
                 id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
-                title TEXT DEFAULT '', updated_at TEXT NOT NULL
+                title TEXT DEFAULT '', updated_at TEXT NOT NULL,
+                agent_config_id TEXT
             );
             CREATE TABLE messages (
                 id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -236,19 +279,28 @@ mod tests {
                 reasoning_signature TEXT,
                 tool_calls          TEXT,
                 tool_call_id        TEXT,
-                name                TEXT,
-                images              TEXT
+                tool_name           TEXT,
+                images              TEXT,
+                active              TEXT NOT NULL DEFAULT 'active'
             );",
         )
         .unwrap();
         conn
     }
 
+    fn create_test_msg(conn: &Connection, cid: &str, role: LlmRole, content: &str) -> i64 {
+        create_from_llm(conn, cid, &LlmMessage {
+            role,
+            content: Some(content.into()),
+            ..Default::default()
+        }).unwrap()
+    }
+
     #[test]
     fn test_create_user_message() {
         let conn = test_conn();
         let pid = project::create(&conn, "p", "/p").unwrap();
-        let cid = conversation::create(&conn, &pid, "c").unwrap();
+        let cid = conversation::create(&conn, &pid, "c", None).unwrap();
 
         let llm_msg = LlmMessage {
             role: LlmRole::User,
@@ -261,13 +313,36 @@ mod tests {
         let row = get(&conn, id).unwrap().expect("should exist");
         assert_eq!(row.role, "user");
         assert_eq!(row.content.as_deref(), Some("hello"));
+        assert_eq!(row.active, MessageStatus::Active);
+    }
+
+    #[test]
+    fn test_list_filters_active() {
+        let conn = test_conn();
+        let pid = project::create(&conn, "p", "/p").unwrap();
+        let cid = conversation::create(&conn, &pid, "c", None).unwrap();
+
+        let id1 = create_test_msg(&conn, &cid, LlmRole::User, "active msg");
+        // 手动插入一条 compressed 消息
+        conn.execute(
+            "INSERT INTO messages (conversation_id, role, content, timestamp, active)
+             VALUES (?1, 'user', 'compressed msg', ?2, 'compressed')",
+            params![cid, chrono::Local::now().to_rfc3339()],
+        ).unwrap();
+
+        let rows = list_by_conversation(&conn, &cid).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].content.as_deref(), Some("active msg"));
+
+        let all = list_all_by_conversation(&conn, &cid).unwrap();
+        assert_eq!(all.len(), 2);
     }
 
     #[test]
     fn test_create_assistant_with_tool_calls() {
         let conn = test_conn();
         let pid = project::create(&conn, "p", "/p").unwrap();
-        let cid = conversation::create(&conn, &pid, "c").unwrap();
+        let cid = conversation::create(&conn, &pid, "c", None).unwrap();
 
         let llm_msg = LlmMessage {
             role: LlmRole::Assistant,
@@ -291,7 +366,6 @@ mod tests {
         assert_eq!(row.reasoning_content.as_deref(), Some("thinking..."));
         assert!(row.tool_calls.is_some());
 
-        // 验证 to_llm 往返
         let roundtrip = row.to_llm();
         assert_eq!(roundtrip.role, LlmRole::Assistant);
         assert_eq!(roundtrip.content, None);
@@ -303,27 +377,27 @@ mod tests {
     fn test_create_tool_result() {
         let conn = test_conn();
         let pid = project::create(&conn, "p", "/p").unwrap();
-        let cid = conversation::create(&conn, &pid, "c").unwrap();
+        let cid = conversation::create(&conn, &pid, "c", None).unwrap();
 
         let llm_msg = LlmMessage {
             role: LlmRole::Tool,
             content: Some("file contents".into()),
             tool_call_id: Some("call_1".into()),
-            name: Some("read_file".into()),
+            tool_name: Some("read_file".into()),
             ..Default::default()
         };
         let id = create_from_llm(&conn, &cid, &llm_msg).unwrap();
         let row = get(&conn, id).unwrap().expect("should exist");
         assert_eq!(row.role, "tool");
         assert_eq!(row.tool_call_id.as_deref(), Some("call_1"));
-        assert_eq!(row.name.as_deref(), Some("read_file"));
+        assert_eq!(row.tool_name.as_deref(), Some("read_file"));
     }
 
     #[test]
     fn test_list_as_llm_messages() {
         let conn = test_conn();
         let pid = project::create(&conn, "p", "/p").unwrap();
-        let cid = conversation::create(&conn, &pid, "c").unwrap();
+        let cid = conversation::create(&conn, &pid, "c", None).unwrap();
 
         create_from_llm(
             &conn,
@@ -356,7 +430,7 @@ mod tests {
     fn test_delete() {
         let conn = test_conn();
         let pid = project::create(&conn, "p", "/p").unwrap();
-        let cid = conversation::create(&conn, &pid, "c").unwrap();
+        let cid = conversation::create(&conn, &pid, "c", None).unwrap();
         let llm_msg = LlmMessage {
             role: LlmRole::User,
             content: Some("x".into()),
@@ -371,7 +445,7 @@ mod tests {
     fn test_delete_by_conversation() {
         let conn = test_conn();
         let pid = project::create(&conn, "p", "/p").unwrap();
-        let cid = conversation::create(&conn, &pid, "c").unwrap();
+        let cid = conversation::create(&conn, &pid, "c", None).unwrap();
 
         for i in 0..3 {
             create_from_llm(

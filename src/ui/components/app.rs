@@ -1,3 +1,5 @@
+pub use crate::ui::components::error::{ErrorSignal, ErrorModal, ErrorBanner, ErrorToast, ErrorInfo, ErrorSeverity, ErrorSource};
+
 use dioxus::prelude::*;
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
@@ -12,9 +14,9 @@ use crate::ui::components::settings_panel::SettingsPanel;
 use crate::ui::state::*;
 use crate::ui::state::SettingsTab;
 use crate::settings;
-use crate::ui::components::error::{ErrorSignal, ErrorModal, ErrorBanner, ErrorToast, ErrorInfo, ErrorSeverity, ErrorSource};
 use crate::ui::state::*;
 use crate::agent::main_agent_prompt;
+
 
 /// Markdown 转 HTML 辅助函数
 fn markdown_to_html(md: &str) -> String {
@@ -81,7 +83,7 @@ fn load_messages_from_db(conv_id: &str) -> Vec<ChatMessage> {
             llm::Role::Tool => {
                 // 从后往前找匹配的 Assistant，回填 tool 结果
                 if let (Some(_tcid), Some(content)) = (&m.tool_call_id, &m.content) {
-                    let tool_name = m.name.as_deref();
+                    let tool_name = m.tool_name.as_deref();
                     for cm in result.iter_mut().rev() {
                         if cm.role != Role::Assistant { continue; }
                         if let Some(tc) = cm.tool_calls.iter_mut().find(|tc| {
@@ -109,48 +111,8 @@ fn load_messages_from_db(conv_id: &str) -> Vec<ChatMessage> {
     result
 }
 
-/// 从 DB 取第一个 provider 实例初始化全局 Agent 配置
-fn init_agent_from_first_instance() {
-    let conn = crate::db::get_db().lock().unwrap();
-    let instances = crate::db::metadata::provider_instance::list_all(&conn).unwrap_or_default();
-    if let Some(inst) = instances.first() {
-        if let Ok(Some(prov)) = crate::db::metadata::provider::get(&conn, &inst.provider_id) {
-            let models = crate::db::metadata::provider::list_models(&conn, &prov.id).unwrap_or_default();
-            let model = models.first().cloned().unwrap_or_else(|| {
-                crate::db::provider_presets::all_presets().iter()
-                    .find(|p| p.id == prov.id)
-                    .and_then(|p| p.models.first().copied())
-                    .unwrap_or("")
-                    .to_string()
-            });
-            let api_key = if !inst.api_key.is_empty() {
-                use base64::Engine;
-                base64::engine::general_purpose::STANDARD.decode(inst.api_key.as_bytes())
-                    .ok().and_then(|v| String::from_utf8(v).ok())
-                    .unwrap_or_default()
-            } else {
-                String::new()
-            };
-            crate::agent::manager::init_global_config(crate::agent::manager::AgentConfig {
-                model,
-                base_url: prov.base_url,
-                api_key,
-                system_prompt: String::new(),
-                temperature: 0.7,
-                max_tokens: None,
-                agent_type: "general".to_string(),
-                enabled_tools: Vec::new(),
-            });
-        }
-    }
-    drop(conn);
-}
-
 #[component]
 pub fn App() -> Element {
-    // ── 初始化全局 Agent 配置（取第一个可用实例）──
-    init_agent_from_first_instance();
-
     // ── 项目状态（从 DB 加载）──
     let mut projects: Signal<Vec<Project>> = use_signal(|| {
         let conn = crate::db::get_db().lock().unwrap();
@@ -175,11 +137,31 @@ pub fn App() -> Element {
     let mut active_tool_calls = use_signal(Vec::<ToolCallRecord>::new);
     let mut action_mode = use_signal(|| ActionMode::Regular);
     let mut agent_mode = use_signal(|| AgentMode::Ask);
+    
+
+    // ── Agent config 选择状态 ──
+    let mut agent_configs: Signal<Vec<crate::db::metadata::agent_config::AgentConfigRow>> = use_signal(|| {
+        let conn = crate::db::get_db().lock().unwrap();
+        crate::db::metadata::agent_config::list_all(&conn).unwrap_or_default()
+    });
+    let mut selected_agent_config_id = use_signal(|| {
+        let default_id = crate::settings::get().general.default_agent_config_id;
+        if !default_id.is_empty() {
+            let conn = crate::db::get_db().lock().unwrap();
+            let exists = crate::db::metadata::agent_config::get(&conn, &default_id)
+                .ok().flatten().is_some();
+            drop(conn);
+            if exists { return default_id; }
+        }
+        String::new()
+    });
+
     let mut pending_approval = use_signal(|| Option::<PendingApproval>::None);
     let approval_responder: Signal<Arc<Mutex<Option<tokio::sync::oneshot::Sender<bool>>>>> =
         use_signal(|| Arc::new(Mutex::new(None)));
     let mut cancel_token: Signal<Option<CancellationToken>> = use_signal(|| None);
     let mut error_signal = use_signal(ErrorSignal::new);
+    use_context_provider(|| error_signal);
 
     // 流式状态缓存
     let streaming_states: Arc<Mutex<HashMap<String, UiMessage>>> =
@@ -314,8 +296,8 @@ pub fn App() -> Element {
             active_tool_calls.set(Vec::new());
         }
         if let Ok(conn) = crate::db::get_db().lock() {
-            crate::db::metadata::message::delete_by_conversation(&conn, &conv_id).ok();
-            crate::db::metadata::conversation::delete(&conn, &conv_id).ok();
+            if let Err(e) = crate::db::metadata::message::delete_by_conversation(&conn, &conv_id) { tracing::error!(target:"db", error=%e, "delete messages"); }
+            if let Err(e) = crate::db::metadata::conversation::delete(&conn, &conv_id) { tracing::error!(target:"db", error=%e, "delete conversation"); }
         }
         {
             let mut projs = projects.write();
@@ -341,7 +323,7 @@ pub fn App() -> Element {
             let convs = crate::db::metadata::conversation::list_by_project(&conn, &project_id).unwrap_or_default();
             let mut mgr = AgentManager::get().lock().unwrap();
             for conv in &convs { mgr.remove(&conv.id); }
-            crate::db::metadata::project::delete(&conn, &project_id).ok();
+            if let Err(e) = crate::db::metadata::project::delete(&conn, &project_id) { tracing::error!(target:"db", error=%e, "delete project"); }
         }
         let conn = crate::db::get_db().lock().unwrap();
         let rows = crate::db::metadata::project::list(&conn).unwrap_or_default();
@@ -359,7 +341,7 @@ pub fn App() -> Element {
         let conn = crate::db::get_db().lock().unwrap();
         if let Some(mut row) = crate::db::metadata::project::get(&conn, &project_id).unwrap_or(None) {
             row.indicator_color = color_key;
-            crate::db::metadata::project::update(&conn, &row).ok();
+            if let Err(e) = crate::db::metadata::project::update(&conn, &row) { tracing::error!(target:"db", error=%e, "update project"); }
         }
         let rows = crate::db::metadata::project::list(&conn).unwrap_or_default();
         drop(conn);
@@ -422,12 +404,11 @@ pub fn App() -> Element {
                 match sidebar_view() {
                     SidebarView::Settings(ref tab) => {
                         match tab {
-                            SettingsTab::Providers | SettingsTab::General | SettingsTab::Appearance => {
+                            SettingsTab::Providers | SettingsTab::General | SettingsTab::Appearance | SettingsTab::Sql => {
                                 rsx! {
                                     SettingsPanel {
                                         tab: tab.clone(),
                                         on_change: move |_| {
-                                            init_agent_from_first_instance();
                                         },
                                     }
                                 }
@@ -437,7 +418,6 @@ pub fn App() -> Element {
                                     SettingsPanel {
                                         tab: SettingsTab::AgentConfigs,
                                         on_change: move |_| {
-                                            init_agent_from_first_instance();
                                         },
                                     }
                                 }
@@ -465,6 +445,15 @@ pub fn App() -> Element {
                             is_streaming,
                             action_mode,
                             agent_mode,
+                            agent_configs: agent_configs(),
+                            selected_agent_config_id: selected_agent_config_id(),
+                            config_disabled: !active_conversation_id.read().is_empty(),
+                            on_agent_config_change: {
+                                let mut s_id = selected_agent_config_id;
+                                move |new_id: String| {
+                                    s_id.set(new_id.clone());
+                                }
+                            },
                             on_cancel: move |_| {
                                 if let Some(ref token) = *cancel_token.read() {
                                     token.cancel();
@@ -502,10 +491,13 @@ pub fn App() -> Element {
                             let cid = if conv_id.is_empty() {
                                 // 新对话：由 init_or_get 生成 id 并创建 DB 行
                                 let mut mgr = AgentManager::get().lock().unwrap();
+                                let current_ac_id = selected_agent_config_id.read().clone();
+                                let ac_id_for_conv: Option<&str> = if current_ac_id.is_empty() { None } else { Some(current_ac_id.as_str()) };
                                 let new_cid = mgr.init_or_get(
                                     None,
                                     &main_agent_prompt(),
                                     Some(pid.clone()),
+                                    ac_id_for_conv,
                                 ).unwrap_or_else(|_| String::new());
                                 drop(mgr);
                                 let now = chrono::Local::now();
@@ -536,8 +528,8 @@ pub fn App() -> Element {
                                 conn.execute(
                                     "UPDATE conversations SET title = ?1 WHERE id = ?2 and (title = '' or title is null)",
                                     rusqlite::params![crate::model::title_from_messages(&[user_msg.clone()]), cid],
-                                ).ok();
-                                crate::db::metadata::project::touch(&conn, &pid).ok();
+                                ).unwrap_or_else(|e| { tracing::error!(target:"db", error=%e, "update conversation title"); 0 });
+                                if let Err(e) = crate::db::metadata::project::touch(&conn, &pid) { tracing::error!(target:"db", error=%e, "touch project"); }
                             }
                             // 刷新 signal（标题、轮数、last_activity_at 同步）
                             if let Ok(conn) = crate::db::get_db().lock() {

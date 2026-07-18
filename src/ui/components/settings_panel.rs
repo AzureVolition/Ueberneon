@@ -5,41 +5,52 @@
 
 use dioxus::prelude::*;
 
+use crate::agent::{ActionMode, AgentMode};
+use crate::db::metadata::agent_config;
 use crate::db::metadata::provider::{self, ProviderRow};
 use crate::db::metadata::provider_instance::{self, ProviderInstanceRow};
 use crate::db::provider_presets::{self, ProviderPreset};
-use crate::db::metadata::agent_config;
 use crate::settings;
-use crate::agent::{ActionMode, AgentMode};
-use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 use crate::ui::components::agent_config_panel::AgentConfigPanel;
+use crate::ui::components::dropdown::{Dropdown, DropdownOption};
+use crate::ui::components::sql_panel::SqlPanel;
 use crate::ui::state::SettingsTab;
 
 fn encode_key(key: &str) -> String {
     use base64::Engine;
-    if key.is_empty() { String::new() }
-    else { base64::engine::general_purpose::STANDARD.encode(key.as_bytes()) }
+    if key.is_empty() {
+        String::new()
+    } else {
+        base64::engine::general_purpose::STANDARD.encode(key.as_bytes())
+    }
 }
 
 fn decode_key(encoded: &str) -> String {
     use base64::Engine;
-    if encoded.is_empty() { String::new() }
-    else { base64::engine::general_purpose::STANDARD.decode(encoded.as_bytes()).ok().and_then(|v| String::from_utf8(v).ok()).unwrap_or_default() }
+    if encoded.is_empty() {
+        String::new()
+    } else {
+        base64::engine::general_purpose::STANDARD
+            .decode(encoded.as_bytes())
+            .ok()
+            .and_then(|v| String::from_utf8(v).ok())
+            .unwrap_or_default()
+    }
 }
 
 /// 生成唯一 ID
 fn gen_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
     let pid = std::process::id();
     format!("inst-{ts:x}-{pid:x}")
 }
 
 #[component]
-pub fn SettingsPanel(
-    tab: SettingsTab,
-    on_change: EventHandler<()>,
-) -> Element {
+pub fn SettingsPanel(tab: SettingsTab, on_change: EventHandler<()>) -> Element {
     // ── DB 数据 ──
     let mut instances: Signal<Vec<ProviderInstanceRow>> = use_signal(|| {
         let conn = crate::db::get_db().lock().unwrap();
@@ -49,24 +60,26 @@ pub fn SettingsPanel(
         let conn = crate::db::get_db().lock().unwrap();
         provider::list_all(&conn).unwrap_or_default()
     });
-    let mut models_cache: Signal<std::collections::HashMap<String, Vec<String>>> = use_signal(|| {
-        let conn = crate::db::get_db().lock().unwrap();
-        let mut map = std::collections::HashMap::new();
-        if let Ok(providers) = provider::list_all(&conn) {
-            for p in &providers {
-                if let Ok(models) = provider::list_models(&conn, &p.id) {
-                    map.insert(p.id.clone(), models);
+    let mut models_cache: Signal<std::collections::HashMap<String, Vec<String>>> =
+        use_signal(|| {
+            let conn = crate::db::get_db().lock().unwrap();
+            let mut map = std::collections::HashMap::new();
+            if let Ok(providers) = provider::list_all(&conn) {
+                for p in &providers {
+                    if let Ok(models) = provider::list_models(&conn, &p.id) {
+                        map.insert(p.id.clone(), models);
+                    }
                 }
             }
-        }
-        map
-    });
+            map
+        });
 
     // ── UI state ──
     let mut editing_key_for = use_signal(|| Option::<String>::None);
     let mut key_input = use_signal(String::new);
     let mut refreshing = use_signal(|| Option::<String>::None);
-    let mut fetch_errors: Signal<std::collections::HashMap<String, String>> = use_signal(std::collections::HashMap::new);
+    let mut fetch_errors: Signal<std::collections::HashMap<String, String>> =
+        use_signal(std::collections::HashMap::new);
     let mut deleting = use_signal(|| Option::<String>::None);
     let mut show_add_form = use_signal(|| false);
     let mut add_step = use_signal(|| AddStep::SelectProvider);
@@ -97,7 +110,9 @@ pub fn SettingsPanel(
                 None => return,
             };
             if key.is_empty() {
-                fetch_errors.write().insert(inst_id.clone(), "api key required".into());
+                fetch_errors
+                    .write()
+                    .insert(inst_id.clone(), "api key required".into());
                 return;
             }
             refreshing.set(Some(inst_id.clone()));
@@ -111,16 +126,26 @@ pub fn SettingsPanel(
                 match prov {
                     Some(p) => {
                         match crate::db::model_fetch::refresh_and_save(
-                            &crate::db::get_db().lock().unwrap(), &p, &key2,
-                        ).await {
+                            &crate::db::get_db().lock().unwrap(),
+                            &p,
+                            &key2,
+                        )
+                        .await
+                        {
                             Ok(models) => {
                                 models_cache.write().insert(pid2.clone(), models);
                                 fetch_errors.write().remove(&inst_id);
                             }
-                            Err(e) => { fetch_errors.write().insert(inst_id.clone(), e); }
+                            Err(e) => {
+                                fetch_errors.write().insert(inst_id.clone(), e);
+                            }
                         }
                     }
-                    None => { fetch_errors.write().insert(inst_id.clone(), "provider not found".into()); }
+                    None => {
+                        fetch_errors
+                            .write()
+                            .insert(inst_id.clone(), "provider not found".into());
+                    }
                 }
                 refreshing.set(None);
             });
@@ -131,7 +156,7 @@ pub fn SettingsPanel(
     let mut do_delete = {
         move |inst_id: String| {
             let conn = crate::db::get_db().lock().unwrap();
-            provider_instance::delete(&conn, &inst_id).ok();
+            if let Err(e) = provider_instance::delete(&conn, &inst_id) { tracing::error!(target:"db", error=%e, "delete provider instance"); }
             drop(conn);
             // 刷新
             let conn = crate::db::get_db().lock().unwrap();
@@ -148,7 +173,12 @@ pub fn SettingsPanel(
             let val = key_input.read().trim().to_string();
             let encoded = encode_key(&val);
             let conn = crate::db::get_db().lock().unwrap();
-            provider_instance::update_key(&conn, &inst_id, &encoded).ok();
+            if let Err(e) = provider_instance::update_key(&conn, &inst_id, &encoded) { tracing::error!(target:"db", error=%e, "update provider key"); }
+            // 同步更新所有使用该 provider instance 的 agent config 的 key
+            conn.execute(
+                    "UPDATE agent_configs SET api_key = ?1, updated_at = ?2 WHERE provider_instance_id = ?3",
+                    rusqlite::params![encoded, chrono::Local::now().to_rfc3339(), inst_id],
+                ).unwrap_or_else(|e| { tracing::error!(target:"db", error=%e, "update agent configs key."); 0 });
             drop(conn);
             let conn = crate::db::get_db().lock().unwrap();
             instances.set(provider_instance::list_all(&conn).unwrap_or_default());
@@ -176,7 +206,7 @@ pub fn SettingsPanel(
                 created_at: now,
             };
             let conn = crate::db::get_db().lock().unwrap();
-            provider_instance::insert(&conn, &row).ok();
+            if let Err(e) = provider_instance::insert(&conn, &row) { tracing::error!(target:"db", error=%e, "insert provider instance."); }
             drop(conn);
             let conn = crate::db::get_db().lock().unwrap();
             instances.set(provider_instance::list_all(&conn).unwrap_or_default());
@@ -196,14 +226,17 @@ pub fn SettingsPanel(
             let id = custom_id.read().trim().to_string();
             let name = custom_name.read().trim().to_string();
             let url = custom_url.read().trim().to_string();
-            if id.is_empty() || name.is_empty() || url.is_empty() { return; }
+            if id.is_empty() || name.is_empty() || url.is_empty() {
+                return;
+            }
             // 先写入 providers 表
             let conn = crate::db::get_db().lock().unwrap();
             conn.execute(
                 "INSERT OR IGNORE INTO providers (id, name, kind, base_url, is_preset)
                  VALUES (?1, ?2, 'openai', ?3, 0)",
                 rusqlite::params![id, name, url],
-            ).ok();
+            )
+            .unwrap_or_else(|e| { tracing::error!(target:"db", error=%e, "insert custom provider."); 0 });
             drop(conn);
             // 刷新 providers 缓存
             let conn = crate::db::get_db().lock().unwrap();
@@ -211,7 +244,11 @@ pub fn SettingsPanel(
             drop(conn);
             // 创建实例
             let now = chrono::Local::now().to_rfc3339();
-            let alias = if add_alias.read().trim().is_empty() { name } else { add_alias.read().trim().to_string() };
+            let alias = if add_alias.read().trim().is_empty() {
+                name
+            } else {
+                add_alias.read().trim().to_string()
+            };
             let raw_key = add_key.read().trim().to_string();
             let encoded = encode_key(&raw_key);
             let row = ProviderInstanceRow {
@@ -223,7 +260,7 @@ pub fn SettingsPanel(
                 created_at: now,
             };
             let conn = crate::db::get_db().lock().unwrap();
-            provider_instance::insert(&conn, &row).ok();
+            if let Err(e) = provider_instance::insert(&conn, &row) { tracing::error!(target:"db", error=%e, "insert provider instance."); }
             drop(conn);
             let conn = crate::db::get_db().lock().unwrap();
             instances.set(provider_instance::list_all(&conn).unwrap_or_default());
@@ -240,12 +277,41 @@ pub fn SettingsPanel(
 
     let presets = provider_presets::all_presets();
 
-
-
     // ── 辅助：找到 instance 对应的 provider 名称 ──
     let provider_name = |pid: &str| -> String {
-        provs.iter().find(|p| p.id == pid).map(|p| p.name.clone()).unwrap_or_else(|| pid.to_string())
+        provs
+            .iter()
+            .find(|p| p.id == pid)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| pid.to_string())
     };
+
+    // ── Appearance 信号（match 外，hooks 顺序稳定） ──
+    let mut current_font = use_signal(|| settings::get().appearance.font_size.clone());
+    let mut current_code = use_signal(|| settings::get().appearance.code_font.clone());
+    let mut current_density = use_signal(|| settings::get().appearance.ui_density.clone());
+    let font_options = [
+        ("xs", "xs (12px)"),
+        ("sm", "sm (14px)"),
+        ("md", "md (16px)"),
+        ("lg", "lg (18px)"),
+        ("xl", "xl (20px)"),
+    ];
+    let code_fonts = [
+        ("jetbrains-mono", "JetBrains Mono"),
+        ("geist-mono", "Geist Mono"),
+        ("ibm-plex-mono", "IBM Plex Mono"),
+        ("commit-mono", "Commit Mono"),
+    ];
+    let density_options = [
+        ("comfortable", "comfortable"),
+        ("compact", "compact"),
+    ];
+
+    // ── General 信号（match 外） ──
+    let mut current_agent_id = use_signal(|| settings::get().general.default_agent_config_id.clone());
+    let mut current_action_mode = use_signal(|| settings::get().general.default_action_mode.clone());
+    let mut current_agent_mode = use_signal(|| settings::get().general.default_agent_mode.clone());
 
     rsx! {
         div { class: "settings-panel",
@@ -575,13 +641,12 @@ pub fn SettingsPanel(
                         let conn = crate::db::get_db().lock().unwrap();
                         agent_config::list_all(&conn).unwrap_or_default()
                     };
-                    let s = settings::get().general;
-                    let current_agent_id = s.default_agent_config_id.clone();
-                    let current_action_mode = s.default_action_mode.clone();
-                    let current_agent_mode = s.default_agent_mode.clone();
-
                     // Build dropdown options
-                    let mut default_agent_opts = vec![DropdownOption { value: String::new(), label: "— none —".into() }];
+                    let mut default_agent_opts: Vec<DropdownOption> = if all_agent_configs.is_empty() {
+                        vec![DropdownOption { value: String::new(), label: "— none —".into() }]
+                    } else {
+                        Vec::new()
+                    };
                     for cfg in &all_agent_configs {
                         default_agent_opts.push(DropdownOption {
                             value: cfg.id.clone(),
@@ -608,9 +673,10 @@ pub fn SettingsPanel(
                             div { class: "settings-field",
                                 label { class: "settings-field-label", "default agent" }
                                 Dropdown {
-                                    value: current_agent_id,
+                                    value: current_agent_id(),
                                     options: default_agent_opts,
-                                    onchange: move |val| {
+                                    onchange: move |val: String| {
+                                        current_agent_id.set(val.clone());
                                         settings::update(|s| s.general.default_agent_config_id = val);
                                     },
                                 }
@@ -618,9 +684,10 @@ pub fn SettingsPanel(
                             div { class: "settings-field",
                                 label { class: "settings-field-label", "default action mode" }
                                 Dropdown {
-                                    value: current_action_mode,
+                                    value: current_action_mode(),
                                     options: action_mode_opts,
-                                    onchange: move |val| {
+                                    onchange: move |val: String| {
+                                        current_action_mode.set(val.clone());
                                         settings::update(|s| s.general.default_action_mode = val);
                                     },
                                 }
@@ -628,9 +695,10 @@ pub fn SettingsPanel(
                             div { class: "settings-field",
                                 label { class: "settings-field-label", "default agent mode" }
                                 Dropdown {
-                                    value: current_agent_mode,
+                                    value: current_agent_mode(),
                                     options: agent_mode_opts,
-                                    onchange: move |val| {
+                                    onchange: move |val: String| {
+                                        current_agent_mode.set(val.clone());
                                         settings::update(|s| s.general.default_agent_mode = val);
                                     },
                                 }
@@ -639,25 +707,6 @@ pub fn SettingsPanel(
                     }
                 }
                 SettingsTab::Appearance => {
-                    let s = settings::get().appearance;
-                    let mut current_font = use_signal(||s.font_size.clone());
-                    let mut current_code = use_signal(||s.code_font.clone());
-                    let mut current_density = use_signal(||s.ui_density.clone());
-
-                    let font_options = [
-                        ("xs", "xs (12px)"),
-                        ("sm", "sm (14px)"),
-                        ("md", "md (16px)"),
-                        ("lg", "lg (18px)"),
-                        ("xl", "xl (20px)"),
-                    ];
-                    let code_fonts = [
-                        ("jetbrains-mono", "JetBrains Mono"),
-                        ("geist-mono", "Geist Mono"),
-                        ("ibm-plex-mono", "IBM Plex Mono"),
-                        ("commit-mono", "Commit Mono"),
-                    ];
-
                     rsx! {
                         div { class: "settings-header",
                             h2 { class: "settings-title", "appearance" }
@@ -699,22 +748,27 @@ pub fn SettingsPanel(
                             div { class: "settings-field",
                                 label { class: "settings-field-label", "ui density" }
                                 div { class: "mode-pill-row",
-                                    button {
-                                        class: if current_density.read().as_str() == "comfortable" { "mode-pill is-active" } else { "mode-pill" },
-                                        onclick: move |_| settings::update(|s| s.appearance.ui_density = "comfortable".into()),
-                                        "comfortable"
-                                    }
-                                    button {
-                                        class: if current_density.read().as_str() == "compact" { "mode-pill is-active" } else { "mode-pill" },
-                                        onclick: move |_| {
-                                            settings::update(|s| s.appearance.ui_density = "compact".into());
-                                            current_density.set("compact".into());
-                                        },
-                                        "compact"
+                                    for (key, label) in density_options {
+                                        button {
+                                            class: if current_density.read().as_str() == key { "mode-pill is-active" } else { "mode-pill" },
+                                            onclick: {
+                                                move |_| {
+                                                    let k = key.to_string();
+                                                    settings::update(|s| s.appearance.ui_density = k.clone());
+                                                    current_density.set(k);
+                                                }
+                                            },
+                                            "{label}"
+                                        }
                                     }
                                 }
                             }
                         }
+                    }
+                }
+                SettingsTab::Sql => {
+                    rsx! {
+                        SqlPanel {}
                     }
                 }
             }
@@ -723,4 +777,8 @@ pub fn SettingsPanel(
 }
 
 #[derive(Clone, PartialEq)]
-enum AddStep { SelectProvider, Custom, FillDetails }
+enum AddStep {
+    SelectProvider,
+    Custom,
+    FillDetails,
+}

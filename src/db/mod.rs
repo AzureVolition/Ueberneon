@@ -68,7 +68,8 @@ pub fn init_db() -> Result<Connection> {
             id          TEXT PRIMARY KEY,
             project_id  TEXT NOT NULL REFERENCES projects(id),
             title       TEXT DEFAULT '',
-            updated_at  TEXT NOT NULL
+            updated_at  TEXT NOT NULL,
+            agent_config_id TEXT REFERENCES agent_configs(id)
         );
 
         CREATE TABLE IF NOT EXISTS messages (
@@ -81,8 +82,9 @@ pub fn init_db() -> Result<Connection> {
             reasoning_signature TEXT,
             tool_calls          TEXT,
             tool_call_id        TEXT,
-            name                TEXT,
-            images              TEXT
+            tool_name           TEXT,
+            images              TEXT,
+            active              TEXT NOT NULL DEFAULT 'active'
         );
 
         CREATE INDEX IF NOT EXISTS idx_conversations_project
@@ -133,6 +135,12 @@ pub fn init_db() -> Result<Connection> {
             updated_at          TEXT NOT NULL
         );"
     )?;
+
+    // ── Migration: 为已有数据库添加 active 列 ──
+    let _ = conn.execute(
+        "ALTER TABLE messages ADD COLUMN active TEXT NOT NULL DEFAULT 'active'",
+        [],
+    );
 
     // ── 默认项目 ──────────────────────────────────────────────────────────
     // 确保 "racpagent" 默认项目始终存在

@@ -65,7 +65,7 @@ pub async fn send_with_retry(
         .when(|e| matches!(e, ProviderError::HttpStatus(s) if is_retryable_status(s)))
         .when(|e| matches!(e, ProviderError::Network(_)))
         .notify(|err, dur| {
-            eprintln!("[llm] retrying: {err} (delay: {:?})", dur);
+            tracing::warn!(target: "llm", error = %err, delay_ms = dur.as_millis(), "llm retry");
         })
         .await
 }

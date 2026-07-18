@@ -4,19 +4,21 @@
 // 使用 remove + register 模式避免锁跨 await 持有。
 
 
+use std::any;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock, RwLock};
+use std::sync::{Mutex, OnceLock};
 
 use super::hook::HookRegister;
 use super::{ActionMode, Agent, AgentMode};
+use crate::db::metadata::agent_config::AgentConfigRow;
 use crate::model::Project;
 use crate::tools::Registry;
 use crate::tools::register_builtins;
 
 use llm::OpenAiProvider;
 
-/// 全局 Agent 配置
+/// Agent 运行时配置（从 AgentConfigRow 转换而来）
 #[derive(Clone)]
 pub struct AgentConfig {
     pub model: String,
@@ -29,23 +31,28 @@ pub struct AgentConfig {
     pub enabled_tools: Vec<String>,
 }
 
-static GLOBAL_CONFIG: OnceLock<RwLock<AgentConfig>> = OnceLock::new();
-
-/// 初始化/更新全局 Agent 配置。首次调用设置锁，后续调用更新内部值。
-pub fn init_global_config(config: AgentConfig) {
-    let lock = GLOBAL_CONFIG.get_or_init(|| RwLock::new(config.clone()));
-    if let Ok(mut guard) = lock.write() {
-        *guard = config;
+impl AgentConfig {
+    /// 从数据库行构建运行配置
+    pub fn from_row(row: &AgentConfigRow) -> anyhow::Result<Self> {
+        let decoded_key = if !row.api_key.is_empty() {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.decode(row.api_key.as_bytes())
+                .ok().and_then(|v| String::from_utf8(v).ok())
+                .unwrap_or_default()
+        } else {
+            anyhow::bail!("api_key is empty")
+        };
+        Ok(Self {
+            model: row.model.clone(),
+            base_url: row.base_url.clone(),
+            api_key: decoded_key,
+            system_prompt: row.system_prompt.clone(),
+            temperature: row.temperature,
+            max_tokens: row.max_tokens,
+            agent_type: row.agent_type.clone(),
+            enabled_tools: serde_json::from_str(&row.tools).unwrap_or_default(),
+        })
     }
-}
-
-fn global_config() -> AgentConfig {
-    let guard = GLOBAL_CONFIG
-        .get()
-        .expect("AgentConfig not initialized")
-        .read()
-        .expect("AgentConfig lock poisoned");
-    (*guard).clone()
 }
 
 /// 全局 Agent 管理器
@@ -64,13 +71,25 @@ impl AgentManager {
         })
     }
 
-    /// 内部：根据全局配置构建 provider + registry + hooks + Agent
+    /// 根据 AgentConfig 构建 provider + registry + hooks + Agent
     fn build_agent_inner(
         conversation_id: String,
         system_prompt: Option<&str>,
         project_id: Option<String>,
+        cfg: &AgentConfig,
     ) -> Result<Agent, String> {
-        let cfg = global_config();
+        tracing::info!(
+            target: "agent",
+            conversation_id = %conversation_id,
+            model = %cfg.model,
+            agent_type = %cfg.agent_type,
+            tools = cfg.enabled_tools.len(),
+            // todo 临时打印
+            api_key = %cfg.api_key,
+            has_system_prompt = !cfg.system_prompt.is_empty(),
+            "building agent"
+        );
+
         let provider = OpenAiProvider::new(
             cfg.model.clone(),
             cfg.base_url.clone(),
@@ -142,6 +161,7 @@ impl AgentManager {
         conv_id: Option<String>,
         system_prompt: &str,
         project_id: Option<String>,
+        agent_config_id: Option<&str>,
     ) -> Result<String, String> {
         match conv_id {
             Some(id) => {
@@ -150,16 +170,26 @@ impl AgentManager {
             }
             None => {
                 let id = crate::db::metadata::conversation::generate_conversation_id();
-                // 创建 conversation 数据库行（用已生成的 id，不调用 create 避免二次生成）
+                // 从 DB 读取 agent 配置
+                let agent_config = agent_config_id
+                    .map(|ac_id| Self::read_agent_config(ac_id))
+                    .unwrap_or_else(|| Err("no agent config selected".to_string()))?;
+                tracing::info!(
+                    target: "agent",
+                    conversation_id = %id,
+                    agent_config_id = ?agent_config_id,
+                    "creating new conversation"
+                );
+                // 创建 conversation 数据库行
                 if let Ok(conn) = crate::db::get_db().lock() {
                     let pid = project_id.as_deref().unwrap_or(crate::db::DEFAULT_PROJECT_ID);
-                    conn.execute(
-                        "INSERT INTO conversations (id, project_id, title, updated_at) VALUES (?1, ?2, '', ?3)",
-                        rusqlite::params![id, pid, chrono::Local::now().to_rfc3339()],
-                    ).ok();
+                    if let Err(e) = conn.execute(
+                        "INSERT INTO conversations (id, project_id, title, updated_at, agent_config_id) VALUES (?1, ?2, '', ?3, ?4)",
+                        rusqlite::params![id, pid, chrono::Local::now().to_rfc3339(), agent_config_id],
+                    ) { tracing::error!(target:"db", error=%e, "insert conversation"); }
                 }
                 let agent =
-                    Self::build_agent_inner(id.clone(), Some(system_prompt), project_id)?;
+                    Self::build_agent_inner(id.clone(), Some(system_prompt), project_id, &agent_config)?;
                 self.agents.insert(id.clone(), agent);
                 Ok(id)
             }
@@ -187,11 +217,35 @@ impl AgentManager {
             .unwrap_or_default();
         drop(conn);
 
-        let mut agent = Self::build_agent_inner(id.to_string(), None, Some(conv.project_id))?;
+        // 读取 conversation 关联的 agent 配置
+        let agent_config = conv.agent_config_id
+            .as_deref()
+            .map(Self::read_agent_config)
+            .unwrap_or_else(|| Err(format!("no agent config for conversation {id}")))?;
+
+        let mut agent = Self::build_agent_inner(id.to_string(), None, Some(conv.project_id), &agent_config)?;
         agent.messages.extend(msgs);
         self.agents.insert(id.to_string(), agent);
         Ok(())
     }
+
+    /// 根据 agent_config_id 从 DB 读取配置并转为 AgentConfig
+    fn read_agent_config(agent_config_id: &str) -> Result<AgentConfig, String> {
+        tracing::info!(
+            target: "agent",
+            agent_config_id = %agent_config_id,
+            "reading agent config from db"
+        );
+        let conn = crate::db::get_db()
+            .lock()
+            .map_err(|e| format!("db error: {e}"))?;
+        let row = crate::db::metadata::agent_config::get(&conn, agent_config_id)
+            .map_err(|e| format!("db error: {e}"))?
+            .ok_or_else(|| format!("agent config {agent_config_id} not found"))?;
+        drop(conn);
+        AgentConfig::from_row(&row).map_err(|e| format!("{e}"))
+    }
+
     
 
     /// 从缓存移除并返回 Agent（ownership 转移，适合取出后异步执行）。

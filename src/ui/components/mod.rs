@@ -6,3 +6,4 @@ pub mod error;
 pub mod input_bar;
 pub mod settings_panel;
 pub mod sidebar;
+pub mod sql_panel;

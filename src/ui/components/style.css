@@ -1740,6 +1740,18 @@ body {
   opacity: 0.5;
 }
 
+/* ── Agent config dropdown container ── */
+.agent-config-dropdown {
+  flex: 0 0 auto;
+  min-width: 180px;
+  max-width: 320px;
+}
+
+.agent-config-dropdown.is-disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
 /* ── Mode toggle pills (Hallmark · Lumen) ── */
 .mode-toggle-row {
   display: flex;
@@ -2714,6 +2726,7 @@ body {
   right: 0;
   z-index: calc(var(--z-dropdown) + 1);
   min-width: 100%;
+  max-width: min(360px, 80vw);
   background: var(--color-paper-2);
   border: 1px solid var(--color-rule-2);
   border-radius: var(--radius-md);
@@ -2724,6 +2737,12 @@ body {
   gap: 1px;
   max-height: min(320px, 40vh);
   overflow-y: auto;
+}
+
+/* 向上弹出 */
+.dropdown-panel--up {
+  top: auto;
+  bottom: calc(100% + 4px);
 }
 
 /* 选项行 */
@@ -2740,12 +2759,18 @@ body {
   line-height: 1.5;
   cursor: pointer;
   user-select: none;
+  overflow: hidden;
+  white-space: nowrap;
   transition: background var(--dur-fast) var(--ease-out),
               color var(--dur-fast) var(--ease-out);
 }
 
 .dropdown-option-label {
   text-transform: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .dropdown-option:hover {
@@ -2768,6 +2793,185 @@ body {
 
 .dropdown-option.is-selected .dropdown-option-check {
   opacity: 1;
+}
+
+/* ── Dropdown 搜索框 ── */
+.dropdown-search-wrap {
+  padding: var(--space-xs) var(--space-xs) 0;
+  border-bottom: 1px solid var(--color-rule);
+  margin-bottom: var(--space-2xs);
+}
+
+.dropdown-search-input {
+  width: 100%;
+  padding: var(--space-2xs) var(--space-xs);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-sm, 4px);
+  background: var(--color-paper-3);
+  color: var(--color-ink);
+  font-family: var(--font-body);
+  font-size: var(--text-xs);
+  outline: none;
+  transition: border-color var(--dur-fast) var(--ease-out);
+  box-sizing: border-box;
+}
+
+.dropdown-search-input:focus {
+  border-color: var(--color-accent);
+}
+
+.dropdown-search-input::placeholder {
+  color: var(--color-ink-4);
+}
+
+.dropdown-empty {
+  padding: var(--space-sm) var(--space-xs);
+  color: var(--color-ink-4);
+  font-size: var(--text-xs);
+  text-align: center;
+}
+
+/* ── SQL 面板 ── */
+.sql-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.sql-input {
+  width: 100%;
+  padding: var(--space-sm);
+  border: 1px solid var(--color-rule-2);
+  border-radius: var(--radius-sm);
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  resize: vertical;
+  outline: none;
+  transition: border-color var(--dur-fast) var(--ease-out);
+  box-sizing: border-box;
+}
+
+.sql-input:focus {
+  border-color: var(--color-accent);
+}
+
+.sql-actions {
+  display: flex;
+  gap: var(--space-xs);
+}
+
+.sql-error {
+  margin-top: var(--space-sm);
+  padding: var(--space-sm);
+  border: 1px solid var(--color-error);
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklch, var(--color-error) 10%, transparent);
+  color: var(--color-error);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+
+.sql-result {
+  margin-top: var(--space-md);
+}
+
+.sql-meta {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-ink-3);
+  display: flex;
+  gap: var(--space-md);
+  margin-bottom: var(--space-xs);
+}
+
+.sql-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-sm);
+}
+
+.sql-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.sql-table th {
+  padding: var(--space-xs) var(--space-sm);
+  background: var(--color-paper-3);
+  color: var(--color-ink-2);
+  text-align: left;
+  font-weight: 600;
+  border-bottom: 2px solid var(--color-rule-2);
+  white-space: nowrap;
+}
+
+.sql-table td {
+  padding: var(--space-2xs) var(--space-sm);
+  border-bottom: 1px solid var(--color-rule);
+  color: var(--color-ink);
+  white-space: nowrap;
+  max-width: 400px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sql-table tbody tr:hover {
+  background: var(--color-paper-2);
+}
+
+.sql-cell-null {
+  color: var(--color-ink-4);
+  font-style: italic;
+}
+
+.sql-count {
+  margin-top: var(--space-xs);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-ink-3);
+}
+
+/* ── SQL 表列表 ── */
+.sql-table-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2xs);
+  margin-bottom: var(--space-md);
+  padding: var(--space-xs);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-sm);
+  min-height: 32px;
+  align-items: center;
+}
+
+.sql-table-list:empty::after {
+  content: "no tables found";
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-ink-4);
+}
+
+/* ── SQL 分页 ── */
+.sql-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-md);
+  margin-top: var(--space-sm);
+  padding: var(--space-xs) 0;
+}
+
+.sql-page-info {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-ink-2);
 }
 
 .settings-input--narrow {

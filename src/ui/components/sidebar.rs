@@ -153,6 +153,7 @@ pub fn Sidebar(
                         SettingsTab::AgentConfigs,
                         SettingsTab::General,
                         SettingsTab::Appearance,
+                        SettingsTab::Sql,
                     ];
                     let ct = current_tab.clone();
                     rsx! {

@@ -1,0 +1,114 @@
+// ── Agent 配置 CRUD ──
+
+use rusqlite::{params, Connection, Result};
+
+/// 数据库行
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentConfigRow {
+    pub id: String,
+    pub name: String,
+    pub agent_type: String,       // "general" | "frontend-design" | "library-design"
+    pub provider_instance_id: String,
+    pub model: String,
+    pub base_url: String,         // 保存时从 provider 自动填充
+    pub api_key: String,          // 保存时从 provider instance 自动填充
+    pub system_prompt: String,
+    pub temperature: f64,
+    pub max_tokens: Option<u32>,
+    pub tools: String,            // JSON 数组: ["Bash","ReadFile",...]  空数组 = 全部
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// 插入一条 agent 配置
+pub fn insert(conn: &Connection, row: &AgentConfigRow) -> Result<()> {
+    conn.execute(
+        "INSERT INTO agent_configs (id, name, agent_type, provider_instance_id, model,
+         base_url, api_key, system_prompt, temperature, max_tokens, tools, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        params![
+            row.id, row.name, row.agent_type, row.provider_instance_id, row.model,
+            row.base_url, row.api_key, row.system_prompt, row.temperature, row.max_tokens, row.tools,
+            row.created_at, row.updated_at,
+        ],
+    )?;
+    Ok(())
+}
+
+/// 更新一条 agent 配置
+pub fn update(conn: &Connection, row: &AgentConfigRow) -> Result<()> {
+    conn.execute(
+        "UPDATE agent_configs SET name=?1, agent_type=?2, provider_instance_id=?3, model=?4,
+         base_url=?5, api_key=?6, system_prompt=?7, temperature=?8, max_tokens=?9, tools=?10, updated_at=?11
+         WHERE id=?12",
+        params![
+            row.name, row.agent_type, row.provider_instance_id, row.model,
+            row.base_url, row.api_key, row.system_prompt, row.temperature, row.max_tokens, row.tools,
+            row.updated_at, row.id,
+        ],
+    )?;
+    Ok(())
+}
+
+/// 删除一条 agent 配置
+pub fn delete(conn: &Connection, id: &str) -> Result<()> {
+    conn.execute("DELETE FROM agent_configs WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
+/// 获取单个 agent 配置
+pub fn get(conn: &Connection, id: &str) -> Result<Option<AgentConfigRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, agent_type, provider_instance_id, model,
+         base_url, api_key, system_prompt, temperature, max_tokens, tools, created_at, updated_at
+         FROM agent_configs WHERE id = ?1"
+    )?;
+    let mut rows = stmt.query_map(params![id], |row| {
+        Ok(AgentConfigRow {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            agent_type: row.get(2)?,
+            provider_instance_id: row.get(3)?,
+            model: row.get(4)?,
+            base_url: row.get(5)?,
+            api_key: row.get(6)?,
+            system_prompt: row.get(7)?,
+            temperature: row.get(8)?,
+            max_tokens: row.get(9)?,
+            tools: row.get(10)?,
+            created_at: row.get(11)?,
+            updated_at: row.get(12)?,
+        })
+    })?;
+    match rows.next() {
+        Some(Ok(r)) => Ok(Some(r)),
+        _ => Ok(None),
+    }
+}
+
+/// 列出所有 agent 配置（按 updated_at 降序）
+pub fn list_all(conn: &Connection) -> Result<Vec<AgentConfigRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, agent_type, provider_instance_id, model,
+         base_url, api_key, system_prompt, temperature, max_tokens, tools, created_at, updated_at
+         FROM agent_configs ORDER BY updated_at DESC"
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(AgentConfigRow {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            agent_type: row.get(2)?,
+            provider_instance_id: row.get(3)?,
+            model: row.get(4)?,
+            base_url: row.get(5)?,
+            api_key: row.get(6)?,
+            system_prompt: row.get(7)?,
+            temperature: row.get(8)?,
+            max_tokens: row.get(9)?,
+            tools: row.get(10)?,
+            created_at: row.get(11)?,
+            updated_at: row.get(12)?,
+        })
+    })?;
+    rows.collect()
+}

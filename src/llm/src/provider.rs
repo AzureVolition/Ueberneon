@@ -37,7 +37,7 @@ pub struct Message {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,        // tool result 消息的工具名
+    pub tool_name: Option<String>,        // tool result 消息的工具名
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub images: Vec<String>,         // data:image/...;base64,...
     /// 消息创建时间（LLM 返回/工具执行完毕的时间），用于 DB 排序

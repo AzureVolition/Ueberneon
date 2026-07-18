@@ -130,6 +130,7 @@ async fn read_stream(
             if let Some(ref content) = choice.delta.content {
                 if !content.is_empty() {
                     emitted = true;
+                    tracing::trace!(target: "llm", text_len = content.len(), "text delta");
                     let _ = tx.send(Ok(Chunk::Text(content.clone()))).await;
                 }
             }
@@ -138,6 +139,7 @@ async fn read_stream(
             if let Some(ref reasoning) = choice.delta.reasoning_content {
                 if !reasoning.is_empty() {
                     emitted = true;
+                    tracing::trace!(target: "llm", reasoning_len = reasoning.len(), "reasoning delta");
                     let _ = tx.send(Ok(Chunk::Reasoning {
                         text: reasoning.clone(),
                         signature: None,
@@ -148,9 +150,11 @@ async fn read_stream(
             // tool_calls (增量)
             for sse_tc in &choice.delta.tool_calls {
                 emitted = true;
+
+                // 累积 tool call 片段（用于在流结束时组装完整 ToolCall）
                 let acc = acc_tool_calls.entry(sse_tc.index).or_default();
 
-                // 首次出现：有 id → ToolCallStart
+                // 首次出现
                 if let Some(ref id) = sse_tc.id {
                     acc.id = id.clone();
                     let name = sse_tc.function.as_ref()
@@ -158,19 +162,21 @@ async fn read_stream(
                         .cloned()
                         .unwrap_or_default();
                     acc.name = name.clone();
+                    tracing::trace!(target: "llm", tool_index = sse_tc.index, tool_name = %name, "tool call start");
                     let _ = tx.send(Ok(Chunk::ToolCallStart {
                         id: acc.id.clone(),
                         name,
                     })).await;
                 }
 
-                // 参数增量（可能也带 name）
+                // 参数增量
                 if let Some(ref func) = sse_tc.function {
                     if let Some(ref name) = func.name {
                         acc.name = name.clone();
                     }
                     if let Some(ref args) = func.arguments {
                         acc.args.push_str(args);
+                        tracing::trace!(target: "llm", tool_index = sse_tc.index, args_len = args.len(), "tool call delta");
                         let _ = tx.send(Ok(Chunk::ToolCallDelta {
                             id: acc.id.clone(),
                             arguments: args.clone(),
@@ -200,6 +206,25 @@ async fn read_stream(
             let reasoning = u.completion_tokens_details.as_ref()
                 .and_then(|d| d.reasoning_tokens)
                 .unwrap_or(0);
+
+            // ── Usage 日志 ──
+            let cache_hit_rate = if cache_hit + cache_miss > 0 {
+                (cache_hit * 100 / (cache_hit + cache_miss)) as u32
+            } else {
+                0
+            };
+            tracing::info!(
+                target: "llm",
+                prompt_tokens = u.prompt_tokens,
+                completion_tokens = u.completion_tokens,
+                total_tokens = u.total_tokens,
+                cache_hit = cache_hit,
+                cache_miss = cache_miss,
+                cache_hit_rate = cache_hit_rate,
+                reasoning_tokens = reasoning,
+                finish_reason = %finish_reason,
+                "llm usage (hit_rate: {cache_hit_rate}%)",
+            );
 
             let _ = tx.send(Ok(Chunk::Usage(Usage {
                 prompt_tokens: u.prompt_tokens,

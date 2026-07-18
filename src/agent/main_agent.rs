@@ -84,8 +84,19 @@ impl Agent {
         let mut final_reasoning = String::new();
         let mut cancelled = false;
 
+        let mut round = 0u32;
         loop {
+            round += 1;
             let mut have_tool_calls = false;
+
+            // Agent 回合日志
+            tracing::debug!(
+                target: "agent",
+                round,
+                messages = self.messages.len(),
+                tools = self.registry.schemas().len(),
+                "agent round"
+            );
 
             let req = Request {
                 messages: self.messages.clone(),
@@ -260,7 +271,7 @@ impl Agent {
                     let tool_message = Message {
                         role: LlmRole::Tool,
                         content: Some(match &result { Ok(tr) => tr.output.clone(), Err(e) => format!("error: {e}") }),
-                        tool_call_id: Some(tool_call.id.clone()), name: Some(tool_name),
+                        tool_call_id: Some(tool_call.id.clone()), tool_name: Some(tool_name),
                         timestamp: Some(chrono::Utc::now()),
                         ..Default::default()
                     };
@@ -275,7 +286,7 @@ impl Agent {
 
         // ── 更新对话时间 ──
         if let Ok(conn) = crate::db::get_db().lock() {
-            self.touch_conversation(&conn).ok();
+            if let Err(e) = self.touch_conversation(&conn) { tracing::error!(target:"db", error=%e, "touch conversation"); }
         }
 
         self.hook_register.emit(&AgentEvent::Stop { reason: if cancelled { "cancelled" } else { "completed" }.into() });

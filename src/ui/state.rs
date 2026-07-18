@@ -17,6 +17,7 @@ pub enum SettingsTab {
     AgentConfigs,
     General,
     Appearance,
+    Sql,
 }
 
 impl SettingsTab {
@@ -26,6 +27,7 @@ impl SettingsTab {
             SettingsTab::AgentConfigs => "agent configs",
             SettingsTab::General => "general",
             SettingsTab::Appearance => "appearance",
+            SettingsTab::Sql => "sql",
         }
     }
 
@@ -35,6 +37,7 @@ impl SettingsTab {
             SettingsTab::AgentConfigs => "⚙",
             SettingsTab::General => "◎",
             SettingsTab::Appearance => "◐",
+            SettingsTab::Sql => "📋",
         }
     }
 }

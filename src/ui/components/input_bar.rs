@@ -1,7 +1,10 @@
+use crate::ui::components::app::ErrorSignal;
 use dioxus::desktop::use_window;
 use dioxus::prelude::*;
 use std::time::Duration;
 use crate::agent::{ActionMode, AgentMode};
+use crate::db::metadata::agent_config::AgentConfigRow;
+use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 
 impl ActionMode {
     /// 用于 HTML option value 的键。
@@ -36,12 +39,20 @@ impl AgentMode {
     ];
 }
 
-/// 底部输入栏 —— 模式选择 + 多行输入框 + 发送/取消按钮
+/// 底部输入栏 —— 模式选择 + agent config 选择 + 多行输入框 + 发送/取消按钮
 #[component]
 pub fn InputBar(
     is_streaming: Signal<bool>,
     action_mode: Signal<ActionMode>,
     agent_mode: Signal<AgentMode>,
+    /// 可选 — 可用 agent 配置列表
+    agent_configs: Vec<AgentConfigRow>,
+    /// 当前选中的 agent config id
+    selected_agent_config_id: String,
+    /// 切换 agent config 回调
+    on_agent_config_change: EventHandler<String>,
+    /// 是否禁用 config 选择（已有固定配置的对话）
+    config_disabled: bool,
     on_send: EventHandler<String>,
     on_cancel: EventHandler<()>,
 ) -> Element {
@@ -52,6 +63,7 @@ pub fn InputBar(
     let desktop = use_window();
     let desktop_kb = desktop.clone();
     let desktop_btn = desktop.clone();
+    let error_signal = use_context::<Signal<ErrorSignal>>();
 
     let mut on_input = move |evt: FormEvent| {
         let val = evt.value();
@@ -71,6 +83,23 @@ pub fn InputBar(
             });
         }
     };
+
+    // 构建 agent config 下拉选项
+    let agent_options: Vec<DropdownOption> = if agent_configs.is_empty() {
+        vec![DropdownOption {
+            value: String::new(),
+            label: "— no config —".into(),
+        }]
+    } else {
+        agent_configs.iter().map(|cfg| {
+            DropdownOption {
+                value: cfg.id.clone(),
+                label: format!("{} · {}", cfg.name, cfg.model),
+            }
+        }).collect()
+    };
+
+    let no_agent_configs = agent_configs.is_empty();
 
     rsx! {
         div {
@@ -118,6 +147,26 @@ pub fn InputBar(
                                 onclick: move |_| agent_mode.set(*mode),
                                 "{mode}"
                             }
+                        }
+                    }
+                }
+
+                // ── Agent config 选择 ──
+                div {
+                    class: "mode-toggle-group",
+                    label {
+                        class: "mode-toggle-label",
+                        "config"
+                    }
+                    // 使用搜索版 Dropdown；没有可用配置时禁用交互
+                    div {
+                        class: if running || config_disabled { "agent-config-dropdown is-disabled" } else { "agent-config-dropdown" },
+                        Dropdown {
+                            value: selected_agent_config_id,
+                            onchange: move |val: String| on_agent_config_change.call(val),
+                            options: agent_options,
+                            placeholder: if no_agent_configs { "— no config —" } else { "— select —" },
+                            searchable: Some(true),
                         }
                     }
                 }
