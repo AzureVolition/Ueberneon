@@ -39,7 +39,12 @@ pub fn init_db() -> Result<Connection> {
         std::fs::create_dir_all(parent).ok();
     }
 
-    let conn = Connection::open(&path)?;
+    let mut conn = Connection::open(&path)?;
+
+    // ── SQL 日志 ──
+    conn.trace(Some(|sql| {
+        tracing::debug!("[SQL] {sql}");
+    }));
 
     // WAL 模式：写入性能好，且允许并发读取
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
@@ -110,6 +115,22 @@ pub fn init_db() -> Result<Connection> {
             api_key         TEXT NOT NULL DEFAULT '',
             sort_order      INTEGER NOT NULL DEFAULT 0,
             created_at      TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS agent_configs (
+            id                  TEXT PRIMARY KEY,
+            name                TEXT NOT NULL,
+            agent_type          TEXT NOT NULL DEFAULT 'general',
+            provider_instance_id TEXT NOT NULL DEFAULT '',
+            model               TEXT NOT NULL DEFAULT '',
+            base_url            TEXT NOT NULL DEFAULT '',
+            api_key             TEXT NOT NULL DEFAULT '',
+            system_prompt       TEXT NOT NULL DEFAULT '',
+            temperature         REAL NOT NULL DEFAULT 0.7,
+            max_tokens          INTEGER,
+            tools               TEXT NOT NULL DEFAULT '[]',
+            created_at          TEXT NOT NULL,
+            updated_at          TEXT NOT NULL
         );"
     )?;
 

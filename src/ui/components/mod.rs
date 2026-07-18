@@ -1,6 +1,8 @@
+pub mod agent_config_panel;
 pub mod app;
-pub mod sidebar;
 pub mod chat_panel;
-pub mod input_bar;
+pub mod dropdown;
 pub mod error;
+pub mod input_bar;
 pub mod settings_panel;
+pub mod sidebar;

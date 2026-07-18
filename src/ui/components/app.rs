@@ -9,6 +9,9 @@ use crate::ui::components::chat_panel::ChatPanel;
 use crate::ui::components::input_bar::InputBar;
 use crate::ui::components::sidebar::Sidebar;
 use crate::ui::components::settings_panel::SettingsPanel;
+use crate::ui::state::*;
+use crate::ui::state::SettingsTab;
+use crate::settings;
 use crate::ui::components::error::{ErrorSignal, ErrorModal, ErrorBanner, ErrorToast, ErrorInfo, ErrorSeverity, ErrorSource};
 use crate::ui::state::*;
 use crate::agent::main_agent_prompt;
@@ -132,6 +135,11 @@ fn init_agent_from_first_instance() {
                 model,
                 base_url: prov.base_url,
                 api_key,
+                system_prompt: String::new(),
+                temperature: 0.7,
+                max_tokens: None,
+                agent_type: "general".to_string(),
+                enabled_tools: Vec::new(),
             });
         }
     }
@@ -193,7 +201,6 @@ pub fn App() -> Element {
                         id: c.id, title: c.title, messages: Vec::new(), updated_at: c.updated_at,
                         message_count: c.message_count as usize,
                     }).collect();
-                    crate::db::metadata::project::touch(&conn, &project_id).ok();
                 }
                 drop(projs);
             }
@@ -226,10 +233,6 @@ pub fn App() -> Element {
         active_conversation_id.set(String::new());
         messages.set(Vec::new());
         streaming_segments.set(Vec::new());
-    };
-
-    let on_open_settings = move |_| {
-        sidebar_view.set(SidebarView::Settings);
     };
 
     let on_new_project = move |(name, path): (String, String)| {
@@ -286,8 +289,6 @@ pub fn App() -> Element {
     let on_select_conversation = {
         let ss = streaming_states.clone();
         move |conv_id: String| {
-            let proj_id = active_project_id.read().clone()
-                .unwrap_or_else(|| crate::db::DEFAULT_PROJECT_ID.to_string());
             active_conversation_id.set(conv_id.clone());
 
             let mut msgs: Vec<UiMessage> = {
@@ -300,9 +301,6 @@ pub fn App() -> Element {
                 msgs.push(streaming.clone());
             }
             messages.set(msgs);
-            if let Ok(conn) = crate::db::get_db().lock() {
-                crate::db::metadata::project::touch(&conn, &proj_id).ok();
-            }
         }
     };
 
@@ -375,9 +373,35 @@ pub fn App() -> Element {
     };
 
     rsx! {
+        // ── 动态外观 CSS 变量 ──
+        {
+            let a = settings::get().appearance;
+            let fs = match a.font_size.as_str() {
+                "xs" => "0.8125rem",
+                "sm" => "0.875rem",
+                "md" => "1rem",
+                "lg" => "1.125rem",
+                "xl" => "1.25rem",
+                _ => "1rem",
+            };
+            let cf = match a.code_font.as_str() {
+                "jetbrains-mono" => "\"JetBrains Mono\",\"SF Mono\",monospace",
+                "geist-mono" => "\"Geist Mono\",\"SF Mono\",monospace",
+                "ibm-plex-mono" => "\"IBM Plex Mono\",\"SF Mono\",monospace",
+                "commit-mono" => "\"Commit Mono\",\"SF Mono\",monospace",
+                _ => "\"JetBrains Mono\",\"SF Mono\",monospace",
+            };
+            let compact = if a.ui_density == "compact" { "--space-sm:0.5rem;--space-md:0.75rem;--space-lg:1rem;--space-xl:1.5rem;--space-2xl:2rem;" } else { "" };
+            rsx! {
+                style { ":root{{--text-base:{fs};--font-mono:{cf};{compact}}}" }
+            }
+        }
         style { {include_str!("style.css")} }
         div {
-            class: "app-container",
+            class: {
+                let d = settings::get().appearance.ui_density;
+                if d == "compact" { "app-container density-compact" } else { "app-container" }
+            },
             Sidebar {
                 projects,
                 active_project_id,
@@ -392,42 +416,61 @@ pub fn App() -> Element {
                 on_delete_project,
                 on_delete_conversation,
                 on_change_indicator_color,
-                on_open_settings,
             }
             div {
                 class: "main-area",
-                if sidebar_view() == SidebarView::Settings {
-                    SettingsPanel {
-                        on_change: move |_| {
-                            init_agent_from_first_instance();
-                        },
-                    }
-                } else {
-                    ChatPanel {
-                        messages,
-                        tick,
-                        is_streaming,
-                        markdown_to_html: markdown_to_html,
-                    on_approve: {
-                        let resp = approval_responder;
-                        move |(allowed,): (bool,)| {
-                            if let Some(tx) = resp.read().lock().unwrap_or_else(|e| e.into_inner()).take() {
-                                let _ = tx.send(allowed);
+                match sidebar_view() {
+                    SidebarView::Settings(ref tab) => {
+                        match tab {
+                            SettingsTab::Providers | SettingsTab::General | SettingsTab::Appearance => {
+                                rsx! {
+                                    SettingsPanel {
+                                        tab: tab.clone(),
+                                        on_change: move |_| {
+                                            init_agent_from_first_instance();
+                                        },
+                                    }
+                                }
                             }
-                            pending_approval.set(None);
+                            SettingsTab::AgentConfigs => {
+                                rsx! {
+                                    SettingsPanel {
+                                        tab: SettingsTab::AgentConfigs,
+                                        on_change: move |_| {
+                                            init_agent_from_first_instance();
+                                        },
+                                    }
+                                }
+                            }
                         }
-                    },
-                }
-                InputBar {
-                    is_streaming,
-                    action_mode,
-                    agent_mode,
-                    on_cancel: move |_| {
-                        if let Some(ref token) = *cancel_token.read() {
-                            token.cancel();
+                    }
+                    _ => {
+                        rsx! {
+                            ChatPanel {
+                                messages,
+                                tick,
+                                is_streaming,
+                                markdown_to_html: markdown_to_html,
+                            on_approve: {
+                                let resp = approval_responder;
+                                move |(allowed,): (bool,)| {
+                                    if let Some(tx) = resp.read().lock().unwrap_or_else(|e| e.into_inner()).take() {
+                                        let _ = tx.send(allowed);
+                                    }
+                                    pending_approval.set(None);
+                                }
+                            },
                         }
-                    },
-                    on_send: {
+                        InputBar {
+                            is_streaming,
+                            action_mode,
+                            agent_mode,
+                            on_cancel: move |_| {
+                                if let Some(ref token) = *cancel_token.read() {
+                                    token.cancel();
+                                }
+                            },
+                            on_send: {
                         let cache = AgentManager::get();
                         let projs = projects;
                         let err_sig = error_signal;
@@ -539,9 +582,11 @@ pub fn App() -> Element {
                             });
                         }
                     },
-                }
-            }
-            }
+                }  // ← InputBar
+            }  // ← rsx!
+            }  // ← _ => arm
+            }  // ← match
+            }  // ← main-area
 
             if let Some(ref err) = error_signal.read().modal.clone() {
                 ErrorModal { error: err.clone(), on_dismiss: move |_| error_signal.write().dismiss_modal() }

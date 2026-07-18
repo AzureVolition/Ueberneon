@@ -1,6 +1,7 @@
 use dioxus::prelude::*;
 
 use crate::ui::state::*;
+use crate::ui::state::SettingsTab;
 
 /// 侧边栏 —— 项目列表 / 对话列表双视图
 #[component]
@@ -18,7 +19,6 @@ pub fn Sidebar(
     on_delete_project: EventHandler<String>,
     on_delete_conversation: EventHandler<String>,
     on_change_indicator_color: EventHandler<(String, String)>,
-    on_open_settings: EventHandler<()>,
 ) -> Element {
     // ── 新建项目表单状态 ──
     let mut show_new_project_form = use_signal(|| false);
@@ -147,8 +147,14 @@ pub fn Sidebar(
             {conv_menu_overlay}
 
             match view {
-                SidebarView::Settings => {
-                    // Settings 视图由 main-area 渲染，sidebar 仅显示返回入口
+                SidebarView::Settings(ref current_tab) => {
+                    let tabs = [
+                        SettingsTab::Providers,
+                        SettingsTab::AgentConfigs,
+                        SettingsTab::General,
+                        SettingsTab::Appearance,
+                    ];
+                    let ct = current_tab.clone();
                     rsx! {
                         div {
                             class: "sidebar-header",
@@ -157,6 +163,25 @@ pub fn Sidebar(
                                 onclick: move |_| on_back_to_projects.call(()),
                                 span { class: "sidebar-nav-label", "projects /" }
                                 span { class: "sidebar-nav-project", "settings" }
+                            }
+                        }
+                        div { class: "sidebar-nav-section",
+                            for tab in tabs {
+                                {
+                                    let is_active = ct == tab;
+                                    let t = tab.clone();
+                                    rsx! {
+                                        div {
+                                            class: if is_active { "sidebar-nav-item active" } else { "sidebar-nav-item" },
+                                            onclick: move |_| sidebar_view.set(SidebarView::Settings(t.clone())),
+                                            span { class: "sidebar-nav-item-icon", "{t.icon()}" }
+                                            span { "{t.label()}" }
+                                            if is_active {
+                                                span { class: "sidebar-nav-item-indicator" }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -438,17 +463,19 @@ pub fn Sidebar(
                 }
             }
 
-            // ── Settings footer ──
-            div {
-                class: "sidebar-settings-row",
-                onclick: move |_| on_open_settings.call(()),
-                span {
-                    class: "sidebar-settings-icon",
-                    "⚙"
-                }
-                span {
-                    class: "sidebar-settings-label",
-                    "settings"
+            // ── Settings footer (hidden when in settings view) ──
+            if !matches!(sidebar_view(), SidebarView::Settings(_)) {
+                div {
+                    class: "sidebar-settings-row",
+                    onclick: move |_| sidebar_view.set(SidebarView::Settings(SettingsTab::Providers)),
+                    span {
+                        class: "sidebar-settings-icon",
+                        "⚙"
+                    }
+                    span {
+                        class: "sidebar-settings-label",
+                        "settings"
+                    }
                 }
             }
         }

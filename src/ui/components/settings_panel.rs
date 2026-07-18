@@ -8,6 +8,12 @@ use dioxus::prelude::*;
 use crate::db::metadata::provider::{self, ProviderRow};
 use crate::db::metadata::provider_instance::{self, ProviderInstanceRow};
 use crate::db::provider_presets::{self, ProviderPreset};
+use crate::db::metadata::agent_config;
+use crate::settings;
+use crate::agent::{ActionMode, AgentMode};
+use crate::ui::components::dropdown::{Dropdown, DropdownOption};
+use crate::ui::components::agent_config_panel::AgentConfigPanel;
+use crate::ui::state::SettingsTab;
 
 fn encode_key(key: &str) -> String {
     use base64::Engine;
@@ -31,6 +37,7 @@ fn gen_id() -> String {
 
 #[component]
 pub fn SettingsPanel(
+    tab: SettingsTab,
     on_change: EventHandler<()>,
 ) -> Element {
     // ── DB 数据 ──
@@ -242,16 +249,31 @@ pub fn SettingsPanel(
 
     rsx! {
         div { class: "settings-panel",
-            div { class: "settings-header",
-                h2 { class: "settings-title", "providers" }
-                span { class: "settings-subtitle",
-                    "connected LLM services — add a provider instance to get started"
-                }
-            }
-
-            div { class: "settings-section",
-                // ── 添加按钮（顶部）──
-                if adding {
+            match tab {
+                SettingsTab::Providers => {
+                    rsx! {
+                        div { class: "settings-header",
+                            h2 { class: "settings-title", "provider instances" }
+                            span { class: "settings-subtitle", "manage LLM service connections" }
+                        }
+                        div { class: "settings-section",
+                            // ── 添加按钮（顶部）──
+                            if adding {
+                                div {
+                                    class: "settings-modal-backdrop",
+                                    onclick: move |_| show_add_form.set(false),
+                                    div {
+                                        class: "settings-modal-panel",
+                                        onclick: move |evt| evt.stop_propagation(),
+                                        div { class: "settings-modal-header",
+                                            span { class: "settings-modal-title", "add provider instance" }
+                                            button {
+                                                class: "settings-modal-close",
+                                                onclick: move |_| { show_add_form.set(false); add_step.set(AddStep::SelectProvider); add_alias.set(String::new()); add_key.set(String::new()); custom_id.set(String::new()); custom_name.set(String::new()); custom_url.set(String::new()); },
+                                                "✕"
+                                            }
+                                        }
+                                        div { class: "settings-modal-body",
                     div { class: "provider-form",
                         if add_step() == AddStep::SelectProvider {
                             // 第一步：选择预设或自定义
@@ -377,6 +399,9 @@ pub fn SettingsPanel(
                                 }
                             }
                         }
+                            }
+                        }
+                    }
                     }
                 } else {
                     button {
@@ -529,6 +554,167 @@ pub fn SettingsPanel(
                     div { class: "provider-empty-state",
                         span { "no provider instances yet" }
                         span { style: "color: var(--color-ink-4); font-size: var(--text-sm);", "click \"+ add provider instance\" to connect your first LLM service" }
+                    }
+                }
+                    }
+                }
+            }
+                SettingsTab::AgentConfigs => {
+                    rsx! {
+                        div { class: "settings-header",
+                            h2 { class: "settings-title", "agent configs" }
+                            span { class: "settings-subtitle", "manage agent profiles and tool permissions" }
+                        }
+                        div { class: "settings-section",
+                            AgentConfigPanel { }
+                        }
+                    }
+                }
+                SettingsTab::General => {
+                    let all_agent_configs = {
+                        let conn = crate::db::get_db().lock().unwrap();
+                        agent_config::list_all(&conn).unwrap_or_default()
+                    };
+                    let s = settings::get().general;
+                    let current_agent_id = s.default_agent_config_id.clone();
+                    let current_action_mode = s.default_action_mode.clone();
+                    let current_agent_mode = s.default_agent_mode.clone();
+
+                    // Build dropdown options
+                    let mut default_agent_opts = vec![DropdownOption { value: String::new(), label: "— none —".into() }];
+                    for cfg in &all_agent_configs {
+                        default_agent_opts.push(DropdownOption {
+                            value: cfg.id.clone(),
+                            label: cfg.name.clone(),
+                        });
+                    }
+                    let action_mode_opts = vec![
+                        DropdownOption { value: "regular".into(), label: "regular — all tools available".into() },
+                        DropdownOption { value: "plan".into(), label: "plan — read-only tools only".into() },
+                    ];
+                    let agent_mode_opts = vec![
+                        DropdownOption { value: "cautious".into(), label: "cautious — all writes require approval".into() },
+                        DropdownOption { value: "ask".into(), label: "ask — prompt on non-read operations".into() },
+                        DropdownOption { value: "auto".into(), label: "auto — automatic approval for safe operations".into() },
+                        DropdownOption { value: "unleashed".into(), label: "unleashed — full autonomy".into() },
+                    ];
+
+                    rsx! {
+                        div { class: "settings-header",
+                            h2 { class: "settings-title", "general" }
+                            span { class: "settings-subtitle", "default preferences for new sessions" }
+                        }
+                        div { class: "settings-section",
+                            div { class: "settings-field",
+                                label { class: "settings-field-label", "default agent" }
+                                Dropdown {
+                                    value: current_agent_id,
+                                    options: default_agent_opts,
+                                    onchange: move |val| {
+                                        settings::update(|s| s.general.default_agent_config_id = val);
+                                    },
+                                }
+                            }
+                            div { class: "settings-field",
+                                label { class: "settings-field-label", "default action mode" }
+                                Dropdown {
+                                    value: current_action_mode,
+                                    options: action_mode_opts,
+                                    onchange: move |val| {
+                                        settings::update(|s| s.general.default_action_mode = val);
+                                    },
+                                }
+                            }
+                            div { class: "settings-field",
+                                label { class: "settings-field-label", "default agent mode" }
+                                Dropdown {
+                                    value: current_agent_mode,
+                                    options: agent_mode_opts,
+                                    onchange: move |val| {
+                                        settings::update(|s| s.general.default_agent_mode = val);
+                                    },
+                                }
+                            }
+                        }
+                    }
+                }
+                SettingsTab::Appearance => {
+                    let s = settings::get().appearance;
+                    let mut current_font = use_signal(||s.font_size.clone());
+                    let mut current_code = use_signal(||s.code_font.clone());
+                    let mut current_density = use_signal(||s.ui_density.clone());
+
+                    let font_options = [
+                        ("xs", "xs (12px)"),
+                        ("sm", "sm (14px)"),
+                        ("md", "md (16px)"),
+                        ("lg", "lg (18px)"),
+                        ("xl", "xl (20px)"),
+                    ];
+                    let code_fonts = [
+                        ("jetbrains-mono", "JetBrains Mono"),
+                        ("geist-mono", "Geist Mono"),
+                        ("ibm-plex-mono", "IBM Plex Mono"),
+                        ("commit-mono", "Commit Mono"),
+                    ];
+
+                    rsx! {
+                        div { class: "settings-header",
+                            h2 { class: "settings-title", "appearance" }
+                            span { class: "settings-subtitle", "theme, typography, and density" }
+                        }
+                        div { class: "settings-section",
+                            div { class: "settings-field",
+                                label { class: "settings-field-label", "font size" }
+                                div { class: "mode-pill-row",
+                                    for (key, label) in font_options {
+                                        button {
+                                            class: if current_font.read().as_str() == key { "mode-pill is-active" } else { "mode-pill" },
+                                            onclick: {
+                                                let k = key.to_string();
+                                                move |_| {
+                                                    settings::update(|s| s.appearance.font_size = k.clone());
+                                                    current_font.set(k.clone());
+                                                }
+                                            },
+                                            "{label}"
+                                        }
+                                    }
+                                }
+                            }
+                            div { class: "settings-field",
+                                label { class: "settings-field-label", "code font" }
+                                Dropdown {
+                                    value: current_code.read().clone(),
+                                    options: code_fonts.iter().map(|(key, label)| DropdownOption {
+                                        value: key.to_string(),
+                                        label: label.to_string(),
+                                    }).collect(),
+                                    onchange: move |val: String| {
+                                        settings::update(|s| s.appearance.code_font = val.clone());
+                                        current_code.set(val);
+                                    },
+                                }
+                            }
+                            div { class: "settings-field",
+                                label { class: "settings-field-label", "ui density" }
+                                div { class: "mode-pill-row",
+                                    button {
+                                        class: if current_density.read().as_str() == "comfortable" { "mode-pill is-active" } else { "mode-pill" },
+                                        onclick: move |_| settings::update(|s| s.appearance.ui_density = "comfortable".into()),
+                                        "comfortable"
+                                    }
+                                    button {
+                                        class: if current_density.read().as_str() == "compact" { "mode-pill is-active" } else { "mode-pill" },
+                                        onclick: move |_| {
+                                            settings::update(|s| s.appearance.ui_density = "compact".into());
+                                            current_density.set("compact".into());
+                                        },
+                                        "compact"
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

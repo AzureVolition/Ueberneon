@@ -38,4 +38,4 @@ racpagent-macros = { path = "src/racpagent-macros" }
 dioxus = { version = "0.7", features = ["desktop"] }
 pulldown-cmark = "0.12"
 rfd = "0.15"
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.31", features = ["bundled", "trace"] }

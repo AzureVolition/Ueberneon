@@ -90,7 +90,7 @@ impl Agent {
             let req = Request {
                 messages: self.messages.clone(),
                 tools: self.registry.schemas(),
-                temperature: 0.7,
+                temperature: self.temperature,
                 max_tokens: 65536,
             };
 

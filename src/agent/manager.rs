@@ -22,6 +22,11 @@ pub struct AgentConfig {
     pub model: String,
     pub base_url: String,
     pub api_key: String,
+    pub system_prompt: String,
+    pub temperature: f64,
+    pub max_tokens: Option<u32>,
+    pub agent_type: String,
+    pub enabled_tools: Vec<String>,
 }
 
 static GLOBAL_CONFIG: OnceLock<RwLock<AgentConfig>> = OnceLock::new();
@@ -88,6 +93,19 @@ impl AgentManager {
 
         let project_path = PathBuf::from(project_row.path);
         register_builtins(&registry, &project_path);
+
+        // 如果配置了启用工具列表，移除未启用的工具
+        if !cfg.enabled_tools.is_empty() {
+            let all_schemas = registry.schemas();
+            let enabled_set: std::collections::HashSet<String> =
+                cfg.enabled_tools.iter().cloned().collect();
+            for schema in &all_schemas {
+                if !enabled_set.contains(&schema.name) {
+                    registry.remove_prefix(&schema.name);
+                }
+            }
+        }
+
         let hook_register = HookRegister::new();
 
         let mut agent = Agent::new(
@@ -99,9 +117,18 @@ impl AgentManager {
             project_path,
             project_id,
             conversation_id,
+            cfg.temperature,
+            cfg.max_tokens,
+            cfg.agent_type.clone(),
         );
-        if let Some(system_prompt) = system_prompt {
-            agent.init_history(system_prompt.to_string());
+        // 优先使用传入的 system_prompt，否则使用配置中的
+        let sp = system_prompt.map(|s| s.to_string())
+            .or_else(|| {
+                let s = cfg.system_prompt.trim().to_string();
+                if s.is_empty() { None } else { Some(s) }
+            });
+        if let Some(sp) = sp {
+            agent.init_history(sp);
         }
         Ok(agent)
     }

@@ -227,6 +227,12 @@ pub struct Agent {
     pub messages: Vec<Message>,
     /// 内部流式状态（由 create_streaming() 初始化）
     pub streaming_handle: Option<crate::model::StreamingState>,
+    /// 推理温度
+    pub temperature: f64,
+    /// 最大 token 数
+    pub max_tokens: Option<u32>,
+    /// Agent 类型
+    pub agent_type: String,
 }
 
 impl Agent {
@@ -240,6 +246,9 @@ impl Agent {
         project_path: PathBuf,
         project_id: Option<String>,
         conversation_id: String,
+        temperature: f64,
+        max_tokens: Option<u32>,
+        agent_type: String,
     ) -> Self {
         Self {
             provider,
@@ -252,6 +261,9 @@ impl Agent {
             conversation_id,
             messages: Vec::new(),
             streaming_handle: None,
+            temperature,
+            max_tokens,
+            agent_type,
         }
     }
 
