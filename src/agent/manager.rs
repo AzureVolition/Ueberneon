@@ -196,7 +196,7 @@ impl AgentManager {
         }
     }
 
-    fn init(&mut self, id: &str) -> Result<(), String> {
+    pub fn init(&mut self, id: &str) -> Result<(), String> {
         if self.agents.contains_key(id) {
             return Ok(());
         }
@@ -250,7 +250,6 @@ impl AgentManager {
 
     /// 从缓存移除并返回 Agent（ownership 转移，适合取出后异步执行）。
     pub fn remove(&mut self, id: &str) -> Option<Agent> {
-        self.init(id).ok();
         self.agents.remove(id)
     }
 

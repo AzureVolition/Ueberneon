@@ -31,7 +31,17 @@ pub async fn run_agent_loop(
     mut error_signal: Signal<ErrorSignal>,
 ) {
     is_streaming.set(true);
-
+    if let Err(e) = crate::agent::manager::AgentManager::get().lock()
+        .unwrap().init(&conversation_id){
+            error_signal.write().push(ErrorInfo::new(
+                "AGENT_ERROR",
+                "Agent init fail",
+                format!("{}", e),
+                ErrorSeverity::Warning,
+                ErrorSource::Agent,
+            ).with_detail(format!("{:#}", e)));
+            return;
+        }
     // 从 Manager 取出 Agent
     let mut agent = crate::agent::manager::AgentManager::get()
         .lock()
@@ -99,7 +109,7 @@ pub async fn run_agent_loop(
                         "AGENT_ERROR",
                         "Agent 执行失败",
                         format!("{}", e),
-                        ErrorSeverity::Fatal,
+                        ErrorSeverity::Warning,
                         ErrorSource::Agent,
                     ).with_detail(format!("{:#}", e)));
                 }
@@ -107,6 +117,7 @@ pub async fn run_agent_loop(
 
             is_streaming.set(false);
             streaming_project_id.set(None);
+            
             streaming_states.lock().unwrap().remove(&conversation_id);
             crate::agent::manager::AgentManager::get()
                 .lock()
