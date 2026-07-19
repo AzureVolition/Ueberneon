@@ -213,7 +213,8 @@ impl Tool for WriteFile {
 
         // 9. 返回成功消息
         let summary = diff::change_summary(&file_change);
-        Ok(ToolResult::ok(format!("wrote {}\n{}", path_str, summary)))
+        let diff_text = &file_change.unified_diff;
+        Ok(ToolResult::ok(format!("wrote {}\n{}\n\n{}", path_str, summary, diff_text)))
     }
 }
 

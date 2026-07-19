@@ -64,7 +64,14 @@ pub fn build_diff(path: &str, old_text: &str, new_text: &str, kind: Kind) -> Fil
         match kind {
             Kind::Create => diff_lines.push(format!("--- /dev/null\n+++ b/{}\n@@ -0,0 +1,{} @@", path_str, new_text.lines().count())),
             Kind::Delete => diff_lines.push(format!("--- a/{}\n+++ /dev/null\n@@ -1,{} +0,0 @@", path_str, old_text.lines().count())),
-            Kind::Modify => diff_lines.push(format!("--- a/{}\n+++ b/{}", path_str, path_str)),
+            Kind::Modify => {
+                let old_lines = old_text.lines().count();
+                let new_lines = new_text.lines().count();
+                diff_lines.push(format!(
+                    "--- a/{}\n+++ b/{}\n@@ -1,{} +1,{} @@\n",
+                    path_str, path_str, old_lines, new_lines
+                ));
+            }
         }
 
         for change in diff.iter_all_changes() {

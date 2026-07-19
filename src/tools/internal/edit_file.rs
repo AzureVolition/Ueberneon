@@ -188,7 +188,8 @@ impl Tool for EditFile {
         // 9. 返回成功消息
         let fuzzy_suffix = if result.fuzzy { " (fuzzy match)" } else { "" };
         let summary = diff::change_summary(&file_change);
-        Ok(ToolResult::ok(format!("edited {}{}\n{}", path_str, fuzzy_suffix, summary)))
+        let diff_text = &file_change.unified_diff;
+        Ok(ToolResult::ok(format!("edited {}{}\n{}\n\n{}", path_str, fuzzy_suffix, summary, diff_text)))
     }
 }
 

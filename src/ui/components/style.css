@@ -1363,20 +1363,126 @@ body {
   opacity: 1;
 }
 
-.tool-call-result {
+/* ── 展开区：Args / Result（markdown 渲染）── */
+.tool-call-section {
   background: oklch(6% 0.01 265);
-  border-radius: var(--radius-sm);
-  padding: var(--space-sm);
-  font-size: var(--text-xs);
-  max-height: 200px;
-  overflow: auto;
-  white-space: pre-wrap;
-  font-family: var(--font-mono);
-  color: var(--color-ink-2);
-  margin: 0;
   border: 1px solid var(--color-rule);
-  text-transform: none;
+  border-radius: var(--radius-sm);
+  padding: var(--space-xs) var(--space-sm);
+  margin: 0;
+}
+
+.tool-call-section-body {
+  font-size: var(--text-xs);
+  max-height: 240px;
+  overflow: auto;
+  color: var(--color-ink-2);
   line-height: 1.5;
+  text-transform: none;
+}
+.tool-call-section-body :is(pre, code) {
+  font-family: var(--font-mono);
+  font-size: inherit;
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  white-space: pre;
+  color: inherit;
+}
+.tool-call-section-body pre {
+  margin: var(--space-2xs) 0 var(--space-xs);
+}
+.tool-call-section-body pre:last-child {
+  margin-bottom: 0;
+}
+.tool-call-section-body :is(p, strong) {
+  color: var(--color-ink-3);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  margin: 0 0 2px;
+}
+
+/* ═══════════════════════════════════════════════
+   DIFF VIEW — write_file / edit_file 展开区
+   ═══════════════════════════════════════════════ */
+
+.diff-view {
+  background: oklch(6% 0.01 265);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-sm);
+  margin: 0;
+  overflow: hidden;
+}
+
+.diff-view-header {
+  padding: var(--space-2xs) var(--space-sm);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-ink-3);
+  opacity: 0.5;
+  border-bottom: 1px solid var(--color-rule);
+  line-height: 1.5;
+}
+
+.diff-view-body {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.55;
+  max-height: 280px;
+  overflow: auto;
+}
+
+.diff-row {
+  display: flex;
+  min-width: max-content;
+}
+.diff-row::before {
+  content: "";
+  flex: 0 0 auto;
+}
+
+.diff-num {
+  flex: 0 0 3ch;
+  padding: 0 8px 0 4px;
+  text-align: right;
+  user-select: none;
+  color: var(--color-ink-3);
+  opacity: 0.35;
+}
+.diff-text {
+  flex: 1;
+  white-space: pre;
+  padding-right: var(--space-sm);
+}
+
+.diff-add {
+  background: oklch(40% 0.08 150 / 0.22);
+}
+.diff-add .diff-text { color: oklch(72% 0.12 150); }
+.diff-del {
+  background: oklch(40% 0.15 25 / 0.25);
+}
+.diff-del .diff-text { color: oklch(72% 0.18 25); }
+.diff-ctx {
+  background: transparent;
+}
+.diff-hunk {
+  background: oklch(30% 0.01 265 / 0.3);
+  color: var(--color-ink-3);
+  font-size: 10px;
+  padding: 2px var(--space-sm);
+}
+
+/* diff 统计标签 */
+.tool-call-diff-stat {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  color: var(--color-accent);
+  margin: 0 var(--space-xs);
+  white-space: nowrap;
 }
 
 /* ═══════════════════════════════════════════════

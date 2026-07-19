@@ -34,7 +34,14 @@ pub fn ChatPanel(
                 _ => String::new(),
             };
             let preview: String = text.chars().take(60).collect();
-            (i, if text.chars().count() > 60 { format!("{preview}…") } else { preview })
+            (
+                i,
+                if text.chars().count() > 60 {
+                    format!("{preview}…")
+                } else {
+                    preview
+                },
+            )
         })
         .collect();
 
@@ -115,7 +122,10 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
     });
 
     let streaming_key = "streaming-bubble";
-    let awaiting_response = msgs.last().map(|m| matches!(m, UiMessage::Static(cm) if matches!(cm.role, Role::User))).unwrap_or(false);
+    let awaiting_response = msgs
+        .last()
+        .map(|m| matches!(m, UiMessage::Static(cm) if matches!(cm.role, Role::User)))
+        .unwrap_or(false);
 
     // 检查是否有正在等待审批的 tool call
     let has_approval_pending = msgs.iter().any(|m| {
@@ -274,7 +284,8 @@ fn render_segments(
                         ToolCallStatus::Denied(_) => "denied",
                         ToolCallStatus::AwaitingApproval { .. } => "needs approval",
                     };
-                    let is_approval = matches!(&call.status, ToolCallStatus::AwaitingApproval { .. });
+                    let is_approval =
+                        matches!(&call.status, ToolCallStatus::AwaitingApproval { .. });
                     let approval_reason = call.approval_reason.clone().unwrap_or_default();
                     let tool_name = call.tool_name.clone();
                     let args_summary = tool_args_summary(&call.tool_name, &call.args);
@@ -300,11 +311,36 @@ fn render_segments(
                             details { class: "tool-call-details {sc}",
                                 summary { class: "tool-call-summary",
                                     span { class: "tool-call-name", "{call.tool_name}" }
-                                    span { class: "tool-call-args", "{tool_args_summary(&call.tool_name, &call.args)}" }
+                                    if call.tool_name == "write_file" || call.tool_name == "edit_file" {
+                                        span { class: "tool-call-args", "{file_path_from_args(&call.args)}" }
+                                        if let Some(ref result) = call.result {
+                                            span { class: "tool-call-diff-stat", "{parse_diff_stat(result)}" }
+                                        }
+                                    } else {
+                                        span { class: "tool-call-args", "{tool_args_summary(&call.tool_name, &call.args)}" }
+                                    }
                                     span { class: "tool-call-status {sc}", "{status_text}" }
                                 }
-                                if let Some(ref result) = call.result {
-                                    pre { class: "tool-call-result", "{result}" }
+                                if call.tool_name == "WriteFile" || call.tool_name == "EditFile" {
+                                    if let Some(ref result) = call.result {
+                                        {render_diff_view(result)}
+                                    }
+                                } else {
+                                    div { class: "tool-call-section",
+                                        {
+                                            let mut md = format!("**Args**\n\n```json\n{}\n```",
+                                                serde_json::to_string_pretty(&call.args).unwrap_or_default());
+                                            if let Some(ref result) = call.result {
+                                                md.push_str(&format!("\n\n**Result**\n\n```\n{}\n```", result));
+                                            }
+                                            rsx! {
+                                                div {
+                                                    class: "tool-call-section-body",
+                                                    dangerous_inner_html: markdown_to_html(&md),
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -340,9 +376,183 @@ fn tool_args_summary(tool_name: &str, args: &serde_json::Value) -> String {
     };
     for key in keys {
         if let Some(val) = args.get(key) {
-            if let Some(s) = val.as_str() { if !s.is_empty() { return s.to_string(); } }
+            if let Some(s) = val.as_str() {
+                if !s.is_empty() {
+                    return s.to_string();
+                }
+            }
         }
     }
     let json = serde_json::to_string(args).unwrap_or_default();
-    if json.len() <= 60 { json } else { format!("{}…", &json[..57]) }
+    if json.len() <= 60 {
+        json
+    } else {
+        format!("{}…", &json[..57])
+    }
+}
+
+fn file_path_from_args(args: &serde_json::Value) -> String {
+    args.get("file_path")
+        .or_else(|| args.get("path"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("?")
+        .to_string()
+}
+
+/// 从 result 第一段提取 "+N -M" 统计
+fn parse_diff_stat(result: &str) -> String {
+    // 第二行格式: "/path modified (2 lines added, 1 lines removed)"
+    for line in result.lines().skip(1) {
+        if let Some(start) = line.find('(') {
+            if let Some(end) = line.rfind(')') {
+                let inner = &line[start + 1..end];
+                let stat: String = inner
+                    .replace("lines added", "+")
+                    .replace("lines removed", "-")
+                    .replace("line added", "+")
+                    .replace("line removed", "-")
+                    .replace(", ", " ");
+                if !stat.is_empty() {
+                    return stat;
+                }
+            }
+        }
+    }
+    String::new()
+}
+
+/// 解析 unified diff 并渲染为带行号和颜色标记的视图
+fn render_diff_view(result: &str) -> Element {
+    // 找到 diff 起始位置（"--- " 行）
+    let diff_start = result
+        .lines()
+        .position(|l| l.starts_with("--- ") || l.starts_with("@@"))
+        .unwrap_or(0);
+    let diff_lines: Vec<&str> = result.lines().skip(diff_start).collect();
+    if diff_lines.is_empty() {
+        return rsx! { div { class: "diff-view", pre { class: "diff-view-body", "{result}" } } };
+    }
+
+    // 跳过 "--- " 和 "+++ " 头部行，从 @@ 或实际 diff 行开始
+    let body_start = diff_lines
+        .iter()
+        .position(|l| l.starts_with("@@") || !l.starts_with("--- ") && !l.starts_with("+++ "))
+        .unwrap_or(0);
+    let header_lines = &diff_lines[..body_start];
+    let body_lines = &diff_lines[body_start..];
+
+    // 计算行号
+    let (mut old_line, mut new_line): (usize, usize) = (1, 1);
+    // 尝试从 @@ 行解析起始行号
+    if let Some(hunk) = body_lines.first() {
+        if let Some(start) = hunk.find("-") {
+            let rest = &hunk[start..];
+            if let Some(comma) = rest.find(',') {
+                if let Ok(n) = rest[1..comma].parse::<usize>() {
+                    old_line = n;
+                }
+            }
+            if let Some(plus) = rest.find('+') {
+                let after_plus = &rest[plus + 1..];
+                let after_plus = after_plus.split(&[',', ' '][..]).next().unwrap_or("1");
+                if let Ok(n) = after_plus.parse::<usize>() {
+                    new_line = n;
+                }
+            }
+        }
+    }
+
+    let mut rows: Vec<DiffRow> = Vec::new();
+    for line in body_lines {
+        if line.starts_with("@@") {
+            rows.push(DiffRow {
+                kind: DiffLineKind::Hunk,
+                old_num: None,
+                new_num: None,
+                text: line.to_string(),
+            });
+            continue;
+        }
+        let (kind, text) = if line.starts_with('+') {
+            (DiffLineKind::Add, &line[1..])
+        } else if line.starts_with('-') {
+            (DiffLineKind::Del, &line[1..])
+        } else if line.starts_with(' ') {
+            (DiffLineKind::Ctx, &line[1..])
+        } else {
+            (DiffLineKind::Ctx, &line[..])
+        };
+        let (on, nn) = match kind {
+            DiffLineKind::Add => {
+                let n = new_line;
+                new_line += 1;
+                (None, Some(n))
+            }
+            DiffLineKind::Del => {
+                let n = old_line;
+                old_line += 1;
+                (Some(n), None)
+            }
+            DiffLineKind::Ctx => {
+                let o = old_line;
+                let n = new_line;
+                old_line += 1;
+                new_line += 1;
+                (Some(o), Some(n))
+            }
+            DiffLineKind::Hunk => (None, None),
+        };
+        rows.push(DiffRow {
+            kind,
+            old_num: on,
+            new_num: nn,
+            text: text.to_string(),
+        });
+    }
+
+    rsx! {
+        div { class: "diff-view",
+            if !header_lines.is_empty() {
+                div { class: "diff-view-header",
+                    for line in header_lines {
+                        div { class: "diff-view-header-line", "{line}" }
+                    }
+                }
+            }
+            div { class: "diff-view-body",
+                for row in rows {
+                    div {
+                        class: "diff-row {row.kind.class_name()}",
+                        span { class: "diff-num diff-num-old", "{row.old_num.map_or(String::new(), |n| n.to_string())}" }
+                        span { class: "diff-num diff-num-new", "{row.new_num.map_or(String::new(), |n| n.to_string())}" }
+                        span { class: "diff-text", "{row.text}" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+enum DiffLineKind {
+    Add,
+    Del,
+    Ctx,
+    Hunk,
+}
+impl DiffLineKind {
+    fn class_name(&self) -> &'static str {
+        match self {
+            DiffLineKind::Add => "diff-add",
+            DiffLineKind::Del => "diff-del",
+            DiffLineKind::Ctx => "diff-ctx",
+            DiffLineKind::Hunk => "diff-hunk",
+        }
+    }
+}
+
+struct DiffRow {
+    kind: DiffLineKind,
+    old_num: Option<usize>,
+    new_num: Option<usize>,
+    text: String,
 }
