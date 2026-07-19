@@ -208,6 +208,7 @@ impl CheckableTool for Ls {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::sync::{Arc, Mutex};
     use std::sync::atomic::{AtomicU64, Ordering};
     use llm::tool::ToolMeta;
 
@@ -223,7 +224,7 @@ mod tests {
         ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            agent_mode: AgentMode::Ask,
+            agent_mode: Arc::new(Mutex::new(AgentMode::Ask)),
             progress: None,
         }
     }
@@ -344,7 +345,7 @@ mod tests {
     async fn default_path_is_dot() {
         let tool = test_ls();
         let result = tool.execute(
-            &ToolContext { call_id: "test".into(), plan_mode: ActionMode::Regular, agent_mode: AgentMode::Ask, progress: None },
+            &ToolContext { call_id: "test".into(), plan_mode: ActionMode::Regular, agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), progress: None },
             &serde_json::json!({}),
         ).await;
         // 应该成功列出当前目录

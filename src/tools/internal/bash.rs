@@ -11,7 +11,7 @@ use racpagent_macros::ToolMetaImpl;
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::common::env::EnvBuilder;
@@ -171,7 +171,7 @@ impl Tool for Bash {
 #[async_trait::async_trait]
 impl CheckableTool for Bash {
     fn check(&self, ctx: &ToolContext, args: &Value) -> Decision {
-        match self.check_permission(self.name(), args, ctx.agent_mode) {
+        match self.check_permission(self.name(), args, *ctx.agent_mode.lock().unwrap()) {
             Decision::Allow => {}
             decision => return decision,
         }
@@ -267,7 +267,7 @@ mod tests {
         let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            agent_mode: AgentMode::Ask,
+            agent_mode: Arc::new(Mutex::new(AgentMode::Ask)),
             progress: None,
         };
 
@@ -284,7 +284,7 @@ mod tests {
         let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            agent_mode: AgentMode::Ask,
+            agent_mode: Arc::new(Mutex::new(AgentMode::Ask)),
             progress: None,
         };
 
@@ -299,7 +299,7 @@ mod tests {
         let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            agent_mode: AgentMode::Ask,
+            agent_mode: Arc::new(Mutex::new(AgentMode::Ask)),
             progress: None,
         };
 
@@ -315,7 +315,7 @@ mod tests {
         let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            agent_mode: AgentMode::Ask,
+            agent_mode: Arc::new(Mutex::new(AgentMode::Ask)),
             progress: None,
         };
 
@@ -330,7 +330,7 @@ mod tests {
         let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            agent_mode: AgentMode::Ask,
+            agent_mode: Arc::new(Mutex::new(AgentMode::Ask)),
             progress: None,
         };
 
@@ -347,7 +347,7 @@ mod tests {
         let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Plan,
-            agent_mode: AgentMode::Ask,
+            agent_mode: Arc::new(Mutex::new(AgentMode::Ask)),
             progress: None,
         };
 
@@ -362,7 +362,7 @@ mod tests {
         let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Plan,
-            agent_mode: AgentMode::Ask,
+            agent_mode: Arc::new(Mutex::new(AgentMode::Ask)),
             progress: None,
         };
 

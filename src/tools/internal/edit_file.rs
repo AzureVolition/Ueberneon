@@ -5,7 +5,7 @@
 // 支持编码保留（UTF-8/16/GB18030 无损往返）。写前通过 checkpoint 记录快照。
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::agent::{ActionMode, Tool, ToolContext, ToolResult};
 use llm::tool::ToolMeta;
@@ -195,7 +195,7 @@ impl Tool for EditFile {
 #[async_trait::async_trait]
 impl CheckableTool for EditFile {
     fn check(&self, ctx: &ToolContext, args: &Value) -> Decision {
-        match self.check_permission(self.name(), args, ctx.agent_mode) {
+        match self.check_permission(self.name(), args, *ctx.agent_mode.lock().unwrap()) {
             Decision::Allow => {}
             decision => return decision,
         }
@@ -242,7 +242,7 @@ mod tests {
         ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            agent_mode: AgentMode::Ask,
+            agent_mode: Arc::new(Mutex::new(AgentMode::Ask)),
             progress: None,
         }
     }

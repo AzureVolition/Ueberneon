@@ -4,6 +4,7 @@
 // 内置 SSRF 防护：拒绝私有 IP、回环地址和链路本地地址。
 
 use crate::agent::{Tool, ToolContext, ToolResult};
+use std::sync::{Arc, Mutex};
 #[cfg(test)]
 use crate::agent::{AgentMode, ActionMode, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
@@ -412,7 +413,7 @@ mod tests {
         ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            agent_mode: AgentMode::Ask,
+            agent_mode: Arc::new(Mutex::new(AgentMode::Ask)),
             progress: None,
         }
     }

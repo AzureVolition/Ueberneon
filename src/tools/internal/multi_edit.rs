@@ -4,7 +4,7 @@
 // 编辑在内存中顺序应用；仅在所有编辑都成功时才写入磁盘。
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::agent::{ActionMode, Tool, ToolContext, ToolResult};
 use llm::tool::ToolMeta;
@@ -236,7 +236,7 @@ impl Tool for MultiEdit {
 #[async_trait::async_trait]
 impl CheckableTool for MultiEdit {
     fn check(&self, ctx: &ToolContext, args: &Value) -> Decision {
-        match self.check_permission(self.name(), args, ctx.agent_mode) {
+        match self.check_permission(self.name(), args, *ctx.agent_mode.lock().unwrap()) {
             Decision::Allow => {}
             decision => return decision,
         }
@@ -265,7 +265,7 @@ mod tests {
         ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            agent_mode: AgentMode::Ask,
+            agent_mode: Arc::new(Mutex::new(AgentMode::Ask)),
             progress: None,
         }
     }

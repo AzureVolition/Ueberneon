@@ -577,6 +577,7 @@ impl CheckableTool for CodeIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
     use std::sync::atomic::{AtomicU64, Ordering};
     use llm::tool::ToolMeta;
 
@@ -592,7 +593,7 @@ mod tests {
         ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            agent_mode: AgentMode::Ask,
+            agent_mode: Arc::new(Mutex::new(AgentMode::Ask)),
             progress: None,
         }
     }

@@ -5,7 +5,7 @@
 // 可正常编辑而不会静默损坏其字节。
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::agent::{Tool, ToolContext, ToolResult};
 #[cfg(test)]
@@ -261,7 +261,7 @@ mod tests {
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            agent_mode: AgentMode::Ask,
+            agent_mode: Arc::new(Mutex::new(AgentMode::Ask)),
             progress: None,
         }, &args).await;
         assert!(result.error().is_none());
@@ -284,7 +284,7 @@ mod tests {
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            agent_mode: AgentMode::Ask,
+            agent_mode: Arc::new(Mutex::new(AgentMode::Ask)),
             progress: None,
         }, &args).await;
         assert!(result.error().is_none());
@@ -306,7 +306,7 @@ mod tests {
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            agent_mode: AgentMode::Ask,
+            agent_mode: Arc::new(Mutex::new(AgentMode::Ask)),
             progress: None,
         }, &args).await;
         assert!(result.error().is_none());
@@ -328,7 +328,7 @@ mod tests {
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            agent_mode: AgentMode::Ask,
+            agent_mode: Arc::new(Mutex::new(AgentMode::Ask)),
             progress: None,
         }, &args).await;
         assert!(result.error().is_none());
@@ -351,7 +351,7 @@ mod tests {
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            agent_mode: AgentMode::Ask,
+            agent_mode: Arc::new(Mutex::new(AgentMode::Ask)),
             progress: None,
         }, &args).await;
         let _ = std::fs::remove_dir_all(&repo_dir);
@@ -365,7 +365,7 @@ mod tests {
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            agent_mode: AgentMode::Ask,
+            agent_mode: Arc::new(Mutex::new(AgentMode::Ask)),
             progress: None,
         }, &args).await;
         assert!(result.error().is_some());
@@ -379,7 +379,7 @@ mod tests {
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            agent_mode: AgentMode::Ask,
+            agent_mode: Arc::new(Mutex::new(AgentMode::Ask)),
             progress: None,
         }, &args).await;
         assert!(result.error().is_none());
@@ -401,7 +401,7 @@ mod tests {
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            agent_mode: AgentMode::Ask,
+            agent_mode: Arc::new(Mutex::new(AgentMode::Ask)),
             progress: None,
         }, &args).await;
         assert!(result.error().is_none(), "error: {:?}", result.error());

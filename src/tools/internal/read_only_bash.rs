@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::agent::{Tool, ToolContext, ToolResult};
+use std::sync::{Arc, Mutex};
 #[cfg(test)]
 use crate::agent::{AgentMode, ActionMode, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
@@ -180,9 +181,9 @@ impl CheckableTool for ReadOnlyBash {
 
 }
 
-#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::{ActionMode, AgentMode};
     use llm::tool::ToolMeta;
 
     fn test_sandbox() -> Option<SandboxSpec> {
@@ -201,7 +202,7 @@ mod tests {
         ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            agent_mode: AgentMode::Ask,
+            agent_mode: Arc::new(Mutex::new(AgentMode::Ask)),
             progress: None,
         }
     }
