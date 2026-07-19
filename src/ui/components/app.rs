@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::manager::AgentManager;
-use crate::agent::{ActionMode, AgentMode};
+use crate::agent::{ActionMode, AgentHandler, AgentMode};
 use crate::model::Plan;
 use crate::ui::components::chat_panel::ChatPanel;
 use crate::ui::components::input_bar::InputBar;
@@ -139,6 +139,7 @@ pub fn App() -> Element {
     let mut active_tool_calls = use_signal(Vec::<ToolCallRecord>::new);
     let mut action_mode = use_signal(|| ActionMode::Regular);
     let mut agent_mode = use_signal(|| AgentMode::Ask);
+    let mut agent_handler = use_signal(|| Option::<AgentHandler>::None);
     
 
     // ── Agent config 选择状态 ──
@@ -474,6 +475,16 @@ pub fn App() -> Element {
                                     s_id.set(new_id.clone());
                                 }
                             },
+                            on_agent_mode_change: {
+                                let mut am = agent_mode;
+                                let handler_sig = agent_handler;
+                                move |new_mode: AgentMode| {
+                                    am.set(new_mode);
+                                    if let Some(ref h) = *handler_sig.read() {
+                                        *h.agent_mode.lock().unwrap() = new_mode;
+                                    }
+                                }
+                            },
                             on_cancel: move |_| {
                                 if let Some(ref token) = *cancel_token.read() {
                                     token.cancel();
@@ -513,12 +524,13 @@ pub fn App() -> Element {
                                 let mut mgr = AgentManager::get().lock().unwrap();
                                 let current_ac_id = selected_agent_config_id.read().clone();
                                 let ac_id_for_conv: Option<&str> = if current_ac_id.is_empty() { None } else { Some(current_ac_id.as_str()) };
-                                let new_cid = mgr.init_or_get(
+                                let (new_cid, handler) = mgr.init_or_get(
                                     None,
                                     &main_agent_prompt(),
                                     Some(pid.clone()),
                                     ac_id_for_conv,
-                                ).unwrap_or_else(|_| String::new());
+                                ).unwrap_or_else(|_| (String::new(), AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)) }));
+                                agent_handler.set(Some(handler));
                                 drop(mgr);
                                 let now = chrono::Local::now();
                                 {
@@ -538,6 +550,11 @@ pub fn App() -> Element {
                                 active_conversation_id.set(new_cid.clone());
                                 new_cid
                             } else {
+                                // 已有对话：确保 Agent 在缓存中，获取 handler
+                                let mut mgr = AgentManager::get().lock().unwrap();
+                                if let Ok(handler) = mgr.init(&conv_id) {
+                                    agent_handler.set(Some(handler));
+                                }
                                 conv_id
                             };
 

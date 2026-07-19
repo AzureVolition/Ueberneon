@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 use super::hook::HookRegister;
-use super::{ActionMode, Agent, AgentMode};
+use super::{ActionMode, Agent, AgentHandler, AgentMode};
 use crate::db::metadata::agent_config::AgentConfigRow;
 use crate::model::Project;
 use crate::tools::Registry;
@@ -154,19 +154,19 @@ impl AgentManager {
 
     /// 初始化或获取 Agent。
     ///
-    /// - `conv_id = None`：新建对话，生成 id，创建 Agent，注册，返回 id。
-    /// - `conv_id = Some(id)`：优先从缓存返回；缓存 miss 则从 DB 重建并注册。
+    /// - `conv_id = None`：新建对话，生成 id，创建 Agent，注册，返回 (id, handler)。
+    /// - `conv_id = Some(id)`：优先从缓存返回；缓存 miss 则从 DB 重建并注册，返回 handler。
     pub fn init_or_get(
         &mut self,
         conv_id: Option<String>,
         system_prompt: &str,
         project_id: Option<String>,
         agent_config_id: Option<&str>,
-    ) -> Result<String, String> {
+    ) -> Result<(String, AgentHandler), String> {
         match conv_id {
             Some(id) => {
-                self.init(&id)?;
-                Ok(id)
+                let handler = self.init(&id)?;
+                Ok((id, handler))
             }
             None => {
                 let id = crate::db::metadata::conversation::generate_conversation_id();
@@ -190,15 +190,16 @@ impl AgentManager {
                 }
                 let agent =
                     Self::build_agent_inner(id.clone(), Some(system_prompt), project_id, &agent_config)?;
+                let handler = agent.handler.clone();
                 self.agents.insert(id.clone(), agent);
-                Ok(id)
+                Ok((id, handler))
             }
         }
     }
 
-    pub fn init(&mut self, id: &str) -> Result<(), String> {
+    pub fn init(&mut self, id: &str) -> Result<AgentHandler, String> {
         if self.agents.contains_key(id) {
-            return Ok(());
+            return Ok(self.agents.get(id).unwrap().handler.clone());
         }
         // 从 DB 重建
         let conn = crate::db::get_db()
@@ -225,8 +226,9 @@ impl AgentManager {
 
         let mut agent = Self::build_agent_inner(id.to_string(), None, Some(conv.project_id), &agent_config)?;
         agent.messages.extend(msgs);
+        let handler = agent.handler.clone();
         self.agents.insert(id.to_string(), agent);
-        Ok(())
+        Ok(handler)
     }
 
     /// 根据 agent_config_id 从 DB 读取配置并转为 AgentConfig

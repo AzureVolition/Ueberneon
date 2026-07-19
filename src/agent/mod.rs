@@ -165,7 +165,7 @@ pub struct ToolContext {
     /// 计划模式（常规/计划），写工具在计划模式被阻止
     pub plan_mode: ActionMode,
     /// Agent 的全局门控模式
-    pub agent_mode: AgentMode,
+    pub agent_mode: Arc<Mutex<AgentMode>>,
     /// 流式输出回调，长运行工具推送实时输出到前端
     pub progress: Option<Box<dyn Fn(&str) + Send + Sync>>,
 }
@@ -199,10 +199,17 @@ impl std::fmt::Display for BlockedKind {
 // —— agent ————————————————————————————————————————————————————————————————————
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use crate::tools::Registry;
 use crate::model::{ChatMessage, StreamSegment, ToolCallRecord, ToolCallStatus};
 use hook::HookRegister;
 use llm::{Message, Provider, Role as LlmRole};
+
+/// Agent 运行时控制句柄，前端持有以实时调整 Agent 行为。
+#[derive(Clone)]
+pub struct AgentHandler {
+    pub agent_mode: Arc<Mutex<AgentMode>>,
+}
 
 /// Agent —— 拥有 provider 和 registry，通过 mpsc channel 输出流式事件。
 /// 自己管理消息历史 + 本地持久化，与 UI 层解耦。
@@ -215,8 +222,10 @@ pub struct Agent {
     pub hook_register: HookRegister,
     /// 计划模式（常规/计划）
     pub plan_mode: ActionMode,
-    /// 全局门控模式
-    pub agent_mode: AgentMode,
+    /// 全局门控模式（Arc 共享，供 handler 和内部读取）
+    pub agent_mode: Arc<Mutex<AgentMode>>,
+    /// 运行时控制句柄（与 agent_mode 指向同一 Arc）
+    pub handler: AgentHandler,
     /// 工具执行的工作目录（即项目路径）
     pub project_path: PathBuf,
     /// 项目 ID（用于持久化）
@@ -250,11 +259,13 @@ impl Agent {
         max_tokens: Option<u32>,
         agent_type: String,
     ) -> Self {
+        let agent_mode = Arc::new(Mutex::new(agent_mode));
         Self {
             provider,
             registry,
             hook_register,
             plan_mode,
+            handler: AgentHandler { agent_mode: agent_mode.clone() },
             agent_mode,
             project_path,
             project_id,

@@ -219,7 +219,7 @@ impl Agent {
                     }
                     push_tool_marker(&segments_arc, &version_arc);
 
-                    let ctx = ToolContext { call_id: tool_call.id.clone(), plan_mode: self.plan_mode, agent_mode: self.agent_mode, progress: None };
+                    let ctx = ToolContext { call_id: tool_call.id.clone(), plan_mode: self.plan_mode, agent_mode: self.agent_mode.clone(), progress: None };
                     let decision = tool.pre_check(&ctx, &args);
                     let is_denied = matches!(decision, Decision::Deny(_));
                     let result = match decision {

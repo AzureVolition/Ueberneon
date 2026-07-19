@@ -51,6 +51,8 @@ pub fn InputBar(
     selected_agent_config_id: String,
     /// 切换 agent config 回调
     on_agent_config_change: EventHandler<String>,
+    /// 切换 agent mode 回调（streaming 期间也可调用）
+    on_agent_mode_change: EventHandler<AgentMode>,
     /// 是否禁用 config 选择（已有固定配置的对话）
     config_disabled: bool,
     on_send: EventHandler<String>,
@@ -136,7 +138,7 @@ pub fn InputBar(
                         "agent mode"
                     }
                     div {
-                        class: if running { "mode-pill-row is-disabled" } else { "mode-pill-row" },
+                        class: "mode-pill-row",
                         for mode in AgentMode::ALL.iter() {
                             button {
                                 class: if *mode == agent_mode() {
@@ -144,7 +146,7 @@ pub fn InputBar(
                                 } else {
                                     if *mode == AgentMode::Unrestrained { "mode-pill is-danger" } else { "mode-pill" }
                                 },
-                                onclick: move |_| agent_mode.set(*mode),
+                                onclick: move |_| on_agent_mode_change.call(*mode),
                                 "{mode}"
                             }
                         }
