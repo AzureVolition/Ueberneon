@@ -154,6 +154,7 @@ pub fn Sidebar(
                         SettingsTab::SubAgents,
                         SettingsTab::General,
                         SettingsTab::Appearance,
+                        SettingsTab::Tools,
                         SettingsTab::Sql,
                     ];
                     let ct = current_tab.clone();

@@ -18,9 +18,20 @@ use crate::permission::Decision;
 /// 目录名后加 `/`，文件名后跟制表符和字节大小。
 /// 递归模式跳过 .git、node_modules 等噪声目录。
 #[derive(ToolMetaImpl)]
+#[tool(read_only)]
+#[tool(schema = r#"{"type":"object",
+                    "properties":{"
+                                path":{"
+                                    "type":"string",
+                                    "description":"Directory path (default ".")"
+                                },
+                                "recursive":{"
+                                    "type":"boolean",
+                                    "description":"When true, recursively list all nested files (default false)"
+                                }
+                            }}
+                    "#)]
 pub struct Ls {
-    schema: Value,
-    read_only: bool,
     work_dir: PathBuf,
 }
 
@@ -43,20 +54,6 @@ const NOISE_DIRS: &[&str] = &[
 impl Ls {
     pub fn new(work_dir: PathBuf) -> Self {
         Self {
-            schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Directory path (default \".\")"
-                    },
-                    "recursive": {
-                        "type": "boolean",
-                        "description": "When true, recursively list all nested files (default false)"
-                    }
-                }
-            }),
-            read_only: true,
             work_dir,
         }
     }
@@ -330,15 +327,6 @@ mod tests {
             &serde_json::json!({"path": "/tmp/repo/.git"}),
         ).await;
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn schema_is_valid_json() {
-        let tool = test_ls();
-        let schema = tool.schema();
-        assert!(schema.is_object());
-        assert_eq!(schema["type"], "object");
-        assert!(tool.read_only());
     }
 
     #[tokio::test]

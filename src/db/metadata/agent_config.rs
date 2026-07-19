@@ -131,3 +131,28 @@ pub fn list_all(conn: &Connection) -> Result<Vec<AgentConfigRow>> {
     })?;
     rows.collect()
 }
+
+// ── Agent 配置-工具组关联 ──────────────────────────────────────────────
+
+/// 保存关联（先删后插，事务内）
+pub fn save_groups(conn: &Connection, agent_config_id: &str, group_ids: &[String]) -> Result<()> {
+    conn.execute("DELETE FROM agent_config_groups WHERE agent_config_id = ?1", params![agent_config_id])?;
+    let mut stmt = conn.prepare(
+        "INSERT INTO agent_config_groups (agent_config_id, tool_group_id) VALUES (?1, ?2)"
+    )?;
+    for gid in group_ids {
+        stmt.execute(params![agent_config_id, gid])?;
+    }
+    Ok(())
+}
+
+/// 读取关联的工具组 ID 列表
+pub fn load_group_ids(conn: &Connection, agent_config_id: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT tool_group_id FROM agent_config_groups WHERE agent_config_id = ?1 ORDER BY tool_group_id"
+    )?;
+    let rows = stmt.query_map(params![agent_config_id], |row| {
+        row.get::<_, String>(0)
+    })?;
+    rows.collect()
+}

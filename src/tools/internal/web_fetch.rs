@@ -17,9 +17,9 @@ use crate::permission::Decision;
 /// HTML 页面自动转为纯文本（去掉 script/style tag，
 /// 插入 Markdown 风格标题和列表）。JSON/纯文本原样返回。
 #[derive(ToolMetaImpl)]
+#[tool(read_only)]
+#[tool(schema = r#"{"type":"object","properties":{"url":{"type":"string","description":"Absolute URL beginning with http:// or https://"}},"required":["url"]}"#)]
 pub struct WebFetch {
-    schema: Value,
-    read_only: bool,
 }
 
 const WEB_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
@@ -29,17 +29,6 @@ const USER_AGENT: &str = "racpagent-web-fetch/1.0";
 impl WebFetch {
     pub fn new() -> Self {
         Self {
-            schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "url": {
-                        "type": "string",
-                        "description": "Absolute URL beginning with http:// or https://"
-                    }
-                },
-                "required": ["url"]
-            }),
-            read_only: true,
         }
     }
 
@@ -506,15 +495,6 @@ mod tests {
         })).await;
         assert!(result.error().is_some());
         assert!(result.error().unwrap().contains("SSRF"));
-    }
-
-    #[test]
-    fn schema_is_valid_json() {
-        let tool = WebFetch::new();
-        let schema = tool.schema();
-        assert!(schema.is_object());
-        assert_eq!(schema["type"], "object");
-        assert!(tool.read_only());
     }
 
     #[test]

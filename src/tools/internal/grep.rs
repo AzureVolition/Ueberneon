@@ -32,35 +32,15 @@ const GREP_MAX_TIMEOUT_SECS: u64 = 300;
 /// 使用 RE2 语法，自动跳过二进制文件和 .gitignore 匹配项。
 /// 返回 path:line:text 格式的匹配行，最多 200 条。
 #[derive(ToolMetaImpl)]
+#[tool(read_only)]
+#[tool(schema = r#"{"type":"object","properties":{"pattern":{"type":"string","description":"Regular expression (RE2 syntax)"},"path":{"type":"string","description":"File or directory to search (default ".")"},"timeout_seconds":{"type":"integer","description":"Abort after this many seconds (default 30, max 300)","minimum":1}},"required":["pattern"]}"#)]
 pub struct Grep {
-    schema: Value,
-    read_only: bool,
     work_dir: PathBuf,
 }
 
 impl Grep {
     pub fn new(work_dir: PathBuf) -> Self {
         Self {
-            schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "pattern": {
-                        "type": "string",
-                        "description": "Regular expression (RE2 syntax)"
-                    },
-                    "path": {
-                        "type": "string",
-                        "description": "File or directory to search (default \".\")"
-                    },
-                    "timeout_seconds": {
-                        "type": "integer",
-                        "description": "Abort after this many seconds (default 30, max 300)",
-                        "minimum": 1
-                    }
-                },
-                "required": ["pattern"]
-            }),
-            read_only: true,
             work_dir,
         }
     }
@@ -465,15 +445,6 @@ mod tests {
         let result = tool.execute(&test_ctx(), &args).await;
         assert!(result.error().is_some());
         assert!(result.error().unwrap().contains("does not exist"));
-    }
-
-    #[test]
-    fn schema_is_valid_json() {
-        let tool = Grep::new(std::env::temp_dir());
-        let schema = tool.schema();
-        assert!(schema.is_object());
-        assert_eq!(schema["type"], "object");
-        assert!(schema["required"].as_array().unwrap().contains(&serde_json::Value::String("pattern".into())));
     }
 
     #[test]

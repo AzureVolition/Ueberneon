@@ -29,6 +29,17 @@ pub use jobs::JobManager;
 pub use registry::Registry;
 pub use sandbox::SandboxSpec;
 
+/// 内部工具的编译时元信息。
+/// 每个 `#[derive(ToolMetaImpl)]` 结构体会通过 `inventory::submit!` 自动注册。
+pub struct InternalToolMeta {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub read_only: bool,
+    pub schema: &'static str,
+}
+
+inventory::collect!(InternalToolMeta);
+
 /// 注册所有内置工具到给定的 Registry 中。
 /// `base_dir` 是工具的工作目录（即项目路径）。
 pub fn register_builtins(registry: &Registry, base_dir: &std::path::Path) {

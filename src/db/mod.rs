@@ -214,6 +214,42 @@ pub fn init_db() -> Result<Connection> {
             updated_at          TEXT NOT NULL
         );
         CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_configs_name ON agent_configs(name);
+
+        -- ── 工具表（builtin + MCP）──
+        CREATE TABLE IF NOT EXISTS tools (
+            id          TEXT PRIMARY KEY,
+            name        TEXT NOT NULL UNIQUE,
+            description TEXT NOT NULL DEFAULT '',
+            schema_json TEXT NOT NULL DEFAULT '{}',
+            read_only   INTEGER NOT NULL DEFAULT 0,
+            source      TEXT NOT NULL DEFAULT 'builtin',
+            mcp_server  TEXT DEFAULT NULL,
+            created_at  TEXT NOT NULL
+        );
+
+        -- ── 工具组 ──
+        CREATE TABLE IF NOT EXISTS tool_groups (
+            id          TEXT PRIMARY KEY,
+            name        TEXT NOT NULL UNIQUE,
+            description TEXT NOT NULL DEFAULT '',
+            sort_order  INTEGER NOT NULL DEFAULT 0,
+            created_at  TEXT NOT NULL
+        );
+
+        -- ── 工具组-工具关联 ──
+        CREATE TABLE IF NOT EXISTS tool_group_items (
+            group_id    TEXT NOT NULL REFERENCES tool_groups(id) ON DELETE CASCADE,
+            tool_id     TEXT NOT NULL REFERENCES tools(id) ON DELETE CASCADE,
+            sort_order  INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (group_id, tool_id)
+        );
+
+        -- ── Agent 配置-工具组关联 ──
+        CREATE TABLE IF NOT EXISTS agent_config_groups (
+            agent_config_id TEXT NOT NULL REFERENCES agent_configs(id) ON DELETE CASCADE,
+            tool_group_id   TEXT NOT NULL REFERENCES tool_groups(id) ON DELETE CASCADE,
+            PRIMARY KEY (agent_config_id, tool_group_id)
+        );
         "
     )?;
 
@@ -249,6 +285,12 @@ pub fn init_db() -> Result<Connection> {
         }
     }
 
+    // ── 同步内置工具到 tools 表 ──────────────────────────────────────────
+    sync_builtin_tools(&conn)?;
+
+    // ── 默认工具组（幂等插入）──
+    seed_default_tool_groups(&conn)?;
+
     // ── 内置 Explore SubAgent ─────────────────────────────────────────────
     // 幂等插入 explore 子 agent（只读文件搜索专家）
     // provider 信息由用户在 Sub Agents 页面中配置
@@ -262,7 +304,7 @@ pub fn init_db() -> Result<Connection> {
             EXPLORE_SUBAGENT_PROMPT,
             0.7,
             Option::<u32>::None,
-            r#"["read_file","grep","glob","ls","code_index","web_fetch","read_only_bash"]"#,
+            r#"["ReadFile","Grep","Glob","Ls","CodeIndex","WebFetch","ReadOnlyBash"]"#,
             chrono::Local::now().to_rfc3339(),
             chrono::Local::now().to_rfc3339(),
         ],
@@ -279,11 +321,32 @@ pub fn init_db() -> Result<Connection> {
             PLAN_SUBAGENT_PROMPT,
             0.7,
             Option::<u32>::None,
-            r#"["read_file","grep","glob","ls","code_index","web_fetch","read_only_bash"]"#,
+            r#"["ReadFile","Grep","Glob","Ls","CodeIndex","WebFetch","ReadOnlyBash"]"#,
             chrono::Local::now().to_rfc3339(),
             chrono::Local::now().to_rfc3339(),
         ],
     )?;
+
+    // ── 迁移：修复内置 SubAgent 的工具名（小写 → PascalCase）───────
+    // 旧版使用 "read_file" 等小写名称，与实际注册的工具名 "ReadFile" 不匹配
+    for cfg_id in &["acfg-builtin-explore", "acfg-builtin-plan"] {
+        if let Ok(row) = conn.query_row::<String, _, _>(
+            "SELECT tools FROM agent_configs WHERE id = ?1",
+            rusqlite::params![cfg_id],
+            |row| row.get(0),
+        ) {
+            if row.contains("read_file") {
+                conn.execute(
+                    "UPDATE agent_configs SET tools = ?1, updated_at = ?2 WHERE id = ?3",
+                    rusqlite::params![
+                        r#"["ReadFile","Grep","Glob","Ls","CodeIndex","WebFetch","ReadOnlyBash"]"#,
+                        chrono::Local::now().to_rfc3339(),
+                        cfg_id,
+                    ],
+                )?;
+            }
+        }
+    }
 
     // ── 迁移：将旧版 config.json 中的 provider_keys 转为实例 ────────────
     // 为每个已有 key 的 provider 创建一条实例记录（幂等）
@@ -341,6 +404,79 @@ pub fn get_db() -> &'static Mutex<Connection> {
     })
 }
 
+/// 将 inventory 中的内置工具同步到 tools 表（幂等）。
+fn sync_builtin_tools(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    let now = chrono::Local::now().to_rfc3339();
+    let mut stmt = conn.prepare(
+        "INSERT OR IGNORE INTO tools (id, name, description, schema_json, read_only, source, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'builtin', ?6)",
+    )?;
+    for meta in inventory::iter::<crate::tools::InternalToolMeta>().into_iter() {
+        let id = format!("tool-{}", meta.name);
+        stmt.execute(rusqlite::params![
+            id,
+            meta.name,
+            meta.description,
+            if meta.schema.is_empty() { "{}" } else { meta.schema },
+            meta.read_only as i32,
+            &now,
+        ])?;
+    }
+    Ok(())
+}
+
+/// 插入默认工具组（幂等，仅在 tools 表有数据时执行）。
+fn seed_default_tool_groups(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    // 仅在工具表非空时才执行（测试环境中 inventory 可能为空）
+    let count: i64 = conn.query_row("SELECT count(*) FROM tools", [], |r| r.get(0))?;
+    if count == 0 {
+        return Ok(());
+    }
+    let now = chrono::Local::now().to_rfc3339();
+    // 文件操作组
+    conn.execute(
+        "INSERT OR IGNORE INTO tool_groups (id, name, description, sort_order, created_at)
+         VALUES ('grp-file', 'File', '读写和编辑文件', 1, ?1)",
+        rusqlite::params![&now],
+    )?;
+    // 搜索组
+    conn.execute(
+        "INSERT OR IGNORE INTO tool_groups (id, name, description, sort_order, created_at)
+         VALUES ('grp-search', 'Search', '搜索文件和代码', 2, ?1)",
+        rusqlite::params![&now],
+    )?;
+    // Shell 组
+    conn.execute(
+        "INSERT OR IGNORE INTO tool_groups (id, name, description, sort_order, created_at)
+         VALUES ('grp-shell', 'Shell', '执行 shell 命令', 3, ?1)",
+        rusqlite::params![&now],
+    )?;
+    // 网络组
+    conn.execute(
+        "INSERT OR IGNORE INTO tool_groups (id, name, description, sort_order, created_at)
+         VALUES ('grp-network', 'Network', '网络请求', 4, ?1)",
+        rusqlite::params![&now],
+    )?;
+    // 工具到组的关联（幂等）
+    let groups: &[(&str, &[&str])] = &[
+        ("grp-file",    &["ReadFile", "WriteFile", "EditFile", "MultiEdit", "Ls"]),
+        ("grp-search",  &["Grep", "Glob", "CodeIndex"]),
+        ("grp-shell",   &["Bash", "BashOutput", "KillShell", "ReadOnlyBash"]),
+        ("grp-network", &["WebFetch"]),
+    ];
+    let mut stmt = conn.prepare(
+        "INSERT OR IGNORE INTO tool_group_items (group_id, tool_id, sort_order)
+         VALUES (?1, ?2, ?3)",
+    )?;
+    for (group_id, tool_names) in groups {
+        for (i, name) in tool_names.iter().enumerate() {
+            let tool_id = format!("tool-{}", name);
+            stmt.execute(rusqlite::params![group_id, tool_id, i as i32])?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -379,7 +515,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(idx_count, 2, "should have 2 indexes");
+        assert_eq!(idx_count, 3, "should have 3 indexes");
 
         // 验证默认项目已插入
         let default_count: i64 = conn

@@ -19,5 +19,25 @@ fn main() {
         .with_line_number(true)
         .init();
 
+    _print_tools_inventory();
+
     ui_launch::run();
+}
+
+/// 启动时打印内部工具清单（验证 inventory 收集效果）。
+/// 仅在非测试编译时有效。
+fn _print_tools_inventory() {
+    use std::io::Write;
+    let mut stderr = std::io::stderr();
+    let _ = writeln!(stderr, "=== Internal Tools Inventory ===");
+    for meta in inventory::iter::<racpagent::tools::InternalToolMeta> {
+        let _ = writeln!(stderr, "  {:15} | ro={:5} | {:10} | {}",
+            meta.name, meta.read_only,
+            meta.schema,
+            meta.description,
+        );
+    }
+    let total = inventory::iter::<racpagent::tools::InternalToolMeta>.into_iter().count();
+    let _ = writeln!(stderr, "Total: {} tools", total);
+    let _ = stderr.flush();
 }

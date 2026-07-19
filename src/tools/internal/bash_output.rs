@@ -18,26 +18,15 @@ use crate::permission::Decision;
 ///
 /// 返回自上次调用以来产生的新文本。当任务已结束时标记 finished。
 #[derive(ToolMetaImpl)]
+#[tool(read_only)]
+#[tool(schema = r#"{"type":"object","properties":{"job_id":{"type":"string","description":"Background job id returned by bash (e.g. 'bg-1')"}},"required":["job_id"]}"#)]
 pub struct BashOutput {
-    schema: Value,
-    read_only: bool,
     job_manager: Arc<JobManager>,
 }
 
 impl BashOutput {
     pub fn new(job_manager: Arc<JobManager>) -> Self {
         Self {
-            schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "job_id": {
-                        "type": "string",
-                        "description": "Background job id returned by bash (e.g. 'bg-1')"
-                    }
-                },
-                "required": ["job_id"]
-            }),
-            read_only: true,
             job_manager,
         }
     }
@@ -85,7 +74,6 @@ impl Tool for BashOutput {
         }
     }
 }
-
 
 #[async_trait::async_trait]
 impl CheckableTool for BashOutput {

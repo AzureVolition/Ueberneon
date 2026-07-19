@@ -18,6 +18,7 @@ pub enum SettingsTab {
     SubAgents,
     General,
     Appearance,
+    Tools,
     Sql,
 }
 
@@ -29,6 +30,7 @@ impl SettingsTab {
             SettingsTab::SubAgents => "sub agents",
             SettingsTab::General => "general",
             SettingsTab::Appearance => "appearance",
+            SettingsTab::Tools => "tools",
             SettingsTab::Sql => "sql",
         }
     }
@@ -40,6 +42,7 @@ impl SettingsTab {
             SettingsTab::SubAgents => "⊞",
             SettingsTab::General => "◎",
             SettingsTab::Appearance => "◐",
+            SettingsTab::Tools => "⊡",
             SettingsTab::Sql => "📋",
         }
     }

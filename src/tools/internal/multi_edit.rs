@@ -26,9 +26,8 @@ use crate::permission::{Check, Decision, gate::PermissionChecked};
 ///
 /// `work_dir` 是工作目录的共享引用 —— 所有文件路径必须在此目录之下。
 #[derive(ToolMetaImpl)]
+#[tool(schema = r#"{"type":"object","properties":{"path":{"type":"string","description":"File path"},"edits":{"type":"array","minItems":1,"items":{"type":"object","properties":{"old_string":{"type":"string","description":"Text to find"},"new_string":{"type":"string","description":"Replacement text"},"replace_all":{"type":"boolean","description":"Replace all occurrences instead of just the first"}},"required":["old_string","new_string"]},"description":"Ordered list of edits to apply"}},"required":["path","edits"]}"#)]
 pub struct MultiEdit {
-    schema: Value,
-    read_only: bool,
     /// 工作目录（共享引用语义）。
     work_dir: PathBuf,
     /// 检查点存储（写前记录快照）。
@@ -63,40 +62,6 @@ struct MultiEditParams {
 impl MultiEdit {
     pub fn new(work_dir: PathBuf, checkpoint: Arc<SnapshotStore>, checks: Vec<Box<dyn Check>>, tracker: Arc<FileObserveTracker>) -> Self {
         Self {
-            schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "File path"
-                    },
-                    "edits": {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "old_string": {
-                                    "type": "string",
-                                    "description": "Text to find"
-                                },
-                                "new_string": {
-                                    "type": "string",
-                                    "description": "Replacement text"
-                                },
-                                "replace_all": {
-                                    "type": "boolean",
-                                    "description": "Replace all occurrences instead of just the first"
-                                }
-                            },
-                            "required": ["old_string", "new_string"]
-                        },
-                        "description": "Ordered list of edits to apply"
-                    }
-                },
-                "required": ["path", "edits"]
-            }),
-            read_only: false,
             work_dir,
             checkpoint,
             checks,
@@ -356,16 +321,5 @@ mod tests {
         let result = tool.execute(&test_ctx(), &args).await;
         assert!(result.error().is_some());
         assert!(result.error().unwrap().contains("outside"));
-    }
-
-    #[test]
-    fn schema_is_valid_json() {
-        let work_dir = temp_dir();
-        let checkpoint = Arc::new(SnapshotStore::new());
-        let tool = MultiEdit::new(work_dir, checkpoint, vec![], Arc::new(FileObserveTracker::new()));
-        let schema = tool.schema();
-        assert!(schema.is_object());
-        assert_eq!(schema["type"], "object");
-        assert!(schema["required"].as_array().unwrap().contains(&Value::String("edits".into())));
     }
 }

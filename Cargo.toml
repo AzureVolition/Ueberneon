@@ -39,3 +39,4 @@ dioxus = { version = "0.7", features = ["desktop"] }
 pulldown-cmark = "0.12"
 rfd = "0.15"
 rusqlite = { version = "0.31", features = ["bundled", "trace"] }
+inventory = "0.3"

@@ -17,26 +17,14 @@ use crate::permission::Decision;
 ///
 /// 发送 SIGTERM 后等待 200ms，然后发送 SIGKILL 确保终止。
 #[derive(ToolMetaImpl)]
+#[tool(schema = r#"{"type":"object","properties":{"job_id":{"type":"string","description":"Background job id to terminate (e.g. 'bg-1')"}},"required":["job_id"]}"#)]
 pub struct KillShell {
-    schema: Value,
-    read_only: bool,
     job_manager: Arc<JobManager>,
 }
 
 impl KillShell {
     pub fn new(job_manager: Arc<JobManager>) -> Self {
         Self {
-            schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "job_id": {
-                        "type": "string",
-                        "description": "Background job id to terminate (e.g. 'bg-1')"
-                    }
-                },
-                "required": ["job_id"]
-            }),
-            read_only: false,
             job_manager,
         }
     }
@@ -71,7 +59,6 @@ impl Tool for KillShell {
         }
     }
 }
-
 
 #[async_trait::async_trait]
 impl CheckableTool for KillShell {

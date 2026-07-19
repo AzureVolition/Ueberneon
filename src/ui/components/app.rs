@@ -28,6 +28,11 @@ fn markdown_to_html(md: &str) -> String {
     html
 }
 
+fn load_agent_configs() -> Vec<crate::db::metadata::agent_config::AgentConfigRow> {
+    let conn = crate::db::get_db().lock().unwrap();
+    crate::db::metadata::agent_config::list_all(&conn).unwrap_or_default()
+}
+
 /// 从 DB 加载指定对话的消息
 fn load_messages_from_db(conv_id: &str) -> Vec<ChatMessage> {
     let conn = crate::db::get_db().lock().unwrap();
@@ -144,8 +149,7 @@ pub fn App() -> Element {
 
     // ── Agent config 选择状态 ──
     let mut agent_configs: Signal<Vec<crate::db::metadata::agent_config::AgentConfigRow>> = use_signal(|| {
-        let conn = crate::db::get_db().lock().unwrap();
-        crate::db::metadata::agent_config::list_all(&conn).unwrap_or_default()
+        load_agent_configs()
     });
     let mut selected_agent_config_id = use_signal(|| {
         let default_id = crate::settings::get().general.default_agent_config_id;
@@ -419,11 +423,13 @@ pub fn App() -> Element {
                 match sidebar_view() {
                     SidebarView::Settings(ref tab) => {
                         match tab {
-                            SettingsTab::Providers | SettingsTab::General | SettingsTab::Appearance | SettingsTab::Sql => {
+                            SettingsTab::Providers | SettingsTab::General | SettingsTab::Appearance | SettingsTab::Sql | SettingsTab::Tools => {
                                 rsx! {
                                     SettingsPanel {
                                         tab: tab.clone(),
-                                        on_change: move |_| {
+                                        on_change: {
+                                            let mut ac = agent_configs;
+                                            move |_| { ac.set(load_agent_configs()); }
                                         },
                                     }
                                 }
@@ -432,7 +438,9 @@ pub fn App() -> Element {
                                 rsx! {
                                     SettingsPanel {
                                         tab: tab.clone(),
-                                        on_change: move |_| {
+                                        on_change: {
+                                            let mut ac = agent_configs;
+                                            move |_| { ac.set(load_agent_configs()); }
                                         },
                                     }
                                 }

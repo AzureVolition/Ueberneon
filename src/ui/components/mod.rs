@@ -8,3 +8,4 @@ pub mod plan_panel;
 pub mod settings_panel;
 pub mod sidebar;
 pub mod sql_panel;
+pub mod tools_panel;

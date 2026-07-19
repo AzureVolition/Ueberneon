@@ -10,6 +10,7 @@ proc-macro = true
 syn = { version = "2", features = ["full"] }
 quote = "1"
 proc-macro2 = "1"
+inventory = "0.3"
 
 # 引用 llm crate，宏展开时可引用其类型
 llm = { path = "../llm" }

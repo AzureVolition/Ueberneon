@@ -15,6 +15,7 @@ use crate::settings;
 use crate::ui::components::agent_config_panel::AgentConfigPanel;
 use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 use crate::ui::components::sql_panel::SqlPanel;
+use crate::ui::components::tools_panel::ToolsPanel;
 use crate::ui::state::SettingsTab;
 
 fn encode_key(key: &str) -> String {
@@ -776,6 +777,11 @@ pub fn SettingsPanel(tab: SettingsTab, on_change: EventHandler<()>) -> Element {
                                 }
                             }
                         }
+                    }
+                }
+                SettingsTab::Tools => {
+                    rsx! {
+                        ToolsPanel {}
                     }
                 }
                 SettingsTab::Sql => {

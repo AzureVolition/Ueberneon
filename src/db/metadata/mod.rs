@@ -4,6 +4,7 @@ pub mod message;
 pub mod project;
 pub mod provider;
 pub mod provider_instance;
+pub mod tool;
 
 pub use agent_config::AgentConfigRow;
 pub use conversation::ConversationRow;

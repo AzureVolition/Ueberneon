@@ -25,9 +25,9 @@ use crate::permission::Decision;
 ///  Use `offset` and `limit` to page through large files. 
 ///  The returned content includes line numbers.
 #[derive(ToolMetaImpl)]
+#[tool(read_only)]
+#[tool(schema = r#"{"type":"object","properties":{"path":{"type":"string","description":"File path to read"},"offset":{"type":"integer","description":"0-based line offset to start reading from (default 0)","minimum":0},"limit":{"type":"integer","description":"Maximum lines to return (default 2000, max 100000)","minimum":1,"maximum":100000},"head":{"type":"integer","description":"If provided, returns only the first N lines of the file (overrides offset)","minimum":1},"tail":{"type":"integer","description":"If provided, returns only the last N lines of the file (overrides offset and head)","minimum":1}},"required":["path"]}"#)]
 pub struct ReadFile {
-    schema: Value ,
-    read_only: bool,
     /// 工作目录 —— 所有文件路径必须在此目录之下。
     work_dir: PathBuf,
     /// 文件内容追踪器（陈旧锚点检查）。
@@ -37,38 +37,6 @@ pub struct ReadFile {
 impl ReadFile {
     pub fn new(work_dir: PathBuf, tracker: Arc<FileObserveTracker>) -> Self {
         Self {
-            schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "File path to read"
-                        },
-                        "offset": {
-                            "type": "integer",
-                            "description": "0-based line offset to start reading from (default 0)",
-                            "minimum": 0
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Maximum lines to return (default 2000, max 100000)",
-                            "minimum": 1,
-                            "maximum": 100000
-                        },
-                        "head": {
-                            "type": "integer",
-                            "description": "If provided, returns only the first N lines of the file (overrides offset)",
-                            "minimum": 1
-                        },
-                        "tail": {
-                            "type": "integer",
-                            "description": "If provided, returns only the last N lines of the file (overrides offset and head)",
-                            "minimum": 1
-                        }
-                    },
-                    "required": ["path"]
-                }),
-            read_only: true,
             work_dir,
             tracker,
         }
@@ -92,7 +60,6 @@ impl ReadFile {
         Ok(abs)
     }
 }
-
 
 #[async_trait::async_trait]
 impl Tool for ReadFile {
@@ -219,7 +186,6 @@ impl Tool for ReadFile {
         Ok(ToolResult::ok(output))
     }
 }
-
 
 #[async_trait::async_trait]
 impl CheckableTool for ReadFile {

@@ -21,9 +21,9 @@ use crate::permission::Decision;
 /// action="search" 按名称搜索符号。
 /// 支持 .rs/.py/.js/.ts/.go/.java/.c/.cpp/.h/.cs/.kt 文件。
 #[derive(ToolMetaImpl)]
+#[tool(read_only)]
+#[tool(schema = r#"{"type":"object","properties":{"action":{"type":"string","description":"Action: 'outline' (list symbols under path) or 'search' (search by name)","enum":["outline","search"]},"path":{"type":"string","description":"File or directory path (default ".")"},"query":{"type":"string","description":"Symbol name or substring to search for (required for action=search)"},"kind":{"type":"string","description":"Filter by symbol kind: func/fn, method, class, type, interface, const, var, struct, enum, trait, mod, impl"},"limit":{"type":"integer","description":"Maximum symbols to return (default 100, max 200)","minimum":1}},"required":["action"]}"#)]
 pub struct CodeIndex {
-    schema: Value,
-    read_only: bool,
     work_dir: PathBuf,
 }
 
@@ -100,35 +100,6 @@ const LANGUAGES: &[LangDef] = &[
 impl CodeIndex {
     pub fn new(work_dir: PathBuf) -> Self {
         Self {
-            schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "description": "Action: 'outline' (list symbols under path) or 'search' (search by name)",
-                        "enum": ["outline", "search"]
-                    },
-                    "path": {
-                        "type": "string",
-                        "description": "File or directory path (default \".\")"
-                    },
-                    "query": {
-                        "type": "string",
-                        "description": "Symbol name or substring to search for (required for action=search)"
-                    },
-                    "kind": {
-                        "type": "string",
-                        "description": "Filter by symbol kind: func/fn, method, class, type, interface, const, var, struct, enum, trait, mod, impl"
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum symbols to return (default 100, max 200)",
-                        "minimum": 1
-                    }
-                },
-                "required": ["action"]
-            }),
-            read_only: true,
             work_dir,
         }
     }
@@ -742,14 +713,5 @@ class App {}\ninterface Config {}\ntype Data = string;\nenum Color { Red }\ncons
         let result = tool.execute(&test_ctx(), &serde_json::json!({"action": "search"})).await;
         assert!(result.error().is_some());
         assert!(result.error().unwrap().contains("query"));
-    }
-
-    #[test]
-    fn schema_is_valid_json() {
-        let tool = CodeIndex::new(std::env::temp_dir());
-        let schema = tool.schema();
-        assert!(schema.is_object());
-        assert_eq!(schema["type"], "object");
-        assert!(tool.read_only());
     }
 }

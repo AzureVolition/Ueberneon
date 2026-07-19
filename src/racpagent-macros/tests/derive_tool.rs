@@ -4,27 +4,14 @@ use llm::tool::ToolMeta as _;
 use racpagent::agent::{AgentMode, ActionMode};
 use racpagent_macros::ToolMetaImpl;
 
+// ── 只读工具，带完整 schema ──
+
 /// Reads a file from disk with automatic encoding detection.
 #[derive(ToolMetaImpl)]
-pub struct ReadFile {
-    schema: serde_json::Value,
-    read_only: bool,
-}
+#[tool(read_only)]
+#[tool(schema = r#"{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}"#)]
+pub struct ReadFile {}
 
-fn make_read_file() -> ReadFile {
-    ReadFile {
-        schema: serde_json::json!({
-            "type": "object",
-            "properties": {
-                "path": { "type": "string" }
-            },
-            "required": ["path"]
-        }),
-        read_only: true,
-    }
-}
-
-// 手动实现 Tool 以便测试 execute
 #[::async_trait::async_trait]
 impl racpagent::agent::Tool for ReadFile {
     async fn execute(
@@ -36,54 +23,61 @@ impl racpagent::agent::Tool for ReadFile {
     }
 }
 
-#[tokio::test]
-async fn name_matches_struct() {
-    let tool = make_read_file();
+// ── 写工具，无额外属性 ──
+
+/// Creates or overwrites a file.
+#[derive(ToolMetaImpl)]
+pub struct WriteTool {}
+
+// ── 基础测试 ──
+
+#[test]
+fn name_matches_struct() {
+    let tool = ReadFile {};
     assert_eq!(tool.name(), "ReadFile");
 }
 
-#[tokio::test]
-async fn description_from_doc() {
-    let tool = make_read_file();
+#[test]
+fn description_from_doc() {
+    let tool = ReadFile {};
     assert_eq!(
         tool.description(),
         "Reads a file from disk with automatic encoding detection."
     );
 }
 
-#[tokio::test]
-async fn read_only_returns_field_value() {
-    let tool = make_read_file();
+#[test]
+fn read_only_attr_makes_read_only_true() {
+    let tool = ReadFile {};
     assert!(tool.read_only());
-
-    let mut tool2 = make_read_file();
-    tool2.read_only = false;
-    assert!(!tool2.read_only());
 }
 
-#[tokio::test]
-async fn schema_returns_field_value() {
-    let tool = make_read_file();
+#[test]
+fn no_read_only_attr_defaults_to_false() {
+    let tool = WriteTool {};
+    assert!(!tool.read_only());
+}
+
+#[test]
+fn schema_from_attr() {
+    let tool = ReadFile {};
     let schema = tool.schema();
-    assert!(schema.is_object());
     assert_eq!(schema["type"], "object");
     assert_eq!(schema["required"][0], "path");
+    assert_eq!(schema["properties"]["path"]["type"], "string");
 }
 
-#[tokio::test]
-async fn schema_is_independent_per_instance() {
-    let tool1 = make_read_file();
-    let tool2 = ReadFile {
-        schema: serde_json::json!({"type": "string"}),
-        read_only: false,
-    };
-    assert_eq!(tool1.schema()["required"][0], "path");
-    assert_eq!(tool2.schema()["type"], "string");
+#[test]
+fn no_schema_attr_defaults_to_empty_object() {
+    let tool = WriteTool {};
+    let schema = tool.schema();
+    assert!(schema.is_object());
+    assert!(schema.as_object().unwrap().is_empty());
 }
 
 #[tokio::test]
 async fn execute_returns_ok() {
-    let tool = make_read_file();
+    let tool = ReadFile {};
     let ctx = racpagent::agent::ToolContext {
         call_id: "test".into(),
         plan_mode: ActionMode::Regular,

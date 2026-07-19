@@ -3,6 +3,7 @@
 use dioxus::prelude::*;
 
 use crate::db::metadata::agent_config::{self, AgentConfigRow};
+use crate::db::metadata::tool::{self, ToolGroupRow};
 
 /// 将 markdown 转为 html
 fn markdown_to_html(md: &str) -> String {
@@ -21,23 +22,6 @@ fn gen_id() -> String {
     let pid = std::process::id();
     format!("acfg-{ts:x}-{pid:x}")
 }
-
-/// 内置工具列表
-const ALL_TOOLS: &[(&str, &str)] = &[
-    ("bash", "Bash — 执行 shell 命令"),
-    ("read_only_bash", "ReadOnlyBash — 只读 shell"),
-    ("bash_output", "BashOutput — 读取命令输出"),
-    ("kill_shell", "KillShell — 终止 shell 进程"),
-    ("read_file", "ReadFile — 读取文件"),
-    ("edit_file", "EditFile — 编辑文件"),
-    ("write_file", "WriteFile — 写入文件"),
-    ("multi_edit", "MultiEdit — 批量编辑"),
-    ("grep", "Grep — 搜索文件内容"),
-    ("glob", "Glob — 搜索文件路径"),
-    ("ls", "Ls — 列出目录"),
-    ("code_index", "CodeIndex — 代码索引"),
-    ("web_fetch", "WebFetch — 获取网页"),
-];
 
 /// Agent 类型选项
 const AGENT_TYPES: &[(&str, &str)] = &[
@@ -84,8 +68,28 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
     let mut edit_temperature = use_signal(|| 0.7f64);
     let mut edit_max_tokens = use_signal(|| String::new());
     let mut edit_tools: Signal<std::collections::HashSet<String>> = use_signal(std::collections::HashSet::new);
+    let mut edit_groups: Signal<std::collections::HashSet<String>> = use_signal(std::collections::HashSet::new);
+    let mut show_group_selector = use_signal(|| false);
     let mut deleting = use_signal(|| Option::<String>::None);
     let mut viewing_prompt = use_signal(|| Option::<(String, String)>::None);
+
+    // ── 加载工具组列表 ──
+    let all_groups: Vec<ToolGroupRow> = {
+        let conn = crate::db::get_db().lock().unwrap();
+        tool::list_groups(&conn).unwrap_or_default()
+    };
+
+    // ── 工具组 → 工具名查找缓存 ──
+    let group_tools_cache: std::collections::HashMap<String, Vec<String>> = {
+        let conn = crate::db::get_db().lock().unwrap();
+        let mut map = std::collections::HashMap::new();
+        for g in &all_groups {
+            if let Ok(tools) = tool::list_tools_in_group(&conn, &g.id) {
+                map.insert(g.id.clone(), tools.into_iter().map(|t| t.name).collect());
+            }
+        }
+        map
+    };
 
     let all_configs: Vec<AgentConfigRow> = configs.read().clone()
         .into_iter()
@@ -128,6 +132,13 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
                 let tools_set: std::collections::HashSet<String> =
                     serde_json::from_str(&c.tools).unwrap_or_default();
                 edit_tools.set(tools_set);
+                // 加载已保存的工具组关联
+                let conn = crate::db::get_db().lock().unwrap();
+                if let Ok(ids) = agent_config::load_group_ids(&conn, &c.id) {
+                    edit_groups.set(ids.into_iter().collect());
+                } else {
+                    edit_groups.set(std::collections::HashSet::new());
+                }
             } else {
                 editing_id.set(None);
                 edit_name.set(String::new());
@@ -137,6 +148,7 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
                 edit_temperature.set(0.7);
                 edit_max_tokens.set(String::new());
                 edit_tools.set(std::collections::HashSet::new());
+                edit_groups.set(std::collections::HashSet::new());
             }
         }
     };
@@ -157,7 +169,19 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
                 let v = edit_max_tokens.read().trim().to_string();
                 if v.is_empty() { None } else { v.parse::<u32>().ok() }
             };
-            let tools = serde_json::to_string(&*edit_tools.read()).unwrap_or_else(|_| "[]".to_string());
+            let tools = {
+                // 展开选中的工具组 → 工具名列表 → 去重
+                let mut tool_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+                let conn = crate::db::get_db().lock().unwrap();
+                for gid in edit_groups.read().iter() {
+                    if let Ok(tools) = crate::db::metadata::tool::list_tools_in_group(&conn, gid) {
+                        for t in &tools {
+                            tool_set.insert(t.name.clone());
+                        }
+                    }
+                }
+                serde_json::to_string(&tool_set.into_iter().collect::<Vec<_>>()).unwrap_or_else(|_| "[]".to_string())
+            };
             let is_new = editing_id.read().is_none();
 
             // 从 provider instance 获取 base_url 和 api_key
@@ -169,18 +193,10 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
                     Some(ref i) => (i.api_key.clone(), i.provider_id.clone()),
                     None => (String::new(), String::new()),
                 };
-                let decoded_key = if !raw_key.is_empty() {
-                    use base64::Engine;
-                    base64::engine::general_purpose::STANDARD.decode(raw_key.as_bytes())
-                        .ok().and_then(|v| String::from_utf8(v).ok())
-                        .unwrap_or_default()
-                } else {
-                    String::new()
-                };
                 let url = crate::db::metadata::provider::get(&conn, &prov_id)
                     .ok().flatten().map(|p| p.base_url).unwrap_or_default();
                 drop(conn);
-                (url, decoded_key)
+                (url, raw_key)
             };
 
             let row = AgentConfigRow {
@@ -199,11 +215,17 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
                 updated_at: now,
             };
 
+            let row_id = row.id.clone();
             let conn = crate::db::get_db().lock().unwrap();
             if is_new {
                 if let Err(e) = agent_config::insert(&conn, &row) { tracing::error!(target:"db", error=%e, "insert agent config"); }
             } else {
                 if let Err(e) = agent_config::update(&conn, &row) { tracing::error!(target:"db", error=%e, "update agent config"); }
+            }
+            // 保存工具组关联
+            let group_ids: Vec<String> = edit_groups.read().iter().cloned().collect();
+            if let Err(e) = agent_config::save_groups(&conn, &row_id, &group_ids) {
+                tracing::error!(target:"db", error=%e, "save agent config groups");
             }
             drop(conn);
             configs.set({
@@ -232,6 +254,16 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
 
     let is_new = editing_id().is_none();
     let is_provider_only = edit_mode == "provider_only";
+
+    // ── 工具组选择弹窗预计算 ──
+    let sel_gcache = group_tools_cache.clone();
+    let sel_grps = all_groups.clone();
+    let sel_selected = edit_groups.read().clone();
+    let sel_count = sel_selected.len();
+    let total_tools: usize = sel_selected.iter()
+        .filter_map(|id| sel_gcache.get(id))
+        .map(|v| v.len())
+        .sum();
 
     rsx! {
         div { class: "settings-section",
@@ -343,36 +375,29 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
                             }
                         }
                         div { class: "settings-field",
-                            label { class: "settings-field-label", "enabled tools" }
-                            div { class: "model-pill-grid",
-                                for (key, label) in ALL_TOOLS {
-                                    {
-                                        let is_checked = edit_tools.read().contains(*key);
-                                        let skey = key.to_string();
-                                        rsx! {
-                                            button {
-                                                class: if is_checked { "mode-pill is-active" } else { "mode-pill" },
-                                                onclick: {
-                                                    let sk = skey.clone();
-                                                    move |_| {
-                                                        let mut tools = edit_tools.write();
-                                                        if tools.contains(&sk) {
-                                                            tools.remove(&sk);
-                                                        } else {
-                                                            tools.insert(sk.clone());
-                                                        }
-                                                    }
-                                                },
-                                                style: "font-size: 11px;",
-                                                if is_checked { "✓ " } else { "" } "{key}"
+                            label { class: "settings-field-label", "tool groups" }
+                            div { class: "tools-group-selector-bar",
+                                // 显示已选组
+                                {all_groups.iter().filter_map(|g| {
+                                    if edit_groups.read().contains(&g.id) {
+                                        let gname = g.name.clone();
+                                        let cnt = group_tools_cache.get(&g.id).map(|v| v.len()).unwrap_or(0);
+                                        Some(rsx! {
+                                            span { class: "tools-group-pill",
+                                                "{gname} ({cnt})"
                                             }
-                                        }
+                                        })
+                                    } else {
+                                        None
                                     }
+                                })}
+                                if edit_groups.read().is_empty() {
+                                    span { class: "tools-group-pill is-empty", "(none = all tools)" }
                                 }
-                            }
-                            div { style: "margin-top: 4px;",
-                                span { style: "font-size: 11px; color: var(--color-ink-2, #888);",
-                                    "(empty = all tools enabled)"
+                                button {
+                                    class: "tools-group-select-btn",
+                                    onclick: move |_| show_group_selector.set(true),
+                                    "select groups ⋮"
                                 }
                             }
                         }
@@ -561,6 +586,94 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
                         } else {
                             span { "no agent configs yet" }
                             span { style: "color: var(--color-ink-4); font-size: var(--text-sm);", "click \"+ new agent config\" to create your first configuration" }
+                        }
+                    }
+                }
+        }
+
+        // ── 工具组选择弹窗（表格视图）──
+        if show_group_selector() {
+            div {
+                class: "settings-modal-backdrop",
+                onclick: move |_| show_group_selector.set(false),
+                div {
+                        class: "settings-modal-panel",
+                        style: "width: min(95vw, 720px);",
+                        onclick: move |evt| evt.stop_propagation(),
+                        div { class: "settings-modal-header",
+                            span { class: "settings-modal-title", "select tool groups" }
+                            button {
+                                class: "settings-modal-close",
+                                onclick: move |_| show_group_selector.set(false),
+                                "×"
+                            }
+                        }
+                        div { class: "settings-modal-body",
+                            div { class: "tools-selector-table-wrap",
+                                table { class: "tools-selector-table",
+                                    thead { tr {
+                                        th { style: "width: 30%;", "group" }
+                                        th { "tools" }
+                                        th { style: "width: 80px;", "count" }
+                                    } }
+                                    tbody {
+                                        {sel_grps.iter().map(|g| {
+                                            let gid = g.id.clone();
+                                            let gname = g.name.clone();
+                                            let gdesc = g.description.clone();
+                                            let is_sel = sel_selected.contains(&gid);
+                                            let tool_names = sel_gcache.get(&gid).cloned().unwrap_or_default();
+                                            let cnt = tool_names.len();
+                                            rsx! {
+                                                tr {
+                                                    class: if is_sel { "tools-selector-row is-selected" } else { "tools-selector-row" },
+                                                    onclick: {
+                                                        let gid2 = gid.clone();
+                                                        move |_| {
+                                                            let mut gs = edit_groups.write();
+                                                            if gs.contains(&gid2) { gs.remove(&gid2); }
+                                                            else { gs.insert(gid2.clone()); }
+                                                        }
+                                                    },
+                                                    td {
+                                                        span { class: "tools-selector-group-name", "{gname}" }
+                                                        if !gdesc.is_empty() {
+                                                            span { class: "tools-selector-group-desc", "{gdesc}" }
+                                                        }
+                                                    }
+                                                    td {
+                                                        div { class: "tools-selector-tool-list",
+                                                            for tn in &tool_names {
+                                                                span { class: "tools-selector-tool-tag", "{tn}" }
+                                                            }
+                                                        }
+                                                    }
+                                                    td {
+                                                        span { class: "tools-selector-count", "{cnt}" }
+                                                    }
+                                                }
+                                            }
+                                        })}
+                                    }
+                                }
+                            }
+                            div { class: "tools-selector-summary",
+                                span {
+                                    "{sel_count} groups selected · {total_tools} tools enabled"
+                                }
+                                span { style: "color: var(--color-ink-4); font-size: 11px;",
+                                    " (none = all tools)"
+                                }
+                            }
+                        }
+                        div { class: "settings-modal-header",
+                            style: "justify-content: flex-end; border-top: 1px solid var(--color-rule); padding: var(--space-sm) var(--space-lg);",
+                            button {
+                                class: "btn btn-send",
+                                style: "padding: 4px 20px; font-size: 12px;",
+                                onclick: move |_| show_group_selector.set(false),
+                                "done"
+                            }
                         }
                     }
                 }

@@ -317,7 +317,14 @@ fn render_segments(
                                             span { class: "tool-call-diff-stat", "{parse_diff_stat(result)}" }
                                         }
                                     } else {
-                                        span { class: "tool-call-args", "{tool_args_summary(&call.tool_name, &call.args)}" }
+                                        {
+                                            let summary = tool_args_summary(&call.tool_name, &call.args);
+                                            if !summary.is_empty() {
+                                                rsx! { span { class: "tool-call-args", "{summary}" } }
+                                            } else {
+                                                rsx! {}
+                                            }
+                                        }
                                     }
                                     span { class: "tool-call-status {sc}", "{status_text}" }
                                 }
@@ -365,6 +372,9 @@ fn status_class(status: &ToolCallStatus) -> &'static str {
 }
 
 fn tool_args_summary(tool_name: &str, args: &serde_json::Value) -> String {
+    if args.as_object().map_or(false, |o| o.is_empty()) {
+        return String::new();
+    }
     let keys: &[&str] = match tool_name {
         "bash" | "read_only_bash" => &["command"],
         "read_file" | "write_file" | "edit_file" | "multi_edit" => &["path"],

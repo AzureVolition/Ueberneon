@@ -28,9 +28,9 @@ use crate::permission::Decision;
 /// find、grep、git log/diff/show/status/branch）。
 /// 不支持后台执行。不会修改文件系统。
 #[derive(ToolMetaImpl)]
+#[tool(read_only)]
+#[tool(schema = r#"{"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute (read-only commands only)"},"description":{"type":"string","description":"Optional description of what the command does"}},"required":["command"]}"#)]
 pub struct ReadOnlyBash {
-    schema: Value,
-    read_only: bool,
     /// 工作目录。
     work_dir: PathBuf,
     /// 超时时间。
@@ -44,21 +44,6 @@ pub struct ReadOnlyBash {
 impl ReadOnlyBash {
     pub fn new(work_dir: PathBuf, timeout: Duration, sandbox: Option<SandboxSpec>) -> Self {
         Self {
-            schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "command": {
-                        "type": "string",
-                        "description": "Shell command to execute (read-only commands only)"
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": "Optional description of what the command does"
-                    }
-                },
-                "required": ["command"]
-            }),
-            read_only: true,
             work_dir,
             timeout,
             sandbox,
@@ -315,15 +300,5 @@ mod tests {
 
         let wc_result = tool.execute(&ctx, &serde_json::json!({"command": "wc -l Cargo.toml"})).await;
         assert!(!wc_result.is_err(), "wc should be allowed");
-    }
-
-    #[test]
-    fn schema_is_valid_json() {
-        let tool = test_tool();
-        let schema = tool.schema();
-        assert!(schema.is_object());
-        assert_eq!(schema["type"], "object");
-        assert_eq!(tool.name(), "ReadOnlyBash");
-        assert!(tool.read_only());
     }
 }

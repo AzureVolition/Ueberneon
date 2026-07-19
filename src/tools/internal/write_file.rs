@@ -27,9 +27,8 @@ use crate::permission::{Check, Decision, gate::PermissionChecked};
 ///
 /// `work_dir` 是工作目录的共享引用 —— 所有文件路径必须在此目录之下。
 #[derive(ToolMetaImpl)]
+#[tool(schema = r#"{"type":"object","properties":{"path":{"type":"string","description":"File path"},"content":{"type":"string","description":"File content to write"},"overwrite":{"type":"boolean","description":"If true, overwrite an existing file (default: false)"}},"required":["path","content"]}"#)]
 pub struct WriteFile {
-    schema: Value,
-    read_only: bool,
     /// 工作目录（共享引用语义）。
     work_dir: PathBuf,
     /// 检查点存储（写前记录快照）。
@@ -43,25 +42,6 @@ pub struct WriteFile {
 impl WriteFile {
     pub fn new(work_dir: PathBuf, checkpoint: Arc<SnapshotStore>, checks: Vec<Box<dyn Check>>, tracker: Arc<FileObserveTracker>) -> Self {
         Self {
-            schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "File path"
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "File content to write"
-                    },
-                    "overwrite": {
-                        "type": "boolean",
-                        "description": "If true, overwrite an existing file (default: false)"
-                    }
-                },
-                "required": ["path", "content"]
-            }),
-            read_only: false,
             work_dir,
             checkpoint,
             checks,
@@ -362,18 +342,6 @@ mod tests {
         assert!(snapshot.is_some(), "checkpoint should exist");
         assert_eq!(snapshot.unwrap().1, "original");
         let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn schema_is_valid_json() {
-        let work_dir = temp_dir();
-        std::fs::create_dir_all(&work_dir).unwrap();
-        let checkpoint = Arc::new(SnapshotStore::new());
-        let tool = WriteFile::new(work_dir, checkpoint, vec![], Arc::new(FileObserveTracker::new()));
-        let schema = tool.schema();
-        assert!(schema.is_object());
-        assert_eq!(schema["type"], "object");
-        assert!(schema["required"].as_array().unwrap().contains(&Value::String("content".into())));
     }
 
     #[test]

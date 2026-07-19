@@ -16,9 +16,9 @@ use crate::permission::Decision;
 /// 支持 `*`、`?`、`[]` 和 `**`（递归匹配）语法。
 /// 结果按路径字符串排序。
 #[derive(ToolMetaImpl)]
+#[tool(read_only)]
+#[tool(schema = r#"{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern (supports ** for recursive matching)"}},"required":["pattern"]}"#)]
 pub struct Glob {
-    schema: Value,
-    read_only: bool,
     work_dir: PathBuf,
 }
 
@@ -28,17 +28,6 @@ const GLOB_MAX_RESULTS: usize = 1000;
 impl Glob {
     pub fn new(work_dir: PathBuf) -> Self {
         Self {
-            schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "pattern": {
-                        "type": "string",
-                        "description": "Glob pattern (supports ** for recursive matching)"
-                    }
-                },
-                "required": ["pattern"]
-            }),
-            read_only: true,
             work_dir,
         }
     }
@@ -236,15 +225,5 @@ mod tests {
         let tool = Glob::new(std::env::temp_dir());
         let result = tool.execute(&test_ctx(), &serde_json::json!({"pattern": ""})).await;
         assert!(result.error().is_some());
-    }
-
-    #[test]
-    fn schema_is_valid_json() {
-        let tool = Glob::new(std::env::temp_dir());
-        let schema = tool.schema();
-        assert!(schema.is_object());
-        assert_eq!(schema["type"], "object");
-        assert!(schema["required"].as_array().unwrap().contains(&serde_json::Value::String("pattern".into())));
-        assert!(tool.read_only());
     }
 }

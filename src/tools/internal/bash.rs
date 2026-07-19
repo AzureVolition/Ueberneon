@@ -27,9 +27,8 @@ use crate::tools::internal::common::checkable_tool::CheckableTool;
 /// 使用场景：build、test、git、包管理器等需要真实操作系统命令的操作。
 /// 不要用于搜索/读取/编辑文件 —— 请使用专用的 grep / read_file / edit_file 工具。
 #[derive(ToolMetaImpl)]
+#[tool(schema = r#"{"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute"},"run_in_background":{"type":"boolean","description":"Run detached: returns a job id immediately and keeps running across turns. Use bash_output to read output and kill_shell to terminate."},"preserve_background_processes":{"type":"boolean","description":"After the shell command exits normally, keep any process-group members it intentionally left behind."}},"required":["command"]}"#)]
 pub struct Bash {
-    schema: Value,
-    read_only: bool,
     /// 工作目录（命令在此目录下执行）。
     work_dir: PathBuf,
     /// 每次命令的超时时间（仅前台模式）。
@@ -67,25 +66,6 @@ impl Bash {
         checks: Vec<Box<dyn Check>>,
     ) -> Self {
         Self {
-            schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "command": {
-                        "type": "string",
-                        "description": "Shell command to execute"
-                    },
-                    "run_in_background": {
-                        "type": "boolean",
-                        "description": "Run detached: returns a job id immediately and keeps running across turns. Use bash_output to read output and kill_shell to terminate."
-                    },
-                    "preserve_background_processes": {
-                        "type": "boolean",
-                        "description": "After the shell command exits normally, keep any process-group members it intentionally left behind."
-                    }
-                },
-                "required": ["command"]
-            }),
-            read_only: false,
             work_dir,
             timeout,
             job_manager,
@@ -369,15 +349,6 @@ mod tests {
         let result = bash.execute(&ctx, &args).await;
         assert!(!result.is_err(), "ls should be allowed in plan mode");
         assert!(result.error().is_none());
-    }
-
-    #[test]
-    fn schema_is_valid_json() {
-        let bash = test_bash();
-        let schema = bash.schema();
-        assert!(schema.is_object());
-        assert_eq!(schema["type"], "object");
-        assert!(schema["required"].as_array().unwrap().contains(&Value::String("command".into())));
     }
 
     #[tokio::test]
