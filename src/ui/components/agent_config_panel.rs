@@ -3,6 +3,14 @@
 use dioxus::prelude::*;
 
 use crate::db::metadata::agent_config::{self, AgentConfigRow};
+
+/// 将 markdown 转为 html
+fn markdown_to_html(md: &str) -> String {
+    let parser = pulldown_cmark::Parser::new_ext(md, pulldown_cmark::Options::ENABLE_TABLES);
+    let mut html = String::new();
+    pulldown_cmark::html::push_html(&mut html, parser);
+    html
+}
 use crate::db::metadata::provider_instance::{self, ProviderInstanceRow};
 use crate::db::metadata::provider::{self, ProviderRow};
 use crate::ui::components::dropdown::{Dropdown, DropdownOption};
@@ -77,6 +85,7 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
     let mut edit_max_tokens = use_signal(|| String::new());
     let mut edit_tools: Signal<std::collections::HashSet<String>> = use_signal(std::collections::HashSet::new);
     let mut deleting = use_signal(|| Option::<String>::None);
+    let mut viewing_prompt = use_signal(|| Option::<(String, String)>::None);
 
     let all_configs: Vec<AgentConfigRow> = configs.read().clone()
         .into_iter()
@@ -443,15 +452,80 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
                                             }
                                         }
                                     }
+                                    // ── tools ──
+                                    {
+                                        let tools_json = &cfg.tools;
+                                        let tools_arr: Vec<String> = if tools_json.is_empty() || tools_json == "[]" {
+                                            vec!["(all tools)".to_string()]
+                                        } else {
+                                            serde_json::from_str(tools_json).unwrap_or_default()
+                                        };
+                                        let tools_label = format!("tools ({})", tools_arr.len());
+                                        rsx! {
+                                            div { class: "provider-block-row",
+                                                div { class: "provider-block-row-left provider-block-row-tools",
+                                                    span { class: "provider-block-label", "{tools_label}" }
+                                                    div { class: "model-pill-grid",
+                                                        for tool in &tools_arr {
+                                                            span { class: "tool-pill", "{tool}" }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                     if !cfg.system_prompt.is_empty() {
                                         div { class: "provider-block-row",
                                             div { class: "provider-block-row-left",
                                                 span { class: "provider-block-label", "prompt" }
-                                                span { style: "font-size: 11px; color: var(--color-ink-2, #888); max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
+                                                span { style: "font-size: 11px; color: var(--color-ink-2, #888); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
                                                     "{cfg.system_prompt}"
                                                 }
                                             }
+                                            button {
+                                                class: "provider-block-action-btn",
+                                                onclick: {
+                                                    let c = cfg.clone();
+                                                    move |_| viewing_prompt.set(Some((c.name.clone(), c.system_prompt.clone())))
+                                                },
+                                                "view prompt"
+                                            }
                                         }
+                                    }
+                                }
+                                // ── Prompt 查看弹窗 ──
+                                {
+                                    let show = viewing_prompt.read().clone();
+                                    match show {
+                                        Some((ref _cfg_name, ref content)) => {
+                                            rsx! {
+                                                div {
+                                                    class: "settings-modal-backdrop",
+                                                    onclick: move |_| viewing_prompt.set(None),
+                                                    div {
+                                                        class: "settings-modal-panel prompt-modal",
+                                                        onclick: move |evt| evt.stop_propagation(),
+                                                        div { class: "settings-modal-header",
+                                                            span { class: "settings-modal-title", "system prompt" }
+                                                        }
+                                                        div { class: "settings-modal-body prompt-modal-body",
+                                                            div { class: "prompt-content",
+                                                                dangerous_inner_html: markdown_to_html(content)
+                                                            }
+                                                        }
+                                                        div { class: "prompt-modal-footer",
+                                                            button {
+                                                                class: "btn btn-send",
+                                                                style: "padding: 4px 16px; font-size: 11px;",
+                                                                onclick: move |_| viewing_prompt.set(None),
+                                                                "close"
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        None => rsx! {}
                                     }
                                 }
                                 if !readonly {

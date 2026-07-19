@@ -133,7 +133,7 @@ pub fn InputBar(
                     class: "mode-toggle-group",
                     label {
                         class: "mode-toggle-label",
-                        "agent"
+                        "agent mode"
                     }
                     div {
                         class: if running { "mode-pill-row is-disabled" } else { "mode-pill-row" },
@@ -156,7 +156,7 @@ pub fn InputBar(
                     class: "mode-toggle-group",
                     label {
                         class: "mode-toggle-label",
-                        "config"
+                        "agent config"
                     }
                     // 使用搜索版 Dropdown；没有可用配置时禁用交互
                     div {

@@ -37,7 +37,7 @@ impl SettingsTab {
         match self {
             SettingsTab::Providers => "⊕",
             SettingsTab::AgentConfigs => "⚙",
-            SettingsTab::SubAgents => "🤖",
+            SettingsTab::SubAgents => "⊞",
             SettingsTab::General => "◎",
             SettingsTab::Appearance => "◐",
             SettingsTab::Sql => "📋",
