@@ -15,6 +15,7 @@ pub enum SidebarView {
 pub enum SettingsTab {
     Providers,
     AgentConfigs,
+    SubAgents,
     General,
     Appearance,
     Sql,
@@ -25,6 +26,7 @@ impl SettingsTab {
         match self {
             SettingsTab::Providers => "provider instances",
             SettingsTab::AgentConfigs => "agent configs",
+            SettingsTab::SubAgents => "sub agents",
             SettingsTab::General => "general",
             SettingsTab::Appearance => "appearance",
             SettingsTab::Sql => "sql",
@@ -35,6 +37,7 @@ impl SettingsTab {
         match self {
             SettingsTab::Providers => "⊕",
             SettingsTab::AgentConfigs => "⚙",
+            SettingsTab::SubAgents => "🤖",
             SettingsTab::General => "◎",
             SettingsTab::Appearance => "◐",
             SettingsTab::Sql => "📋",

@@ -1,49 +1,6 @@
-use serde::{Deserialize, Serialize};
-use schemars::JsonSchema;
-use chrono::DateTime;
-use chrono::Utc;
+// ── Plan / ActionStep types ──────────────────────────────────────────────
+//
+// 类型定义已移至 model.rs 以便 UI 层直接引用。
+// 此文件保留为兼容性重导出。
 
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct Plan {
-    pub goal:String,
-    pub steps:Vec<ActionStep>,
-    pub difficulty:Difficulty,
-    pub estimated_minutes:u32,
-    pub status: PlanStatus,
-    pub started_at: Option<chrono::DateTime<chrono::Utc>>,
-}
-
-
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct ActionStep {
-    pub index: u8,
-    pub status: StepStatus,
-    pub description: String,
-    pub tool_hint: Option<String>
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub enum StepStatus {
-    Pending,
-    InProgress,
-    Completed,
-    Failed,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub enum PlanStatus {
-    Pending,
-    InProgress,
-    Completed,
-    Failed,
-    Canceled,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub enum Difficulty {
-    Easy,
-    Medium,
-    Hard,
-}
+pub use crate::model::{Plan, ActionStep, StepStatus, PlanStatus, Difficulty};

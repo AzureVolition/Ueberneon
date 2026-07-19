@@ -33,13 +33,13 @@ const ALL_TOOLS: &[(&str, &str)] = &[
 
 /// Agent 类型选项
 const AGENT_TYPES: &[(&str, &str)] = &[
-    ("general", "General — 通用助手"),
-    ("frontend-design", "Frontend Design — 前端设计"),
-    ("library-design", "Library Design — 库设计"),
+    ("InBuilt", "InBuilt — 内置助手"),
+    ("Custom", "Custom — 自定义助手"),
+    ("SubAgent", "SubAgent — 子 Agent"),
 ];
 
 #[component]
-pub fn AgentConfigPanel() -> Element {
+pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: String) -> Element {
     // ── DB 数据 ──
     let mut configs: Signal<Vec<AgentConfigRow>> = use_signal(|| {
         let conn = crate::db::get_db().lock().unwrap();
@@ -70,7 +70,6 @@ pub fn AgentConfigPanel() -> Element {
     let mut show_editor = use_signal(|| false);
     let mut editing_id = use_signal(|| Option::<String>::None);
     let mut edit_name = use_signal(String::new);
-    let mut edit_agent_type = use_signal(|| "general".to_string());
     let mut edit_provider_inst = use_signal(String::new);
     let mut edit_model = use_signal(String::new);
     let mut edit_system_prompt = use_signal(String::new);
@@ -79,7 +78,10 @@ pub fn AgentConfigPanel() -> Element {
     let mut edit_tools: Signal<std::collections::HashSet<String>> = use_signal(std::collections::HashSet::new);
     let mut deleting = use_signal(|| Option::<String>::None);
 
-    let all_configs = configs.read().clone();
+    let all_configs: Vec<AgentConfigRow> = configs.read().clone()
+        .into_iter()
+        .filter(|c| c.agent_type == filter_agent_type)
+        .collect();
     let all_instances = instances.read().clone();
     let all_providers = providers_cache.read().clone();
     let all_models = models_cache.read().clone();
@@ -108,7 +110,6 @@ pub fn AgentConfigPanel() -> Element {
             if let Some(c) = cfg {
                 editing_id.set(Some(c.id.clone()));
                 edit_name.set(c.name.clone());
-                edit_agent_type.set(c.agent_type.clone());
                 edit_provider_inst.set(c.provider_instance_id.clone());
                 edit_model.set(c.model.clone());
                 edit_system_prompt.set(c.system_prompt.clone());
@@ -121,7 +122,6 @@ pub fn AgentConfigPanel() -> Element {
             } else {
                 editing_id.set(None);
                 edit_name.set(String::new());
-                edit_agent_type.set("general".to_string());
                 edit_provider_inst.set(String::new());
                 edit_model.set(String::new());
                 edit_system_prompt.set(String::new());
@@ -139,7 +139,7 @@ pub fn AgentConfigPanel() -> Element {
             let id = editing_id.read().clone().unwrap_or_else(gen_id);
             let name = edit_name.read().trim().to_string();
             if name.is_empty() { return; }
-            let agent_type = edit_agent_type.read().clone();
+            //let agent_type = edit_agent_type.read().clone();
             let provider_inst = edit_provider_inst.read().clone();
             let model = edit_model.read().clone();
             let system_prompt = edit_system_prompt.read().clone();
@@ -177,7 +177,7 @@ pub fn AgentConfigPanel() -> Element {
             let row = AgentConfigRow {
                 id: if is_new { gen_id() } else { editing_id.read().clone().unwrap() },
                 name,
-                agent_type,
+                agent_type: filter_agent_type.clone(),
                 provider_instance_id: provider_inst,
                 model,
                 base_url,
@@ -222,10 +222,11 @@ pub fn AgentConfigPanel() -> Element {
 
 
     let is_new = editing_id().is_none();
+    let is_provider_only = edit_mode == "provider_only";
 
     rsx! {
         div { class: "settings-section",
-            if show_editor() {
+            if show_editor() && (!readonly || is_provider_only) {
                 div {
                     class: "settings-modal-backdrop",
                     onclick: move |_| { show_editor.set(false); editing_id.set(None); edit_name.set(String::new()); },
@@ -244,24 +245,15 @@ pub fn AgentConfigPanel() -> Element {
                         }
                         div { class: "settings-modal-body",
                             div { class: "provider-form",
-                    div { class: "settings-field",
-                        label { class: "settings-field-label", "name" }
-                        input {
-                            class: "settings-input",
-                            placeholder: "my agent config",
-                            value: "{edit_name}",
-                            oninput: move |evt| edit_name.set(evt.value()),
-                        }
-                    }
-                    div { class: "settings-field",
-                        label { class: "settings-field-label", "agent type" }
-                        Dropdown {
-                            value: edit_agent_type(),
-                            options: AGENT_TYPES.iter().map(|(key, label)| DropdownOption {
-                                value: key.to_string(),
-                                label: label.to_string(),
-                            }).collect(),
-                            onchange: move |val| edit_agent_type.set(val),
+                    if !is_provider_only {
+                        div { class: "settings-field",
+                            label { class: "settings-field-label", "name" }
+                            input {
+                                class: "settings-input",
+                                placeholder: "my agent config",
+                                value: "{edit_name}",
+                                oninput: move |evt| edit_name.set(evt.value()),
+                            }
                         }
                     }
                     div { class: "settings-field",
@@ -301,76 +293,78 @@ pub fn AgentConfigPanel() -> Element {
                             onchange: move |val| edit_model.set(val),
                         }
                     }
-                    div { class: "settings-field",
-                        label { class: "settings-field-label", "system prompt" }
-                        textarea {
-                            class: "settings-input",
-                            style: "min-height: 120px; resize: vertical; font-family: var(--font-mono, monospace); font-size: 12px;",
-                            placeholder: "You are a helpful assistant...",
-                            value: "{edit_system_prompt}",
-                            oninput: move |evt| edit_system_prompt.set(evt.value()),
-                        }
-                    }
-                    div { class: "settings-field",
-                        label { class: "settings-field-label", "temperature" }
-                        div { style: "display: flex; align-items: center; gap: 8px;",
-                            input {
-                                r#type: "range",
-                                min: "0.0",
-                                max: "2.0",
-                                step: "0.1",
-                                value: "{edit_temperature}",
-                                oninput: move |evt| {
-                                    if let Ok(v) = evt.value().parse::<f64>() {
-                                        edit_temperature.set(v);
-                                    }
-                                },
-                                style: "flex: 1;",
+                    if !is_provider_only {
+                        div { class: "settings-field",
+                            label { class: "settings-field-label", "system prompt" }
+                            textarea {
+                                class: "settings-input",
+                                style: "min-height: 120px; resize: vertical; font-family: var(--font-mono, monospace); font-size: 12px;",
+                                placeholder: "You are a helpful assistant...",
+                                value: "{edit_system_prompt}",
+                                oninput: move |evt| edit_system_prompt.set(evt.value()),
                             }
-                            span { "{edit_temperature:.1}" }
                         }
-                    }
-                    div { class: "settings-field",
-                        label { class: "settings-field-label", "max tokens" }
-                        input {
-                            class: "settings-input",
-                            r#type: "number",
-                            placeholder: "4096",
-                            value: "{edit_max_tokens}",
-                            oninput: move |evt| edit_max_tokens.set(evt.value()),
+                        div { class: "settings-field",
+                            label { class: "settings-field-label", "temperature" }
+                            div { style: "display: flex; align-items: center; gap: 8px;",
+                                input {
+                                    r#type: "range",
+                                    min: "0.0",
+                                    max: "2.0",
+                                    step: "0.1",
+                                    value: "{edit_temperature}",
+                                    oninput: move |evt| {
+                                        if let Ok(v) = evt.value().parse::<f64>() {
+                                            edit_temperature.set(v);
+                                        }
+                                    },
+                                    style: "flex: 1;",
+                                }
+                                span { "{edit_temperature:.1}" }
+                            }
                         }
-                    }
-                    div { class: "settings-field",
-                        label { class: "settings-field-label", "enabled tools" }
-                        div { class: "model-pill-grid",
-                            for (key, label) in ALL_TOOLS {
-                                {
-                                    let is_checked = edit_tools.read().contains(*key);
-                                    let skey = key.to_string();
-                                    rsx! {
-                                        button {
-                                            class: if is_checked { "mode-pill is-active" } else { "mode-pill" },
-                                            onclick: {
-                                                let sk = skey.clone();
-                                                move |_| {
-                                                    let mut tools = edit_tools.write();
-                                                    if tools.contains(&sk) {
-                                                        tools.remove(&sk);
-                                                    } else {
-                                                        tools.insert(sk.clone());
+                        div { class: "settings-field",
+                            label { class: "settings-field-label", "max tokens" }
+                            input {
+                                class: "settings-input",
+                                r#type: "number",
+                                placeholder: "4096",
+                                value: "{edit_max_tokens}",
+                                oninput: move |evt| edit_max_tokens.set(evt.value()),
+                            }
+                        }
+                        div { class: "settings-field",
+                            label { class: "settings-field-label", "enabled tools" }
+                            div { class: "model-pill-grid",
+                                for (key, label) in ALL_TOOLS {
+                                    {
+                                        let is_checked = edit_tools.read().contains(*key);
+                                        let skey = key.to_string();
+                                        rsx! {
+                                            button {
+                                                class: if is_checked { "mode-pill is-active" } else { "mode-pill" },
+                                                onclick: {
+                                                    let sk = skey.clone();
+                                                    move |_| {
+                                                        let mut tools = edit_tools.write();
+                                                        if tools.contains(&sk) {
+                                                            tools.remove(&sk);
+                                                        } else {
+                                                            tools.insert(sk.clone());
+                                                        }
                                                     }
-                                                }
-                                            },
-                                            style: "font-size: 11px;",
-                                            if is_checked { "✓ " } else { "" } "{key}"
+                                                },
+                                                style: "font-size: 11px;",
+                                                if is_checked { "✓ " } else { "" } "{key}"
+                                            }
                                         }
                                     }
                                 }
                             }
-                        }
-                        div { style: "margin-top: 4px;",
-                            span { style: "font-size: 11px; color: var(--color-ink-2, #888);",
-                                "(empty = all tools enabled)"
+                            div { style: "margin-top: 4px;",
+                                span { style: "font-size: 11px; color: var(--color-ink-2, #888);",
+                                    "(empty = all tools enabled)"
+                                }
                             }
                         }
                     }
@@ -396,12 +390,14 @@ pub fn AgentConfigPanel() -> Element {
                     }
             } else {
                 // ── 列表 ──
-                button {
-                    class: "provider-add-btn",
-                    onclick: move |_| {
-                        start_edit(None);
-                    },
-                    "+ new agent config"
+                if !readonly {
+                    button {
+                        class: "provider-add-btn",
+                        onclick: move |_| {
+                            start_edit(None);
+                        },
+                        "+ new agent config"
+                    }
                 }
 
                 for cfg in &all_configs {
@@ -436,13 +432,15 @@ pub fn AgentConfigPanel() -> Element {
                                             span { class: "provider-block-label", "temperature" }
                                             span { "{cfg.temperature:.1}" }
                                         }
-                                        button {
-                                            class: "provider-block-action-btn",
-                                            onclick: {
-                                                let c = cfg.clone();
-                                                move |_| start_edit(Some(&c))
-                                            },
-                                            "edit"
+                                        if !readonly || is_provider_only {
+                                            button {
+                                                class: "provider-block-action-btn",
+                                                onclick: {
+                                                    let c = cfg.clone();
+                                                    move |_| start_edit(Some(&c))
+                                                },
+                                                "edit"
+                                            }
                                         }
                                     }
                                     if !cfg.system_prompt.is_empty() {
@@ -456,22 +454,24 @@ pub fn AgentConfigPanel() -> Element {
                                         }
                                     }
                                 }
-                                div { class: "provider-block-footer",
-                                    if show_confirm {
-                                        div { class: "provider-block-confirm-delete",
-                                            span { class: "provider-block-confirm-text",
-                                                "delete \"{cfg.name}\"? this cannot be undone."
+                                if !readonly {
+                                    div { class: "provider-block-footer",
+                                        if show_confirm {
+                                            div { class: "provider-block-confirm-delete",
+                                                span { class: "provider-block-confirm-text",
+                                                    "delete \"{cfg.name}\"? this cannot be undone."
+                                                }
+                                                div { class: "provider-block-confirm-actions",
+                                                    button { class: "btn btn-cancel", style: "padding: 2px 10px; font-size: 10px;", onclick: move |_| deleting.set(None), "cancel" }
+                                                    button { class: "btn btn-send", style: "padding: 2px 10px; font-size: 10px; background: var(--color-error); color: var(--color-paper);", onclick: { let sid = cfg.id.clone(); move |_| do_delete(sid.clone()) }, "confirm delete" }
+                                                }
                                             }
-                                            div { class: "provider-block-confirm-actions",
-                                                button { class: "btn btn-cancel", style: "padding: 2px 10px; font-size: 10px;", onclick: move |_| deleting.set(None), "cancel" }
-                                                button { class: "btn btn-send", style: "padding: 2px 10px; font-size: 10px; background: var(--color-error); color: var(--color-paper);", onclick: { let sid = cfg.id.clone(); move |_| do_delete(sid.clone()) }, "confirm delete" }
+                                        } else {
+                                            button {
+                                                class: "provider-block-delete-btn",
+                                                onclick: { let sid = cfg.id.clone(); move |_| deleting.set(Some(sid.clone())) },
+                                                "delete"
                                             }
-                                        }
-                                    } else {
-                                        button {
-                                            class: "provider-block-delete-btn",
-                                            onclick: { let sid = cfg.id.clone(); move |_| deleting.set(Some(sid.clone())) },
-                                            "delete"
                                         }
                                     }
                                 }
@@ -482,8 +482,12 @@ pub fn AgentConfigPanel() -> Element {
 
                 if all_configs.is_empty() {
                     div { class: "provider-empty-state",
-                        span { "no agent configs yet" }
-                        span { style: "color: var(--color-ink-4); font-size: var(--text-sm);", "click \"+ new agent config\" to create your first configuration" }
+                        if readonly {
+                            span { "no sub agents" }
+                        } else {
+                            span { "no agent configs yet" }
+                            span { style: "color: var(--color-ink-4); font-size: var(--text-sm);", "click \"+ new agent config\" to create your first configuration" }
+                        }
                     }
                 }
             }

@@ -3,10 +3,11 @@
 // 只显示已接入的 provider 实例，每个实例块可删除 / 刷新模型 / 更改密钥。
 // 添加实例时从 providers 表（预设）选择服务，再指定 alias + key。
 
+use dioxus::html::g::format;
 use dioxus::prelude::*;
 
 use crate::agent::{ActionMode, AgentMode};
-use crate::db::metadata::agent_config;
+use crate::db::metadata::agent_config::{self, AgentType};
 use crate::db::metadata::provider::{self, ProviderRow};
 use crate::db::metadata::provider_instance::{self, ProviderInstanceRow};
 use crate::db::provider_presets::{self, ProviderPreset};
@@ -629,10 +630,21 @@ pub fn SettingsPanel(tab: SettingsTab, on_change: EventHandler<()>) -> Element {
                     rsx! {
                         div { class: "settings-header",
                             h2 { class: "settings-title", "agent configs" }
-                            span { class: "settings-subtitle", "manage agent profiles and tool permissions" }
+                            span { class: "settings-subtitle", "manage custom agent profiles and tool permissions" }
                         }
                         div { class: "settings-section",
-                            AgentConfigPanel { }
+                            AgentConfigPanel { filter_agent_type: format!("{}", AgentType::Custom), readonly: false, edit_mode: "full".to_string() }
+                        }
+                    }
+                }
+                SettingsTab::SubAgents => {
+                    rsx! {
+                        div { class: "settings-header",
+                            h2 { class: "settings-title", "sub agents" }
+                            span { class: "settings-subtitle", "configure provider and model for sub-agents" }
+                        }
+                        div { class: "settings-section",
+                            AgentConfigPanel { filter_agent_type: "SubAgent".to_string(), readonly: true, edit_mode: "provider_only".to_string() }
                         }
                     }
                 }

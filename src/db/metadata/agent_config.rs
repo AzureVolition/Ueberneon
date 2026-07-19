@@ -1,5 +1,7 @@
 // ── Agent 配置 CRUD ──
 
+use std::path::Display;
+
 use rusqlite::{params, Connection, Result};
 
 /// 数据库行
@@ -7,7 +9,7 @@ use rusqlite::{params, Connection, Result};
 pub struct AgentConfigRow {
     pub id: String,
     pub name: String,
-    pub agent_type: String,       // "general" | "frontend-design" | "library-design"
+    pub agent_type: String,       // "InBuilt" | "Custom" | "SubAgent"
     pub provider_instance_id: String,
     pub model: String,
     pub base_url: String,         // 保存时从 provider 自动填充
@@ -18,6 +20,23 @@ pub struct AgentConfigRow {
     pub tools: String,            // JSON 数组: ["Bash","ReadFile",...]  空数组 = 全部
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug)]
+pub enum AgentType {
+    InBuilt,
+    Custom,
+    SubAgent,
+}
+
+impl std::fmt::Display for AgentType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AgentType::InBuilt => write!(f, "InBuilt"),
+            AgentType::Custom => write!(f, "Custom"),
+            AgentType::SubAgent => write!(f, "SubAgent"),
+        }
+    }
 }
 
 /// 插入一条 agent 配置

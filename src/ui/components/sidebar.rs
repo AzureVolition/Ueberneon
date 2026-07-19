@@ -151,6 +151,7 @@ pub fn Sidebar(
                     let tabs = [
                         SettingsTab::Providers,
                         SettingsTab::AgentConfigs,
+                        SettingsTab::SubAgents,
                         SettingsTab::General,
                         SettingsTab::Appearance,
                         SettingsTab::Sql,

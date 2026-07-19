@@ -774,6 +774,14 @@ body {
   background: radial-gradient(ellipse 60% 50% at 20% 30%, var(--color-paper-emit) 0%, transparent 65%);
 }
 
+/* chat + plan side-by-side row */
+.chat-area {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+}
+
 /* ═══════════════════════════════════════════════
    CHAT PANEL
    ═══════════════════════════════════════════════ */
@@ -3468,7 +3476,7 @@ body {
 
 .settings-modal-body {
   padding: var(--space-lg);
-  overflow-y: auto;
+  overflow: visible;
   flex: 1;
 }
 
@@ -3487,5 +3495,382 @@ body {
   border: 1px dashed var(--color-rule);
   border-radius: var(--radius-md);
   min-height: 160px;
+}
+
+/* ═══════════════════════════════════════════════
+   PLAN PANEL — Kanban board for plan mode
+   ═══════════════════════════════════════════════ */
+
+/* ── Panel container ── */
+.plan-panel {
+  width: 340px;
+  min-width: 280px;
+  max-width: 420px;
+  border-left: 1px solid var(--color-rule);
+  background: var(--color-paper);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+/* ── Header ── */
+.plan-header {
+  padding: var(--space-md) var(--space-md) var(--space-sm);
+  border-bottom: 1px solid var(--color-rule);
+  flex-shrink: 0;
+}
+
+.plan-header-eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-micro);
+  text-transform: uppercase;
+  color: var(--color-accent);
+  margin: 0 0 var(--space-2xs);
+}
+
+.plan-header-goal {
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  font-weight: 400;
+  color: var(--color-ink);
+  line-height: 1.2;
+  letter-spacing: var(--tracking-tight);
+  margin: 0 0 var(--space-2xs);
+  text-transform: lowercase;
+}
+
+.plan-header-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-ink-3);
+  letter-spacing: 0.04em;
+}
+
+.plan-header-meta-sep {
+  color: var(--color-rule-2);
+}
+
+/* ── Progress bar ── */
+.plan-progress {
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--color-rule);
+  flex-shrink: 0;
+}
+
+.plan-progress-track {
+  width: 100%;
+  height: 3px;
+  background: var(--color-paper-3);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.plan-progress-fill {
+  height: 100%;
+  background: var(--color-accent);
+  border-radius: 2px;
+  transition: width 400ms var(--ease-out);
+  box-shadow: 0 0 6px var(--color-glow-2);
+}
+
+.plan-progress-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-ink-4);
+  letter-spacing: 0.04em;
+  margin-top: var(--space-2xs);
+  text-align: right;
+}
+
+/* ── Board (3-column grid) ── */
+.plan-board {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--space-sm);
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: var(--space-xs);
+  align-content: start;
+}
+
+/* ── Column ── */
+.plan-column {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.plan-column-header {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: var(--space-2xs) var(--space-2xs);
+  border-radius: var(--radius-sm);
+  text-align: center;
+  line-height: 1.4;
+}
+
+.plan-column-header--todo {
+  color: var(--color-ink-3);
+  background: var(--color-paper-2);
+}
+
+.plan-column-header--doing {
+  color: var(--color-accent);
+  background: oklch(72% 0.20 200 / 0.08);
+}
+
+.plan-column-header--done {
+  color: var(--color-success);
+  background: oklch(62% 0.08 170 / 0.08);
+}
+
+/* ── Card ── */
+.plan-card {
+  background: var(--color-paper-2);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-md);
+  padding: var(--space-xs) var(--space-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  position: relative;
+  transition: border-color var(--dur-fast) var(--ease-out),
+              background var(--dur-fast) var(--ease-out),
+              transform 200ms var(--ease-out),
+              box-shadow var(--dur-fast) var(--ease-out);
+}
+
+.plan-card:hover {
+  border-color: var(--color-rule-2);
+}
+
+/* ── Card status indicators ── */
+.plan-card--pending {
+  /* default style */
+}
+
+.plan-card--doing {
+  border-color: oklch(72% 0.20 200 / 0.25);
+  background: oklch(16% 0.016 265);
+  box-shadow: 0 0 8px var(--color-glow-2);
+}
+
+.plan-card--doing::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  pointer-events: none;
+  animation: plan-card-pulse 2s var(--ease-in-out) infinite;
+}
+
+@keyframes plan-card-pulse {
+  0%, 100% { box-shadow: 0 0 4px var(--color-glow-2); }
+  50%      { box-shadow: 0 0 12px var(--color-glow); }
+}
+
+.plan-card--done {
+  border-color: oklch(62% 0.08 170 / 0.15);
+  opacity: 0.75;
+}
+
+.plan-card--failed {
+  border-color: oklch(68% 0.22 330 / 0.20);
+  box-shadow: 0 0 6px var(--color-glow-pink);
+}
+
+/* Card header row */
+.plan-card-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+}
+
+/* Status dot */
+.plan-card-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.plan-card-dot--pending {
+  border: 1.5px solid var(--color-ink-4);
+  background: transparent;
+}
+
+.plan-card-dot--doing {
+  background: var(--color-accent);
+  box-shadow: 0 0 6px var(--color-glow-2);
+  animation: plan-dot-pulse 1.5s var(--ease-in-out) infinite;
+}
+
+@keyframes plan-dot-pulse {
+  0%, 100% { box-shadow: 0 0 4px var(--color-glow-2); }
+  50%      { box-shadow: 0 0 10px var(--color-glow); }
+}
+
+.plan-card-dot--done {
+  background: var(--color-success);
+}
+
+.plan-card-dot--failed {
+  background: var(--color-error);
+  box-shadow: 0 0 6px var(--color-glow-pink);
+}
+
+/* Step index */
+.plan-card-index {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--color-ink-3);
+  letter-spacing: 0.04em;
+  line-height: 1;
+}
+
+.plan-card--doing .plan-card-index {
+  color: var(--color-accent);
+}
+
+.plan-card--done .plan-card-index {
+  color: var(--color-success);
+}
+
+/* Done checkmark */
+.plan-card-check {
+  font-size: 10px;
+  color: var(--color-success);
+  margin-left: auto;
+  line-height: 1;
+}
+
+/* Card description */
+.plan-card-desc {
+  font-family: var(--font-body);
+  font-size: var(--text-xs);
+  color: var(--color-ink-2);
+  line-height: 1.45;
+  text-transform: lowercase;
+  margin: 0;
+}
+
+.plan-card--doing .plan-card-desc {
+  color: var(--color-ink);
+}
+
+/* Card tool hint */
+.plan-card-hint {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--color-ink-4);
+  letter-spacing: 0.03em;
+  padding-top: var(--space-2xs);
+  border-top: 1px solid var(--color-rule);
+  line-height: 1.4;
+}
+
+/* ── Status bar ── */
+.plan-status-bar {
+  padding: var(--space-sm) var(--space-md);
+  border-top: 1px solid var(--color-rule);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-ink-3);
+  letter-spacing: 0.03em;
+  min-height: 36px;
+}
+
+.plan-status-bar-arrow {
+  color: var(--color-accent);
+  flex-shrink: 0;
+}
+
+.plan-status-bar-cursor {
+  display: inline-block;
+  width: 6px;
+  height: 12px;
+  background: var(--color-accent);
+  animation: plan-cursor-blink 1s steps(2) infinite;
+  border-radius: 1px;
+  margin-left: 2px;
+  vertical-align: middle;
+}
+
+@keyframes plan-cursor-blink {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0; }
+}
+
+.plan-status-bar-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Empty state ── */
+.plan-panel-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-xs);
+  padding: var(--space-3xl) var(--space-md);
+  text-align: center;
+  flex: 1;
+}
+
+.plan-panel-empty-icon {
+  font-size: 32px;
+  line-height: 1;
+  opacity: 0.3;
+}
+
+.plan-panel-empty-text {
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  color: var(--color-ink-4);
+  margin: 0;
+}
+
+/* ── Reduced motion ── */
+@media (prefers-reduced-motion: reduce) {
+  .plan-card--doing::before {
+    animation: none;
+  }
+
+  .plan-card-dot--doing {
+    animation: none;
+  }
+
+  .plan-status-bar-cursor {
+    animation: none;
+    opacity: 1;
+  }
+
+  .plan-progress-fill {
+    transition: none;
+  }
+
+  .plan-card {
+    transition: none;
+  }
 }
 

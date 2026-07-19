@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::hook::{AgentEvent, HookRegister};
 use super::{AgentMode, ActionMode, ToolContext, ToolResult};
-use crate::model::{ChatMessage, Role as ChatRole, StreamSegment, ToolCallRecord, ToolCallStatus, UiMessage};
+use crate::model::{ChatMessage, Role as ChatRole, StreamSegment, ToolCallRecord, ToolCallStatus, UiMessage, Plan, ActionStep, StepStatus, PlanStatus, Difficulty};
 use crate::permission::Decision;
 use llm::{Chunk, Message, Provider, Request, Role as LlmRole, ToolCall};
 
@@ -34,12 +34,14 @@ impl Agent {
             tool_calls: Arc::new(Mutex::new(Vec::new())),
             version: Arc::new(AtomicU64::new(0)),
             approval_tx: Arc::new(Mutex::new(None)),
+            plan: Arc::new(Mutex::new(None)),
         };
         let streaming = UiMessage::Streaming {
             segments: state.segments.clone(),
             tool_calls: state.tool_calls.clone(),
             version: state.version.clone(),
             approval_tx: state.approval_tx.clone(),
+            plan: state.plan.clone(),
         };
         self.streaming_handle = Some(state);
         streaming
@@ -54,13 +56,14 @@ impl Agent {
         cancel_token: CancellationToken,
     ) -> anyhow::Result<UiMessage> {
 
-        let (segments_arc, tool_calls_arc, version_arc, approval_arc) =
+        let (segments_arc, tool_calls_arc, version_arc, approval_arc, plan_arc) =
             match self.streaming_handle.as_ref(){
                 Some(ss) => (
                     ss.segments.clone(),
                     ss.tool_calls.clone(),
                     ss.version.clone(),
                     ss.approval_tx.clone(),
+                    ss.plan.clone(),
                 ),
                 None => {
                     self.create_streaming();
@@ -72,6 +75,7 @@ impl Agent {
                         ss.tool_calls.clone(),
                         ss.version.clone(),
                         ss.approval_tx.clone(),
+                        ss.plan.clone(),
                     )
                 },
             };
@@ -169,6 +173,14 @@ impl Agent {
                     self.push_message(msg)?;
                 }
                 break;
+            }
+
+            // ── Plan mode: try to extract plan from first response ──
+            if matches!(self.plan_mode, ActionMode::Plan) && round == 1 {
+                if let Some(plan) = try_extract_plan(&output) {
+                    *plan_arc.lock().unwrap() = Some(plan);
+                    inc_version_atomic(&version_arc);
+                }
             }
 
             // Assistant 消息入 self.messages
@@ -371,6 +383,31 @@ fn build_content_from_segments(segments: &[StreamSegment]) -> String {
         if let StreamSegment::Text(t) = seg { content.push_str(t); }
     }
     content
+}
+
+/// Try to extract a Plan from LLM output text.
+/// Looks for JSON code blocks or raw JSON objects containing plan fields.
+fn try_extract_plan(text: &str) -> Option<Plan> {
+    // Try to find JSON inside ```json fences
+    if let Some(start) = text.find("```json") {
+        let after_fence = &text[start + 7..];
+        if let Some(end) = after_fence.find("```") {
+            let json_str = after_fence[..end].trim();
+            if let Ok(plan) = serde_json::from_str::<Plan>(json_str) {
+                return Some(plan);
+            }
+        }
+    }
+    // Try raw JSON (find first { and last })
+    if let Some(start) = text.find('{') {
+        if let Some(end) = text.rfind('}') {
+            let json_str = &text[start..=end];
+            if let Ok(plan) = serde_json::from_str::<Plan>(json_str) {
+                return Some(plan);
+            }
+        }
+    }
+    None
 }
 
 pub fn main_agent_prompt() -> String {

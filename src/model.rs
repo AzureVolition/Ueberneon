@@ -3,7 +3,8 @@
 // 独立于 UI 层，供 agent、store、ui 等模块共享。
 // 从 src/ui/state.rs 迁移而来。
 
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, Utc};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::AtomicU64;
@@ -150,6 +151,50 @@ pub fn format_relative_time(dt: &DateTime<Local>) -> String {
     }
 }
 
+// ── Plan / ActionStep types ──────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct Plan {
+    pub goal: String,
+    pub steps: Vec<ActionStep>,
+    pub difficulty: Difficulty,
+    pub estimated_minutes: u32,
+    pub status: PlanStatus,
+    pub started_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct ActionStep {
+    pub index: u8,
+    pub status: StepStatus,
+    pub description: String,
+    pub tool_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub enum StepStatus {
+    Pending,
+    InProgress,
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub enum PlanStatus {
+    Pending,
+    InProgress,
+    Completed,
+    Failed,
+    Canceled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema,PartialEq)]
+pub enum Difficulty {
+    Easy,
+    Medium,
+    Hard,
+}
+
 // ── UI 消息 ──────────────────────────────────────────────────────────────────
 
 /// Agent 内部流式状态，通过 Arc 与 UI 共享
@@ -159,6 +204,7 @@ pub struct StreamingState {
     pub tool_calls: Arc<Mutex<Vec<ToolCallRecord>>>,
     pub version: Arc<AtomicU64>,
     pub approval_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<bool>>>>,
+    pub plan: Arc<Mutex<Option<Plan>>>,
 }
 
 /// UI 层的消息表示。运行时使用，不持久化。
@@ -173,5 +219,6 @@ pub enum UiMessage {
         tool_calls: Arc<Mutex<Vec<ToolCallRecord>>>,
         version: Arc<AtomicU64>,
         approval_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<bool>>>>,
+        plan: Arc<Mutex<Option<Plan>>>,
     },
 }

@@ -7,8 +7,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::manager::AgentManager;
 use crate::agent::{ActionMode, AgentMode};
+use crate::model::Plan;
 use crate::ui::components::chat_panel::ChatPanel;
 use crate::ui::components::input_bar::InputBar;
+use crate::ui::components::plan_panel::PlanPanel;
 use crate::ui::components::sidebar::Sidebar;
 use crate::ui::components::settings_panel::SettingsPanel;
 use crate::ui::state::*;
@@ -166,6 +168,18 @@ pub fn App() -> Element {
     // 流式状态缓存
     let streaming_states: Arc<Mutex<HashMap<String, UiMessage>>> =
         Arc::new(Mutex::new(HashMap::new()));
+
+    // 计划看板信号 — 从流式消息中提取 Plan
+    let plan_signal = use_memo(move || {
+        let _ = tick();
+        let msgs = messages.read();
+        for msg in msgs.iter().rev() {
+            if let UiMessage::Streaming { plan, .. } = msg {
+                return plan.lock().unwrap().clone();
+            }
+        }
+        None
+    });
 
     // ── 选择项目 ──
     let mut on_select_project = {
@@ -413,10 +427,10 @@ pub fn App() -> Element {
                                     }
                                 }
                             }
-                            SettingsTab::AgentConfigs => {
+                            SettingsTab::AgentConfigs | SettingsTab::SubAgents => {
                                 rsx! {
                                     SettingsPanel {
-                                        tab: SettingsTab::AgentConfigs,
+                                        tab: tab.clone(),
                                         on_change: move |_| {
                                         },
                                     }
@@ -426,21 +440,27 @@ pub fn App() -> Element {
                     }
                     _ => {
                         rsx! {
-                            ChatPanel {
-                                messages,
-                                tick,
-                                is_streaming,
-                                markdown_to_html: markdown_to_html,
-                            on_approve: {
-                                let resp = approval_responder;
-                                move |(allowed,): (bool,)| {
-                                    if let Some(tx) = resp.read().lock().unwrap_or_else(|e| e.into_inner()).take() {
-                                        let _ = tx.send(allowed);
+                            div {
+                                class: "chat-area",
+                                ChatPanel {
+                                    messages,
+                                    tick,
+                                    is_streaming,
+                                    markdown_to_html: markdown_to_html,
+                                on_approve: {
+                                    let resp = approval_responder;
+                                    move |(allowed,): (bool,)| {
+                                        if let Some(tx) = resp.read().lock().unwrap_or_else(|e| e.into_inner()).take() {
+                                            let _ = tx.send(allowed);
+                                        }
+                                        pending_approval.set(None);
                                     }
-                                    pending_approval.set(None);
-                                }
-                            },
-                        }
+                                },
+                            }
+                            PlanPanel {
+                                plan: plan_signal.read().clone(),
+                            }
+                            }
                         InputBar {
                             is_streaming,
                             action_mode,
