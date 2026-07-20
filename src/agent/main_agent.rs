@@ -12,7 +12,7 @@ use super::hook::AgentEvent;
 use super::{ActionMode, ToolContext};
 use crate::model::{ChatMessage, Role as ChatRole, StreamSegment, ToolCallRecord, ToolCallStatus, UiMessage, Plan};
 use crate::permission::Decision;
-use llm::{Chunk, Message, Provider, Request, Role as LlmRole, ToolCall};
+use llm::{Chunk, Message, Request, Role as LlmRole, ToolCall};
 
 // ── select! 辅助枚举 ────────────────────────────────────────────────────────
 
