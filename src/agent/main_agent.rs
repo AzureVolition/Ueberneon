@@ -84,7 +84,7 @@ impl Agent {
 
         self.push_message(Message { role: LlmRole::User, content: Some(user_input), timestamp: Some(chrono::Utc::now()), ..Default::default() })?;
 
-        let mut final_output = String::new();
+        let mut _final_output = String::new();
         let mut final_reasoning = String::new();
         let mut cancelled = false;
 
@@ -114,7 +114,7 @@ impl Agent {
                 Err(e) => {
                     let msg = format!("Stream error: {e}");
                     push_text(&segments_arc, &msg, &version_arc);
-                    final_output = msg;
+                    _final_output = msg;
                     break;
                 }
             };
@@ -159,7 +159,7 @@ impl Agent {
             if cancelled {
                 let output_empty = output.is_empty();
                 let reasoning_empty = reasoning.is_empty();
-                final_output = output.clone();
+                _final_output = output.clone();
                 final_reasoning.push_str(&reasoning);
                 if !output_empty || !pending_tool_calls.is_empty() {
                     let msg = Message {
@@ -291,7 +291,7 @@ impl Agent {
                 }
             }
 
-            final_output = output;
+            _final_output = output;
             final_reasoning.push_str(&reasoning);
             if !have_tool_calls { break; }
         }
@@ -308,7 +308,7 @@ impl Agent {
         let tool_records_snapshot = tool_calls_arc.lock().unwrap().clone();
 
         let content = build_content_from_segments(&segments_snapshot);
-        let content = if content.is_empty() { final_output.clone() } else { content };
+        let content = if content.is_empty() { _final_output.clone() } else { content };
 
         Ok(UiMessage::Static(ChatMessage {
             role: ChatRole::Assistant, content,

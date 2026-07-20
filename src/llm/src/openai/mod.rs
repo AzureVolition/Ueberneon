@@ -322,7 +322,7 @@ struct SsePromptTokenDetails {
     #[serde(default)]
     cached_tokens: Option<u32>,
     #[serde(default)]
-    cache_creation_input_tokens: Option<u32>,
+    _cache_creation_input_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]

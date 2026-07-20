@@ -322,7 +322,7 @@ mod tests {
         let pid = project::create(&conn, "p", "/p").unwrap();
         let cid = conversation::create(&conn, &pid, "c", None).unwrap();
 
-        let id1 = create_test_msg(&conn, &cid, LlmRole::User, "active msg");
+        let _id1 = create_test_msg(&conn, &cid, LlmRole::User, "active msg");
         // 手动插入一条 compressed 消息
         conn.execute(
             "INSERT INTO messages (conversation_id, role, content, timestamp, active)
