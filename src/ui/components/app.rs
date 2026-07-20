@@ -129,6 +129,29 @@ fn load_messages_from_db(conv_id: &str) -> Vec<ChatMessage> {
     result
 }
 
+
+/// 确保对话已加载到 runtimes 中（幂等）。
+/// 首次进入时从 DB 加载 + streaming_states 补全。
+fn ensure_conv_loaded(
+    conv_id: &str,
+    mut runtimes: Signal<HashMap<String, ConversationRuntime>>,
+    streaming_states: Arc<Mutex<HashMap<String, UiMessage>>>,
+) {
+    if runtimes.read().contains_key(conv_id) {
+        return;
+    }
+    let mut msgs: Vec<UiMessage> = {
+        load_messages_from_db(conv_id).into_iter().map(UiMessage::Static).collect()
+    };
+    if let Some(streaming) = streaming_states.lock().unwrap_or_else(|e| e.into_inner()).get(conv_id) {
+        while msgs.last().map_or(false, |m| matches!(m, UiMessage::Static(cm) if cm.role == Role::Assistant)) {
+            msgs.pop();
+        }
+        msgs.push(streaming.clone());
+    }
+    runtimes.write().insert(conv_id.to_string(), ConversationRuntime { messages: msgs, ..Default::default() });
+}
+
 #[component]
 pub fn App() -> Element {
     // ── 项目状态（从 DB 加载）──
@@ -148,16 +171,12 @@ pub fn App() -> Element {
     let mut active_project_id = use_signal(|| Option::<String>::None);
     let mut sidebar_view = use_signal(|| SidebarView::ProjectList);
     let mut active_conversation_id = use_signal(|| String::new());
-    let mut messages = use_signal(Vec::<UiMessage>::new);
-    let mut streaming_segments = use_signal(Vec::<StreamSegment>::new);
+    let mut runtimes = use_signal(|| HashMap::<String, ConversationRuntime>::new());
     let is_streaming = use_signal(|| false);
-    let tick = use_signal(|| 0u64);
-    let mut streaming_project_id = use_signal(|| Option::<String>::None);
+    let mut streaming_project_id = use_signal(Vec::<String>::new);
     let mut active_tool_calls = use_signal(Vec::<ToolCallRecord>::new);
-    let action_mode = use_signal(|| ActionMode::Regular);
-    let agent_mode = use_signal(|| AgentMode::Ask);
-    let mut agent_handler = use_signal(|| Option::<AgentHandler>::None);
-    
+    let mut action_mode = use_signal(|| ActionMode::Regular);
+    let mut agent_mode = use_signal(|| AgentMode::Ask);
 
     // ── Agent config 选择状态 ──
     let agent_configs: Signal<Vec<crate::db::metadata::agent_config::AgentConfigRow>> = use_signal(|| {
@@ -178,7 +197,6 @@ pub fn App() -> Element {
     let mut pending_approval = use_signal(|| Option::<PendingApproval>::None);
     let approval_responder: Signal<Arc<Mutex<Option<tokio::sync::oneshot::Sender<bool>>>>> =
         use_signal(|| Arc::new(Mutex::new(None)));
-    let mut cancel_token: Signal<Option<CancellationToken>> = use_signal(|| None);
     let mut error_signal = use_signal(ErrorSignal::new);
     use_context_provider(|| error_signal);
 
@@ -186,10 +204,12 @@ pub fn App() -> Element {
     let streaming_states: Arc<Mutex<HashMap<String, UiMessage>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
+    // 对话快照缓存（切走时暂存，切回时恢复）
     // 计划看板信号 — 从流式消息中提取 Plan
     let plan_signal = use_memo(move || {
-        let _ = tick();
-        let msgs = messages.read();
+        let cid = active_conversation_id();
+        let _ = runtimes.read().get(&cid).map(|r| r.tick).unwrap_or(0);
+        let msgs = runtimes.read().get(&cid).map(|r| r.messages.clone()).unwrap_or_default();
         for msg in msgs.iter().rev() {
             if let UiMessage::Streaming { plan, .. } = msg {
                 return plan.lock().unwrap().clone();
@@ -209,6 +229,7 @@ pub fn App() -> Element {
             let convs = crate::db::with_db(|conn| {
                 crate::db::metadata::conversation::list_by_project(conn, &project_id).unwrap_or_default()
             });
+            let first_conv_id = convs.first().map(|c| c.id.clone());
             let mut projs = projects.write();
             if let Some(proj) = projs.iter_mut().find(|p| p.id == project_id) {
                 proj.conversations = convs.into_iter().map(|c| Conversation {
@@ -217,26 +238,19 @@ pub fn App() -> Element {
                 }).collect();
             }
             drop(projs);
+            // 自动进入第一个对话
+            if let Some(first_id) = first_conv_id {
+                active_conversation_id.set(first_id.clone());
 
-            let projs = projects.read();
-            if let Some(proj) = projs.iter().find(|p| p.id == project_id) {
-                if let Some(first) = proj.conversations.first() {
-                    let cid = first.id.clone();
-                    drop(projs);
-                    active_conversation_id.set(cid.clone());
-                    let mut msgs: Vec<UiMessage> = {
-                        load_messages_from_db(&cid).into_iter().map(UiMessage::Static).collect()
-                    };
-                    if let Some(streaming) = ss.lock().unwrap_or_else(|e| e.into_inner()).get(&cid) {
-                        msgs.push(streaming.clone());
+                // ── 从 runtime 恢复 agent_mode ──
+                if let Some(rt) = runtimes.read().get(&first_id) {
+                    if let Some(ref h) = rt.agent_handler {
+                        agent_mode.set(*h.agent_mode.lock().unwrap());
                     }
-                    messages.set(msgs);
-                    return;
                 }
+
+                ensure_conv_loaded(&first_id, runtimes, ss.clone());
             }
-            active_conversation_id.set(String::new());
-            messages.set(Vec::new());
-            streaming_segments.set(Vec::new());
         }
     };
 
@@ -244,8 +258,7 @@ pub fn App() -> Element {
         sidebar_view.set(SidebarView::ProjectList);
         active_project_id.set(None);
         active_conversation_id.set(String::new());
-        messages.set(Vec::new());
-        streaming_segments.set(Vec::new());
+        runtimes.write().insert(active_conversation_id(), ConversationRuntime { messages: Vec::new(), ..Default::default() });
     };
 
     let on_new_project = move |(name, path): (String, String)| {
@@ -265,8 +278,7 @@ pub fn App() -> Element {
         active_project_id.set(Some(new_id.clone()));
         sidebar_view.set(SidebarView::ConversationList(new_id));
         active_conversation_id.set(String::new());
-        messages.set(Vec::new());
-        streaming_segments.set(Vec::new());
+        runtimes.write().insert(active_conversation_id(), ConversationRuntime { messages: Vec::new(), ..Default::default() });
     };
 
     let on_new_conversation = move |_| {
@@ -295,8 +307,7 @@ pub fn App() -> Element {
             }
         }
         active_conversation_id.set(conv_id.clone());
-        messages.set(Vec::new());
-        streaming_segments.set(Vec::new());
+        runtimes.write().insert(active_conversation_id(), ConversationRuntime { messages: Vec::new(), ..Default::default() });
         active_tool_calls.set(Vec::new());
     };
 
@@ -305,16 +316,15 @@ pub fn App() -> Element {
         move |conv_id: String| {
             active_conversation_id.set(conv_id.clone());
 
-            let mut msgs: Vec<UiMessage> = {
-                load_messages_from_db(&conv_id).into_iter().map(UiMessage::Static).collect()
-            };
-            if msgs.is_empty() && !conv_id.is_empty() {
-                tracing::warn!("load_messages_from_db returned empty for conv={}", conv_id);
+            // ── 从 runtime 恢复 agent_mode ──
+            if let Some(rt) = runtimes.read().get(&conv_id) {
+                if let Some(ref h) = rt.agent_handler {
+                    agent_mode.set(*h.agent_mode.lock().unwrap());
+                }
             }
-            if let Some(streaming) = ss.lock().unwrap_or_else(|e| e.into_inner()).get(&conv_id) {
-                msgs.push(streaming.clone());
-            }
-            messages.set(msgs);
+
+            // ── 首次进入：从 DB 加载 ──
+            ensure_conv_loaded(&conv_id, runtimes, ss.clone());
         }
     };
 
@@ -323,8 +333,7 @@ pub fn App() -> Element {
             .unwrap_or_else(|| crate::db::DEFAULT_PROJECT_ID.to_string());
         if *active_conversation_id.read() == conv_id {
             active_conversation_id.set(String::new());
-            messages.set(Vec::new());
-            streaming_segments.set(Vec::new());
+            runtimes.write().insert(active_conversation_id(), ConversationRuntime { messages: Vec::new(), ..Default::default() });
             active_tool_calls.set(Vec::new());
         }
         crate::db::try_with_db(|conn| {
@@ -337,7 +346,7 @@ pub fn App() -> Element {
                 proj.conversations.retain(|c| c.id != conv_id);
             }
         }
-        AgentManager::get().lock().unwrap().remove(&conv_id);
+        AgentManager::get().remove(&conv_id);
         let curr = sidebar_view.read().clone();
         sidebar_view.set(curr);
     };
@@ -348,8 +357,7 @@ pub fn App() -> Element {
         if is_current {
             sidebar_view.set(SidebarView::ProjectList);
             active_project_id.set(None);
-            messages.set(Vec::new());
-            streaming_segments.set(Vec::new());
+            runtimes.write().insert(active_conversation_id(), ConversationRuntime { messages: Vec::new(), ..Default::default() });
         }
         // 获取项目下的对话 ID 列表（先释放 DB 锁再操作 AgentManager）
         let conv_ids: Vec<String> = crate::db::with_db(|conn| {
@@ -359,7 +367,7 @@ pub fn App() -> Element {
                 .map(|c| c.id)
                 .collect()
         });
-        let mut mgr = AgentManager::get().lock().unwrap();
+        let mgr = AgentManager::get();
         for cid in &conv_ids { mgr.remove(cid); }
         drop(mgr);
         crate::db::try_with_db(|conn| {
@@ -473,8 +481,8 @@ pub fn App() -> Element {
                             div {
                                 class: "chat-area",
                                 ChatPanel {
-                                    messages,
-                                    tick,
+                                    runtimes,
+                                    active_conv_id: active_conversation_id,
                                     is_streaming,
                                     markdown_to_html: markdown_to_html,
                                 on_approve: {
@@ -506,17 +514,28 @@ pub fn App() -> Element {
                             },
                             on_agent_mode_change: {
                                 let mut am = agent_mode;
-                                let handler_sig = agent_handler;
+                                let rt_sig = runtimes;
+                                let cid_sig = active_conversation_id;
                                 move |new_mode: AgentMode| {
                                     am.set(new_mode);
-                                    if let Some(ref h) = *handler_sig.read() {
-                                        *h.agent_mode.lock().unwrap() = new_mode;
+                                    let cid = cid_sig();
+                                    if let Some(rt) = rt_sig.read().get(&cid) {
+                                        if let Some(ref h) = rt.agent_handler {
+                                            *h.agent_mode.lock().unwrap() = new_mode;
+                                        }
                                     }
                                 }
                             },
-                            on_cancel: move |_| {
-                                if let Some(ref token) = *cancel_token.read() {
-                                    token.cancel();
+                            on_cancel: {
+                                let rt_sig = runtimes;
+                                let cid_sig = active_conversation_id;
+                                move |_| {
+                                    let cid = cid_sig();
+                                    if let Some(rt) = rt_sig.read().get(&cid) {
+                                        if let Some(ref token) = rt.cancel_token {
+                                            token.cancel();
+                                        }
+                                    }
                                 }
                             },
                             on_send: {
@@ -544,12 +563,11 @@ pub fn App() -> Element {
                                 timestamp: chrono::Local::now(),
                                 tool_calls: vec![], reasoning: String::new(), segments: Vec::new(),
                             };
-                            messages.write().push(UiMessage::Static(user_msg.clone()));
 
                             // 对话 ID
                             let cid = if conv_id.is_empty() {
                                 // 新对话：由 init_or_get 生成 id 并创建 DB 行
-                                let mut mgr = AgentManager::get().lock().unwrap();
+                                let mgr = AgentManager::get();
                                 let current_ac_id = selected_agent_config_id.read().clone();
                                 let ac_id_for_conv: Option<&str> = if current_ac_id.is_empty() { None } else { Some(current_ac_id.as_str()) };
                                 let (new_cid, handler) = mgr.init_or_get(
@@ -557,8 +575,7 @@ pub fn App() -> Element {
                                     Some(pid.clone()),
                                     ac_id_for_conv,
                                 ).unwrap_or_else(|_| (String::new(), AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)) }));
-                                agent_handler.set(Some(handler));
-                                drop(mgr);
+                                runtimes.write().entry(new_cid.clone()).or_default().agent_handler = Some(handler);
                                 let now = chrono::Local::now();
                                 {
                                     let mut p = projs.write();
@@ -578,14 +595,13 @@ pub fn App() -> Element {
                                 new_cid
                             } else {
                                 // 已有对话：确保 Agent 在缓存中，获取 handler
-                                let mut mgr = AgentManager::get().lock().unwrap();
+                                let mgr = AgentManager::get();
                                 if let Ok(handler) = mgr.init(&conv_id) {
-                                    agent_handler.set(Some(handler));
+                                    runtimes.write().entry(conv_id.clone()).or_default().agent_handler = Some(handler);
                                 }
                                 conv_id
                             };
-
-                 
+                            runtimes.write().entry(cid.clone()).or_default().messages.push(UiMessage::Static(user_msg.clone()));
 
                             // DB 更新对话标题 + 项目活跃时间
                             crate::db::try_with_db(|conn| {
@@ -608,33 +624,29 @@ pub fn App() -> Element {
                                     proj.last_activity_at = Some(chrono::Local::now());
                                 }
                                 drop(p);
-                            streaming_project_id.set(Some(pid.clone()));
+                            streaming_project_id.write().push(pid.clone());
 
                             
                             let cur_action_mode = action_mode();
                             let cur_agent_mode = agent_mode();
                             let bridge_cancel = CancellationToken::new();
-                            cancel_token.set(Some(bridge_cancel.clone()));
+                            runtimes.write().entry(cid.clone()).or_default().cancel_token = Some(bridge_cancel.clone());
 
                             let ss = streaming_states.clone();
-                            let cid2 = cid.clone();
-                            let streaming_proj_sig = streaming_project_id;
-
                             spawn(async move {
-                                crate::ui::bridge::run_agent_loop(
-                                    input,
-                                    cur_action_mode,
-                                    cur_agent_mode,
-                                    messages,
+                                crate::ui::bridge::run_agent_loop(crate::ui::bridge::BridgeContext {
+                                    user_input: input,
+                                    action_mode: cur_action_mode,
+                                    agent_mode: cur_agent_mode,
+                                    runtimes,
                                     is_streaming,
-                                    streaming_proj_sig,
-                                    bridge_cancel,
-                                    cid2.clone(),
-                                    ss,
-                                    tick,
-                                    err_sig,
-                                )
-                                .await;
+                                    streaming_project_id,
+                                    project_id: pid.clone(),
+                                    cancel_token: bridge_cancel,
+                                    conversation_id: cid,
+                                    streaming_states: ss,
+                                    error_signal: err_sig,
+                                }).await;
                             });
                         }
                     },

@@ -2,6 +2,26 @@
 
 pub use crate::model::*;
 
+/// 对话运行时数据（per-conv，由 bridge 异步写入，UI 读取）
+#[derive(Clone)]
+pub struct ConversationRuntime {
+    pub messages: Vec<UiMessage>,
+    pub tick: u64,
+    pub agent_handler: Option<crate::agent::AgentHandler>,
+    pub cancel_token: Option<tokio_util::sync::CancellationToken>,
+}
+
+impl Default for ConversationRuntime {
+    fn default() -> Self {
+        Self {
+            messages: Vec::new(),
+            tick: 0,
+            agent_handler: None,
+            cancel_token: None,
+        }
+    }
+}
+
 /// 侧边栏视图状态
 #[derive(Clone, PartialEq)]
 pub enum SidebarView {

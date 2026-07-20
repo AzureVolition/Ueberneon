@@ -1,19 +1,28 @@
 use dioxus::desktop::use_window;
 use dioxus::prelude::*;
+use std::collections::HashMap;
 
 use crate::model::{Role, StreamSegment, ToolCallRecord, ToolCallStatus, UiMessage};
+use crate::ui::state::ConversationRuntime;
 
 /// 对话面板 —— 消息列表 + 流式输出 + 空状态 + 时序导航
 #[component]
 pub fn ChatPanel(
-    messages: Signal<Vec<UiMessage>>,
-    tick: Signal<u64>,
+    runtimes: Signal<HashMap<String, ConversationRuntime>>,
+    active_conv_id: Signal<String>,
     is_streaming: Signal<bool>,
     markdown_to_html: fn(&str) -> String,
     on_approve: EventHandler<(bool,)>,
 ) -> Element {
-    let msgs = messages.read();
-    let _tick = tick(); // 绑定 tick，变化时触发重渲染
+    let cid = active_conv_id();
+    let (msgs, _tick) = {
+        let rt = runtimes.read();
+        let r = rt.get(&cid);
+        (
+            r.map(|r| r.messages.clone()).unwrap_or_default(),
+            r.map(|r| r.tick).unwrap_or(0),
+        )
+    };
     let running = is_streaming();
     let window = use_window();
     let win = window.clone();

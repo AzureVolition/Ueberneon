@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 
 use super::hook::HookRegister;
 use super::prompts::{PromptBuilder, PromptContext};
@@ -56,17 +56,17 @@ impl AgentConfig {
 
 /// 全局 Agent 管理器
 pub struct AgentManager {
-    agents: HashMap<String, Agent>,
+    agents: RwLock<HashMap<String, Agent>>,
 }
 
 impl AgentManager {
     /// 获取全局单例
-    pub fn get() -> &'static Mutex<Self> {
-        static INSTANCE: OnceLock<Mutex<AgentManager>> = OnceLock::new();
+    pub fn get() -> &'static Self {
+        static INSTANCE: OnceLock<AgentManager> = OnceLock::new();
         INSTANCE.get_or_init(|| {
-            Mutex::new(AgentManager {
-                agents: HashMap::new(),
-            })
+            AgentManager {
+                agents: RwLock::new(HashMap::new()),
+            }
         })
     }
 
@@ -169,7 +169,7 @@ impl AgentManager {
     /// - `conv_id = None`：新建对话，生成 id，创建 Agent，注册，返回 (id, handler)。
     /// - `conv_id = Some(id)`：优先从缓存返回；缓存 miss 则从 DB 重建并注册，返回 handler。
     pub fn init_or_get(
-        &mut self,
+        &self,
         conv_id: Option<String>,
         project_id: Option<String>,
         agent_config_id: Option<&str>,
@@ -202,15 +202,18 @@ impl AgentManager {
                 let agent =
                     Self::build_agent_inner(id.clone(), project_id, &agent_config)?;
                 let handler = agent.handler.clone();
-                self.agents.insert(id.clone(), agent);
+                self.agents.write().unwrap().insert(id.clone(), agent);
                 Ok((id, handler))
             }
         }
     }
 
-    pub fn init(&mut self, id: &str) -> Result<AgentHandler, String> {
-        if self.agents.contains_key(id) {
-            return Ok(self.agents.get(id).unwrap().handler.clone());
+    pub fn init(&self, id: &str) -> Result<AgentHandler, String> {
+        {
+            let agents = self.agents.read().unwrap();
+            if let Some(agent) = agents.get(id) {
+                return Ok(agent.handler.clone());
+            }
         }
         // 从 DB 重建
         let (conv, msgs) = crate::db::with_db(|conn| -> Result<_, String> {
@@ -237,7 +240,7 @@ impl AgentManager {
         let mut agent = Self::build_agent_inner(id.to_string(), Some(conv.project_id), &agent_config)?;
         agent.messages.extend(msgs);
         let handler = agent.handler.clone();
-        self.agents.insert(id.to_string(), agent);
+        self.agents.write().unwrap().insert(id.to_string(), agent);
         Ok(handler)
     }
 
@@ -259,19 +262,19 @@ impl AgentManager {
     
 
     /// 从缓存移除并返回 Agent（ownership 转移，适合取出后异步执行）。
-    pub fn remove(&mut self, id: &str) -> Option<Agent> {
-        self.agents.remove(id)
+    pub fn remove(&self, id: &str) -> Option<Agent> {
+        self.agents.write().unwrap().remove(id)
     }
 
     /// 将 Agent 注册回缓存。
-    pub fn register(&mut self, agent: Agent) {
+    pub fn register(&self, agent: Agent) {
         let id = agent.conversation_id.clone();
-        self.agents.insert(id, agent);
+        self.agents.write().unwrap().insert(id, agent);
     }
 
     /// 检查对话是否存在（缓存 or DB）。
     pub fn exists(&self, id: &str) -> Result<bool, String> {
-        if self.agents.contains_key(id) {
+        if self.agents.read().unwrap().contains_key(id) {
             return Ok(true);
         }
         let found = crate::db::with_db(|conn| {
@@ -282,8 +285,8 @@ impl AgentManager {
         Ok(found)
     }
 
-    /// 读取缓存的 Agent（不取出所有权，适用于同步只读场景）。
-    pub fn get_agent(&self, id: &str) -> Option<&Agent> {
-        self.agents.get(id)
+    /// 读取缓存的 Agent handler（不取出所有权，适合只读场景）。
+    pub fn get_agent(&self, id: &str) -> Option<AgentHandler> {
+        self.agents.read().unwrap().get(id).map(|a| a.handler.clone())
     }
 }

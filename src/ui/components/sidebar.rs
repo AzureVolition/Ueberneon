@@ -10,7 +10,7 @@ pub fn Sidebar(
     active_project_id: Signal<Option<String>>,
     sidebar_view: Signal<SidebarView>,
     active_conversation_id: Signal<String>,
-    streaming_project_id: Signal<Option<String>>,
+    streaming_project_id: Signal<Vec<String>>,
     on_new_project: EventHandler<(String, String)>,
     on_new_conversation: EventHandler<()>,
     on_select_project: EventHandler<String>,
@@ -307,7 +307,7 @@ pub fn Sidebar(
                                         proj.indicator_color.clone()
                                     };
                                     // 当前项目是否正在生成对话
-                                    let is_streaming_this = *streaming_project_id.read() == Some(proj_id.clone());
+                                    let is_streaming_this = streaming_project_id.read().contains(&proj_id);
 
                                     rsx! {
                                         div {

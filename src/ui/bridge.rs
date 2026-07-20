@@ -7,7 +7,6 @@
 // 4. 通过 AgentManager 注册回缓存
 
 use dioxus::prelude::*;
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -17,22 +16,39 @@ use crate::agent::{ActionMode, Agent, AgentMode};
 use crate::model::*;
 use crate::ui::components::error::*;
 
-pub async fn run_agent_loop(
-    user_input: String,
-    action_mode: ActionMode,
-    agent_mode_val: AgentMode,
-    mut messages: Signal<Vec<UiMessage>>,
-    mut is_streaming: Signal<bool>,
-    mut streaming_project_id: Signal<Option<String>>,
-    cancel_token: CancellationToken,
-    conversation_id: String,
-    streaming_states: Arc<Mutex<HashMap<String, UiMessage>>>,
-    mut tick_signal: Signal<u64>,
-    mut error_signal: Signal<ErrorSignal>,
-) {
+/// bridge 运行时上下文 —— 打包 run_agent_loop 的所有入参。
+pub struct BridgeContext {
+    pub user_input: String,
+    pub action_mode: ActionMode,
+    pub agent_mode: AgentMode,
+    pub runtimes: Signal<std::collections::HashMap<String, crate::ui::state::ConversationRuntime>>,
+    pub is_streaming: Signal<bool>,
+    pub streaming_project_id: Signal<Vec<String>>,
+    pub project_id: String,
+    pub cancel_token: CancellationToken,
+    pub conversation_id: String,
+    pub streaming_states: Arc<Mutex<std::collections::HashMap<String, UiMessage>>>,
+    pub error_signal: Signal<ErrorSignal>,
+}
+
+pub async fn run_agent_loop(ctx: BridgeContext) {
+    let BridgeContext {
+        user_input,
+        action_mode,
+        agent_mode: agent_mode_val,
+        mut runtimes,
+        mut is_streaming,
+        mut streaming_project_id,
+        project_id,
+        cancel_token,
+        conversation_id,
+        streaming_states,
+        mut error_signal,
+    } = ctx;
+
     is_streaming.set(true);
-    if let Err(e) = crate::agent::manager::AgentManager::get().lock()
-        .unwrap().init(&conversation_id){
+    if let Err(e) = crate::agent::manager::AgentManager::get()
+        .init(&conversation_id){
             error_signal.write().push(ErrorInfo::new(
                 "AGENT_ERROR",
                 "Agent init fail",
@@ -44,8 +60,6 @@ pub async fn run_agent_loop(
         }
     // 从 Manager 取出 Agent
     let mut agent = crate::agent::manager::AgentManager::get()
-        .lock()
-        .unwrap()
         .remove(&conversation_id)
         .expect("agent must be in cache before run_agent_loop");
     agent.plan_mode = action_mode;
@@ -53,7 +67,7 @@ pub async fn run_agent_loop(
 
     // Agent 内部创建流式状态
     let streaming = agent.create_streaming();
-    messages.write().push(streaming.clone());
+    runtimes.write().entry(conversation_id.clone()).or_default().messages.push(streaming.clone());
     streaming_states.lock().unwrap().insert(conversation_id.clone(), streaming.clone());
 
 
@@ -84,7 +98,7 @@ pub async fn run_agent_loop(
         };
         if v != last_v {
             last_v = v;
-            tick_signal.set(v);
+            runtimes.write().entry(conversation_id.clone()).or_default().tick = v;
         }
 
         if let Some((ag, result)) = result_cell.lock().unwrap().take() {
@@ -92,17 +106,21 @@ pub async fn run_agent_loop(
                 Ok(ui_msg) => {
                     // 替换 Streaming → Static
                     {
-                        let mut msgs = messages.write();
-                        if let Some(pos) = msgs.iter().position(|m| matches!(m, UiMessage::Streaming { .. })) {
-                            msgs[pos] = ui_msg;
+                        let mut all = runtimes.write();
+                        if let Some(rt) = all.get_mut(&conversation_id) {
+                            if let Some(pos) = rt.messages.iter().position(|m| matches!(m, UiMessage::Streaming { .. })) {
+                                rt.messages[pos] = ui_msg;
+                            }
                         }
                     }
                 }
                 Err(e) => {
                     // 移除 Streaming 占位
                     {
-                        let mut msgs = messages.write();
-                        msgs.retain(|m| !matches!(m, UiMessage::Streaming { .. }));
+                        let mut all = runtimes.write();
+                        if let Some(rt) = all.get_mut(&conversation_id) {
+                            rt.messages.retain(|m| !matches!(m, UiMessage::Streaming { .. }));
+                        }
                     }
                     // 通过 error_signal 通知前端
                     error_signal.write().push(ErrorInfo::new(
@@ -116,12 +134,10 @@ pub async fn run_agent_loop(
             }
 
             is_streaming.set(false);
-            streaming_project_id.set(None);
+            streaming_project_id.write().retain(|id| id != &project_id);
             
             streaming_states.lock().unwrap().remove(&conversation_id);
             crate::agent::manager::AgentManager::get()
-                .lock()
-                .unwrap()
                 .register(ag);
             return;
         }
