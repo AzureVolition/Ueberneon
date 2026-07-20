@@ -2,9 +2,9 @@ pub mod hook;
 pub mod main_agent;
 pub mod action_plan;
 pub mod manager;
+pub mod prompts;
 use anyhow::Context;
 pub use llm::tool::ToolMeta;
-pub use main_agent::main_agent_prompt;
 
 // ── Tool trait ──────────────────────────────────────────────────────────────
 

@@ -15,7 +15,6 @@ use crate::ui::components::settings_panel::SettingsPanel;
 use crate::ui::state::*;
 use crate::ui::state::SettingsTab;
 use crate::settings;
-use crate::agent::main_agent_prompt;
 
 
 /// Markdown 转 HTML 辅助函数
@@ -555,7 +554,6 @@ pub fn App() -> Element {
                                 let ac_id_for_conv: Option<&str> = if current_ac_id.is_empty() { None } else { Some(current_ac_id.as_str()) };
                                 let (new_cid, handler) = mgr.init_or_get(
                                     None,
-                                    &main_agent_prompt(),
                                     Some(pid.clone()),
                                     ac_id_for_conv,
                                 ).unwrap_or_else(|_| (String::new(), AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)) }));

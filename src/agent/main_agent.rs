@@ -410,6 +410,6 @@ fn try_extract_plan(text: &str) -> Option<Plan> {
     None
 }
 
-pub fn main_agent_prompt() -> String {
-    "You are a helpful assistant.".to_string()
+pub fn defautlt_main_agent_prompt() -> String {
+    "You are a helpful assistant. Current workspace: ${workspace_path}.".to_string()
 }

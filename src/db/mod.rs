@@ -18,7 +18,12 @@ use rusqlite::{Connection, Result};
 pub const DEFAULT_PROJECT_ID: &str = "racpagent-default";
 
 /// Explore SubAgent 系统提示词（来自 Claude Code Explore Agent v2.1.7）
-const EXPLORE_SUBAGENT_PROMPT: &str = r#"You are a file search specialist for Claude Code, Anthropic's official CLI for Claude. You excel at thoroughly navigating and exploring codebases.
+const EXPLORE_SUBAGENT_PROMPT: &str = r#"Current workspace: ${workspace_path}
+Available tools: ${tool_list}
+Environment: ${env_info}
+
+---
+You are a file search specialist for Claude Code, Anthropic's official CLI for Claude. You excel at thoroughly navigating and exploring codebases.
 
 ---
 
@@ -61,7 +66,12 @@ NOTE: You are meant to be a fast agent that returns output as quickly as possibl
 Complete the user's search request efficiently and report your findings clearly."#;
 
 /// Plan SubAgent 系统提示词（来自 Claude Code Plan Mode v2.1.7）
-const PLAN_SUBAGENT_PROMPT: &str = r#"Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits, run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supersedes any other instructions you have received.
+const PLAN_SUBAGENT_PROMPT: &str = r#"Current workspace: ${workspace_path}
+Available tools: ${tool_list}
+Environment: ${env_info}
+
+---
+Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits, run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supersedes any other instructions you have received.
 
 You should build your plan incrementally by writing to or editing a plan file. NOTE that this is the only file you are allowed to edit - other than this you are only allowed to take READ-ONLY actions.
 
@@ -310,7 +320,7 @@ fn rebuild_schema(conn: &Connection) -> Result<()> {
     // 幂等插入 explore 子 agent（只读文件搜索专家）
     // provider 信息由用户在 Sub Agents 页面中配置
     conn.execute(
-        "INSERT OR IGNORE INTO agent_configs (id, name, agent_type, system_prompt, temperature, max_tokens, tools, created_at, updated_at)
+        "INSERT OR REPLACE INTO agent_configs (id, name, agent_type, system_prompt, temperature, max_tokens, tools, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         rusqlite::params![
             "acfg-builtin-explore",
@@ -327,7 +337,7 @@ fn rebuild_schema(conn: &Connection) -> Result<()> {
 
     // ── 内置 Plan SubAgent ────────────────────────────────────────────────
     conn.execute(
-        "INSERT OR IGNORE INTO agent_configs (id, name, agent_type, system_prompt, temperature, max_tokens, tools, created_at, updated_at)
+        "INSERT OR REPLACE INTO agent_configs (id, name, agent_type, system_prompt, temperature, max_tokens, tools, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         rusqlite::params![
             "acfg-builtin-plan",

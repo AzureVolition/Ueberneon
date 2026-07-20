@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 use super::hook::HookRegister;
+use super::prompts::{PromptBuilder, PromptContext};
 use super::{ActionMode, Agent, AgentHandler, AgentMode};
 use crate::db::metadata::agent_config::AgentConfigRow;
 use crate::tools::Registry;
@@ -72,7 +73,6 @@ impl AgentManager {
     /// 根据 AgentConfig 构建 provider + registry + hooks + Agent
     fn build_agent_inner(
         conversation_id: String,
-        system_prompt: Option<&str>,
         project_id: Option<String>,
         cfg: &AgentConfig,
     ) -> Result<Agent, String> {
@@ -126,6 +126,17 @@ impl AgentManager {
 
         let hook_register = HookRegister::new();
 
+        // 构建 PromptContext（必须在 Agent::new 之前，因为 registry / project_path 会被 move）
+        let ctx = PromptContext {
+            workspace_path: project_path.display().to_string(),
+            project_name: project_row.name.clone(),
+            tool_list: registry.schemas().iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+            env_info: PromptContext::default().env_info,
+        };
+
         let mut agent = Agent::new(
             Box::new(provider),
             registry,
@@ -139,15 +150,17 @@ impl AgentManager {
             cfg.max_tokens,
             cfg.agent_type.clone(),
         );
-        // 优先使用传入的 system_prompt，否则使用配置中的
-        let sp = system_prompt.map(|s| s.to_string())
-            .or_else(|| {
-                let s = cfg.system_prompt.trim().to_string();
-                if s.is_empty() { None } else { Some(s) }
-            });
-        if let Some(sp) = sp {
-            agent.init_history(sp);
-        }
+        // 优先使用传入的 system_prompt，否则使用 DB 配置中的
+        let template =  {
+            let s = cfg.system_prompt.trim().to_string();
+            if s.is_empty() { super::main_agent::defautlt_main_agent_prompt() } else { s}
+        };
+
+        let sp = PromptBuilder::init_for(&cfg.agent_type, &ctx)
+            .with_template(template)
+            .build();
+        agent.init_history(sp);
+        
         Ok(agent)
     }
 
@@ -158,7 +171,6 @@ impl AgentManager {
     pub fn init_or_get(
         &mut self,
         conv_id: Option<String>,
-        system_prompt: &str,
         project_id: Option<String>,
         agent_config_id: Option<&str>,
     ) -> Result<(String, AgentHandler), String> {
@@ -188,7 +200,7 @@ impl AgentManager {
                     ) { tracing::error!(target:"db", error=%e, "insert conversation"); }
                 });
                 let agent =
-                    Self::build_agent_inner(id.clone(), Some(system_prompt), project_id, &agent_config)?;
+                    Self::build_agent_inner(id.clone(), project_id, &agent_config)?;
                 let handler = agent.handler.clone();
                 self.agents.insert(id.clone(), agent);
                 Ok((id, handler))
@@ -222,7 +234,7 @@ impl AgentManager {
             .map(Self::read_agent_config)
             .unwrap_or_else(|| Err(format!("no agent config for conversation {id}")))?;
 
-        let mut agent = Self::build_agent_inner(id.to_string(), None, Some(conv.project_id), &agent_config)?;
+        let mut agent = Self::build_agent_inner(id.to_string(), Some(conv.project_id), &agent_config)?;
         agent.messages.extend(msgs);
         let handler = agent.handler.clone();
         self.agents.insert(id.to_string(), agent);
