@@ -8,9 +8,9 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio_util::sync::CancellationToken;
 
-use super::hook::{AgentEvent, HookRegister};
-use super::{AgentMode, ActionMode, ToolContext, ToolResult};
-use crate::model::{ChatMessage, Role as ChatRole, StreamSegment, ToolCallRecord, ToolCallStatus, UiMessage, Plan, ActionStep, StepStatus, PlanStatus, Difficulty};
+use super::hook::AgentEvent;
+use super::{ActionMode, ToolContext};
+use crate::model::{ChatMessage, Role as ChatRole, StreamSegment, ToolCallRecord, ToolCallStatus, UiMessage, Plan};
 use crate::permission::Decision;
 use llm::{Chunk, Message, Provider, Request, Role as LlmRole, ToolCall};
 
@@ -109,7 +109,7 @@ impl Agent {
                 max_tokens: 65536,
             };
 
-            let mut stream = match self.provider.stream(&req).await {
+            let stream = match self.provider.stream(&req).await {
                 Ok(s) => s,
                 Err(e) => {
                     let msg = format!("Stream error: {e}");

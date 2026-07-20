@@ -4,7 +4,6 @@
 // 使用 remove + register 模式避免锁跨 await 持有。
 
 
-use std::any;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -12,7 +11,6 @@ use std::sync::{Mutex, OnceLock};
 use super::hook::HookRegister;
 use super::{ActionMode, Agent, AgentHandler, AgentMode};
 use crate::db::metadata::agent_config::AgentConfigRow;
-use crate::model::Project;
 use crate::tools::Registry;
 use crate::tools::register_builtins;
 

@@ -65,9 +65,9 @@ pub fn InputBar(
     let desktop = use_window();
     let desktop_kb = desktop.clone();
     let desktop_btn = desktop.clone();
-    let error_signal = use_context::<Signal<ErrorSignal>>();
+    let _error_signal = use_context::<Signal<ErrorSignal>>();
 
-    let mut on_input = move |evt: FormEvent| {
+    let on_input = move |evt: FormEvent| {
         let val = evt.value();
         let is_empty = val.trim().is_empty();
         input.set(val);

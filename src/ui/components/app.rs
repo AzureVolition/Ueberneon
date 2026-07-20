@@ -7,7 +7,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::manager::AgentManager;
 use crate::agent::{ActionMode, AgentHandler, AgentMode};
-use crate::model::Plan;
 use crate::ui::components::chat_panel::ChatPanel;
 use crate::ui::components::input_bar::InputBar;
 use crate::ui::components::plan_panel::PlanPanel;
@@ -16,7 +15,6 @@ use crate::ui::components::settings_panel::SettingsPanel;
 use crate::ui::state::*;
 use crate::ui::state::SettingsTab;
 use crate::settings;
-use crate::ui::state::*;
 use crate::agent::main_agent_prompt;
 
 
@@ -153,20 +151,20 @@ pub fn App() -> Element {
     let mut active_conversation_id = use_signal(|| String::new());
     let mut messages = use_signal(Vec::<UiMessage>::new);
     let mut streaming_segments = use_signal(Vec::<StreamSegment>::new);
-    let mut is_streaming = use_signal(|| false);
-    let mut tick = use_signal(|| 0u64);
+    let is_streaming = use_signal(|| false);
+    let tick = use_signal(|| 0u64);
     let mut streaming_project_id = use_signal(|| Option::<String>::None);
     let mut active_tool_calls = use_signal(Vec::<ToolCallRecord>::new);
-    let mut action_mode = use_signal(|| ActionMode::Regular);
-    let mut agent_mode = use_signal(|| AgentMode::Ask);
+    let action_mode = use_signal(|| ActionMode::Regular);
+    let agent_mode = use_signal(|| AgentMode::Ask);
     let mut agent_handler = use_signal(|| Option::<AgentHandler>::None);
     
 
     // ── Agent config 选择状态 ──
-    let mut agent_configs: Signal<Vec<crate::db::metadata::agent_config::AgentConfigRow>> = use_signal(|| {
+    let agent_configs: Signal<Vec<crate::db::metadata::agent_config::AgentConfigRow>> = use_signal(|| {
         load_agent_configs()
     });
-    let mut selected_agent_config_id = use_signal(|| {
+    let selected_agent_config_id = use_signal(|| {
         let default_id = crate::settings::get().general.default_agent_config_id;
         if !default_id.is_empty() {
             let exists = crate::db::with_db(|conn| {
@@ -202,7 +200,7 @@ pub fn App() -> Element {
     });
 
     // ── 选择项目 ──
-    let mut on_select_project = {
+    let on_select_project = {
         let ss = streaming_states.clone();
         move |project_id: String| {
             active_project_id.set(Some(project_id.clone()));
@@ -523,7 +521,6 @@ pub fn App() -> Element {
                                 }
                             },
                             on_send: {
-                        let cache = AgentManager::get();
                         let projs = projects;
                         let err_sig = error_signal;
                         move |input: String| {

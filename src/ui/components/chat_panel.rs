@@ -1,8 +1,7 @@
 use dioxus::desktop::use_window;
 use dioxus::prelude::*;
-use std::sync::atomic::Ordering;
 
-use crate::model::{ChatMessage, Role, StreamSegment, ToolCallRecord, ToolCallStatus, UiMessage};
+use crate::model::{Role, StreamSegment, ToolCallRecord, ToolCallStatus, UiMessage};
 
 /// 对话面板 —— 消息列表 + 流式输出 + 空状态 + 时序导航
 #[component]
@@ -253,7 +252,7 @@ fn render_segments(
     let mut tc_idx = 0usize;
     let mut buf: Vec<Element> = Vec::new();
 
-    let mut flush = |buf: &mut Vec<Element>, items: &mut Vec<Element>| {
+    let flush = |buf: &mut Vec<Element>, items: &mut Vec<Element>| {
         if !buf.is_empty() {
             let children: Vec<Element> = buf.drain(..).collect();
             items.push(rsx! {

@@ -36,13 +36,13 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
     let mut configs: Signal<Vec<AgentConfigRow>> = use_signal(|| {
         crate::db::with_db(|conn| agent_config::list_by_type(conn, &filter_agent_type).unwrap_or_default())
     });
-    let mut instances: Signal<Vec<ProviderInstanceRow>> = use_signal(|| {
+    let instances: Signal<Vec<ProviderInstanceRow>> = use_signal(|| {
         crate::db::with_db(|conn| provider_instance::list_all(conn).unwrap_or_default())
     });
-    let mut providers_cache: Signal<Vec<ProviderRow>> = use_signal(|| {
+    let providers_cache: Signal<Vec<ProviderRow>> = use_signal(|| {
         crate::db::with_db(|conn| provider::list_all(conn).unwrap_or_default())
     });
-    let mut models_cache: Signal<std::collections::HashMap<String, Vec<String>>> = use_signal(|| {
+    let models_cache: Signal<std::collections::HashMap<String, Vec<String>>> = use_signal(|| {
         crate::db::with_db(|conn| {
             let mut map = std::collections::HashMap::new();
             if let Ok(providers) = provider::list_all(conn) {
@@ -156,7 +156,7 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
     let mut do_save = {
         move |_| {
             let now = chrono::Local::now().to_rfc3339();
-            let id = editing_id.read().clone().unwrap_or_else(gen_id);
+            let _id = editing_id.read().clone().unwrap_or_else(gen_id);
             let name = edit_name.read().trim().to_string();
             if name.is_empty() { return; }
             //let agent_type = edit_agent_type.read().clone();
