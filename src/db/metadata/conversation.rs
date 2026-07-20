@@ -3,6 +3,32 @@
 use chrono::{DateTime, Local};
 use rusqlite::{params, Connection, Result};
 
+/// 对话状态
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConversationStatus {
+    Active,
+    Deleted,
+    SubAgent,
+}
+
+impl ConversationStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ConversationStatus::Active => "active",
+            ConversationStatus::Deleted => "deleted",
+            ConversationStatus::SubAgent => "sub_agent",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "deleted" => ConversationStatus::Deleted,
+            "sub_agent" => ConversationStatus::SubAgent,
+            _ => ConversationStatus::Active,
+        }
+    }
+}
+
 /// 数据库行 —— 不含嵌套的 messages 列表
 #[derive(Debug, Clone)]
 pub struct ConversationRow {
@@ -11,8 +37,8 @@ pub struct ConversationRow {
     pub title: String,
     pub updated_at: DateTime<Local>,
     pub message_count: i64,
-    /// 新建对话时记录的 agent config id，其余时间不更新
     pub agent_config_id: Option<String>,
+    pub status: ConversationStatus,
 }
 
 use std::sync::atomic::AtomicU16;
@@ -46,7 +72,7 @@ pub fn create(
 /// 按 id 查询对话
 pub fn get(conn: &Connection, id: &str) -> Result<Option<ConversationRow>> {
     let mut stmt = conn.prepare(
-        "SELECT id, project_id, title, updated_at, agent_config_id
+        "SELECT id, project_id, title, updated_at, agent_config_id, status
          FROM conversations WHERE id = ?1",
     )?;
     let mut rows = stmt.query_map(params![id], |row| {
@@ -60,6 +86,7 @@ pub fn get(conn: &Connection, id: &str) -> Result<Option<ConversationRow>> {
                 .unwrap_or_else(|_| Local::now()),
             message_count: 0,
             agent_config_id: row.get(4)?,
+            status: ConversationStatus::from_str(&row.get::<_, String>(5)?),
         })
     })?;
     match rows.next() {
@@ -68,12 +95,12 @@ pub fn get(conn: &Connection, id: &str) -> Result<Option<ConversationRow>> {
     }
 }
 
-/// 列出某项目下所有对话，按 updated_at 降序
+/// 列出某项目下所有活跃对话，按 updated_at 降序
 pub fn list_by_project(conn: &Connection, project_id: &str) -> Result<Vec<ConversationRow>> {
     let mut stmt = conn.prepare(
-        "SELECT c.id, c.project_id, c.title, c.updated_at, c.agent_config_id,
-                (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id) AS msg_count
-         FROM conversations c WHERE c.project_id = ?1
+        "SELECT c.id, c.project_id, c.title, c.updated_at, c.agent_config_id, c.status,
+                (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id AND active = 'active') AS msg_count
+         FROM conversations c WHERE c.project_id = ?1 AND c.status = 'active'
          ORDER BY c.updated_at DESC",
     )?;
     let rows = stmt.query_map(params![project_id], |row| {
@@ -85,8 +112,9 @@ pub fn list_by_project(conn: &Connection, project_id: &str) -> Result<Vec<Conver
             updated_at: DateTime::parse_from_rfc3339(&updated_str)
                 .map(|dt| dt.with_timezone(&Local))
                 .unwrap_or_else(|_| Local::now()),
-            message_count: row.get(5)?,
+            message_count: row.get(6)?,
             agent_config_id: row.get(4)?,
+            status: ConversationStatus::from_str(&row.get::<_, String>(5)?),
         })
     })?;
     rows.collect()
@@ -101,9 +129,9 @@ pub fn update(conn: &Connection, row: &ConversationRow) -> Result<()> {
     Ok(())
 }
 
-/// 删除对话
+/// 软删除对话
 pub fn delete(conn: &Connection, id: &str) -> Result<()> {
-    conn.execute("DELETE FROM conversations WHERE id=?1", params![id])?;
+    conn.execute("UPDATE conversations SET status='deleted' WHERE id=?1", params![id])?;
     Ok(())
 }
 

@@ -11,6 +11,7 @@ use llm::{Message as LlmMessage, Role as LlmRole, ToolCall};
 pub enum MessageStatus {
     Active,
     Compressed,
+    Deleted,
 }
 
 impl MessageStatus {
@@ -18,12 +19,14 @@ impl MessageStatus {
         match self {
             MessageStatus::Active => "active",
             MessageStatus::Compressed => "compressed",
+            MessageStatus::Deleted => "deleted",
         }
     }
 
     pub fn from_str(s: &str) -> Self {
         match s {
             "compressed" => MessageStatus::Compressed,
+            "deleted" => MessageStatus::Deleted,
             _ => MessageStatus::Active,
         }
     }
@@ -214,16 +217,16 @@ pub fn list_as_llm_messages(
     Ok(rows.iter().map(|r| r.to_llm()).collect())
 }
 
-/// 删除消息
+/// 软删除消息
 pub fn delete(conn: &Connection, id: i64) -> Result<()> {
-    conn.execute("DELETE FROM messages WHERE id=?1", params![id])?;
+    conn.execute("UPDATE messages SET active='deleted' WHERE id=?1", params![id])?;
     Ok(())
 }
 
-/// 删除某对话下所有消息
+/// 软删除某对话下所有消息
 pub fn delete_by_conversation(conn: &Connection, conversation_id: &str) -> Result<()> {
     conn.execute(
-        "DELETE FROM messages WHERE conversation_id=?1",
+        "UPDATE messages SET active='deleted' WHERE conversation_id=?1",
         params![conversation_id],
     )?;
     Ok(())
