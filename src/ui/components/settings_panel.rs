@@ -3,10 +3,8 @@
 // 只显示已接入的 provider 实例，每个实例块可删除 / 刷新模型 / 更改密钥。
 // 添加实例时从 providers 表（预设）选择服务，再指定 alias + key。
 
-use dioxus::html::g::format;
 use dioxus::prelude::*;
 
-use crate::agent::{ActionMode, AgentMode};
 use crate::db::metadata::agent_config::{self, AgentType};
 use crate::db::metadata::provider::{self, ProviderRow};
 use crate::db::metadata::provider_instance::{self, ProviderInstanceRow};
@@ -55,25 +53,24 @@ fn gen_id() -> String {
 pub fn SettingsPanel(tab: SettingsTab, on_change: EventHandler<()>) -> Element {
     // ── DB 数据 ──
     let mut instances: Signal<Vec<ProviderInstanceRow>> = use_signal(|| {
-        let conn = crate::db::get_db().lock().unwrap();
-        provider_instance::list_all(&conn).unwrap_or_default()
+        crate::db::with_db(|conn| provider_instance::list_all(conn).unwrap_or_default())
     });
     let mut providers_cache: Signal<Vec<ProviderRow>> = use_signal(|| {
-        let conn = crate::db::get_db().lock().unwrap();
-        provider::list_all(&conn).unwrap_or_default()
+        crate::db::with_db(|conn| provider::list_all(conn).unwrap_or_default())
     });
     let mut models_cache: Signal<std::collections::HashMap<String, Vec<String>>> =
         use_signal(|| {
-            let conn = crate::db::get_db().lock().unwrap();
-            let mut map = std::collections::HashMap::new();
-            if let Ok(providers) = provider::list_all(&conn) {
-                for p in &providers {
-                    if let Ok(models) = provider::list_models(&conn, &p.id) {
-                        map.insert(p.id.clone(), models);
+            crate::db::with_db(|conn| {
+                let mut map = std::collections::HashMap::new();
+                if let Ok(providers) = provider::list_all(conn) {
+                    for p in &providers {
+                        if let Ok(models) = provider::list_models(conn, &p.id) {
+                            map.insert(p.id.clone(), models);
+                        }
                     }
                 }
-            }
-            map
+                map
+            })
         });
 
     // ── UI state ──
@@ -104,9 +101,9 @@ pub fn SettingsPanel(tab: SettingsTab, on_change: EventHandler<()>) -> Element {
     let mut do_refresh = {
         move |inst_id: String| {
             // 查找实例对应的 provider_id
-            let conn = crate::db::get_db().lock().unwrap();
-            let inst = provider_instance::get(&conn, &inst_id).ok().flatten();
-            drop(conn);
+            let inst = crate::db::with_db(|conn| {
+                provider_instance::get(conn, &inst_id).ok().flatten()
+            });
             let (pid, key) = match inst {
                 Some(i) => (i.provider_id, decode_key(&i.api_key)),
                 None => return,
@@ -122,9 +119,9 @@ pub fn SettingsPanel(tab: SettingsTab, on_change: EventHandler<()>) -> Element {
             let pid2 = pid.clone();
             let key2 = key.clone();
             spawn(async move {
-                let conn = crate::db::get_db().lock().unwrap();
-                let prov = provider::get(&conn, &pid2).ok().flatten();
-                drop(conn);
+                let prov = crate::db::with_db(|conn| {
+                    provider::get(conn, &pid2).ok().flatten()
+                });
                 match prov {
                     Some(p) => {
                         match crate::db::model_fetch::refresh_and_save(
@@ -157,12 +154,12 @@ pub fn SettingsPanel(tab: SettingsTab, on_change: EventHandler<()>) -> Element {
     // ── 删除实例 ──
     let mut do_delete = {
         move |inst_id: String| {
-            let conn = crate::db::get_db().lock().unwrap();
-            if let Err(e) = provider_instance::delete(&conn, &inst_id) { tracing::error!(target:"db", error=%e, "delete provider instance"); }
-            drop(conn);
-            // 刷新
-            let conn = crate::db::get_db().lock().unwrap();
-            instances.set(provider_instance::list_all(&conn).unwrap_or_default());
+            crate::db::with_db(|conn| {
+                if let Err(e) = provider_instance::delete(conn, &inst_id) { tracing::error!(target:"db", error=%e, "delete provider instance"); }
+            });
+            instances.set(crate::db::with_db(|conn| {
+                provider_instance::list_all(conn).unwrap_or_default()
+            }));
             fetch_errors.write().remove(&inst_id);
             deleting.set(None);
             on_change.call(());
@@ -174,16 +171,16 @@ pub fn SettingsPanel(tab: SettingsTab, on_change: EventHandler<()>) -> Element {
         move |inst_id: String| {
             let val = key_input.read().trim().to_string();
             let encoded = encode_key(&val);
-            let conn = crate::db::get_db().lock().unwrap();
-            if let Err(e) = provider_instance::update_key(&conn, &inst_id, &encoded) { tracing::error!(target:"db", error=%e, "update provider key"); }
-            // 同步更新所有使用该 provider instance 的 agent config 的 key
-            conn.execute(
+            crate::db::with_db(|conn| {
+                if let Err(e) = provider_instance::update_key(conn, &inst_id, &encoded) { tracing::error!(target:"db", error=%e, "update provider key"); }
+                conn.execute(
                     "UPDATE agent_configs SET api_key = ?1, updated_at = ?2 WHERE provider_instance_id = ?3",
                     rusqlite::params![encoded, chrono::Local::now().to_rfc3339(), inst_id],
                 ).unwrap_or_else(|e| { tracing::error!(target:"db", error=%e, "update agent configs key."); 0 });
-            drop(conn);
-            let conn = crate::db::get_db().lock().unwrap();
-            instances.set(provider_instance::list_all(&conn).unwrap_or_default());
+            });
+            instances.set(crate::db::with_db(|conn| {
+                provider_instance::list_all(conn).unwrap_or_default()
+            }));
             editing_key_for.set(None);
         }
     };
@@ -207,11 +204,12 @@ pub fn SettingsPanel(tab: SettingsTab, on_change: EventHandler<()>) -> Element {
                 sort_order: 0,
                 created_at: now,
             };
-            let conn = crate::db::get_db().lock().unwrap();
-            if let Err(e) = provider_instance::insert(&conn, &row) { tracing::error!(target:"db", error=%e, "insert provider instance."); }
-            drop(conn);
-            let conn = crate::db::get_db().lock().unwrap();
-            instances.set(provider_instance::list_all(&conn).unwrap_or_default());
+            crate::db::with_db(|conn| {
+                if let Err(e) = provider_instance::insert(conn, &row) { tracing::error!(target:"db", error=%e, "insert provider instance."); }
+            });
+            instances.set(crate::db::with_db(|conn| {
+                provider_instance::list_all(conn).unwrap_or_default()
+            }));
             on_change.call(());
             // 重置添加表单
             show_add_form.set(false);
@@ -231,19 +229,16 @@ pub fn SettingsPanel(tab: SettingsTab, on_change: EventHandler<()>) -> Element {
             if id.is_empty() || name.is_empty() || url.is_empty() {
                 return;
             }
-            // 先写入 providers 表
-            let conn = crate::db::get_db().lock().unwrap();
-            conn.execute(
-                "INSERT OR IGNORE INTO providers (id, name, kind, base_url, is_preset)
-                 VALUES (?1, ?2, 'openai', ?3, 0)",
-                rusqlite::params![id, name, url],
-            )
-            .unwrap_or_else(|e| { tracing::error!(target:"db", error=%e, "insert custom provider."); 0 });
-            drop(conn);
-            // 刷新 providers 缓存
-            let conn = crate::db::get_db().lock().unwrap();
-            providers_cache.set(provider::list_all(&conn).unwrap_or_default());
-            drop(conn);
+            // 先写入 providers 表 + 刷新缓存
+            providers_cache.set(crate::db::with_db(|conn| {
+                conn.execute(
+                    "INSERT OR IGNORE INTO providers (id, name, kind, base_url, is_preset)
+                     VALUES (?1, ?2, 'openai', ?3, 0)",
+                    rusqlite::params![id, name, url],
+                )
+                .unwrap_or_else(|e| { tracing::error!(target:"db", error=%e, "insert custom provider."); 0 });
+                provider::list_all(conn).unwrap_or_default()
+            }));
             // 创建实例
             let now = chrono::Local::now().to_rfc3339();
             let alias = if add_alias.read().trim().is_empty() {
@@ -261,11 +256,12 @@ pub fn SettingsPanel(tab: SettingsTab, on_change: EventHandler<()>) -> Element {
                 sort_order: 0,
                 created_at: now,
             };
-            let conn = crate::db::get_db().lock().unwrap();
-            if let Err(e) = provider_instance::insert(&conn, &row) { tracing::error!(target:"db", error=%e, "insert provider instance."); }
-            drop(conn);
-            let conn = crate::db::get_db().lock().unwrap();
-            instances.set(provider_instance::list_all(&conn).unwrap_or_default());
+            crate::db::with_db(|conn| {
+                if let Err(e) = provider_instance::insert(conn, &row) { tracing::error!(target:"db", error=%e, "insert provider instance."); }
+            });
+            instances.set(crate::db::with_db(|conn| {
+                provider_instance::list_all(conn).unwrap_or_default()
+            }));
             on_change.call(());
             show_add_form.set(false);
             add_step.set(AddStep::SelectProvider);
@@ -634,7 +630,7 @@ pub fn SettingsPanel(tab: SettingsTab, on_change: EventHandler<()>) -> Element {
                             span { class: "settings-subtitle", "manage custom agent profiles and tool permissions" }
                         }
                         div { class: "settings-section",
-                            AgentConfigPanel { filter_agent_type: format!("{}", AgentType::Custom), readonly: false, edit_mode: "full".to_string() }
+                            AgentConfigPanel { filter_agent_type: format!("{}", AgentType::Custom), readonly: false, edit_mode: "full".to_string(), on_change }
                         }
                     }
                 }
@@ -645,15 +641,14 @@ pub fn SettingsPanel(tab: SettingsTab, on_change: EventHandler<()>) -> Element {
                             span { class: "settings-subtitle", "configure provider and model for sub-agents" }
                         }
                         div { class: "settings-section",
-                            AgentConfigPanel { filter_agent_type: "SubAgent".to_string(), readonly: true, edit_mode: "provider_only".to_string() }
+                            AgentConfigPanel { filter_agent_type: "SubAgent".to_string(), readonly: true, edit_mode: "provider_only".to_string(), on_change }
                         }
                     }
                 }
                 SettingsTab::General => {
-                    let all_agent_configs = {
-                        let conn = crate::db::get_db().lock().unwrap();
-                        agent_config::list_all(&conn).unwrap_or_default()
-                    };
+                    let all_agent_configs = crate::db::with_db(|conn| {
+                        agent_config::list_all(conn).unwrap_or_default()
+                    });
                     // Build dropdown options
                     let mut default_agent_opts: Vec<DropdownOption> = if all_agent_configs.is_empty() {
                         vec![DropdownOption { value: String::new(), label: "— none —".into() }]

@@ -31,31 +31,29 @@ const AGENT_TYPES: &[(&str, &str)] = &[
 ];
 
 #[component]
-pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: String) -> Element {
+pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: String, on_change: EventHandler<()>) -> Element {
     // ── DB 数据 ──
     let mut configs: Signal<Vec<AgentConfigRow>> = use_signal(|| {
-        let conn = crate::db::get_db().lock().unwrap();
-        agent_config::list_all(&conn).unwrap_or_default()
+        crate::db::with_db(|conn| agent_config::list_by_type(conn, &filter_agent_type).unwrap_or_default())
     });
     let mut instances: Signal<Vec<ProviderInstanceRow>> = use_signal(|| {
-        let conn = crate::db::get_db().lock().unwrap();
-        provider_instance::list_all(&conn).unwrap_or_default()
+        crate::db::with_db(|conn| provider_instance::list_all(conn).unwrap_or_default())
     });
     let mut providers_cache: Signal<Vec<ProviderRow>> = use_signal(|| {
-        let conn = crate::db::get_db().lock().unwrap();
-        provider::list_all(&conn).unwrap_or_default()
+        crate::db::with_db(|conn| provider::list_all(conn).unwrap_or_default())
     });
     let mut models_cache: Signal<std::collections::HashMap<String, Vec<String>>> = use_signal(|| {
-        let conn = crate::db::get_db().lock().unwrap();
-        let mut map = std::collections::HashMap::new();
-        if let Ok(providers) = provider::list_all(&conn) {
-            for p in &providers {
-                if let Ok(models) = provider::list_models(&conn, &p.id) {
-                    map.insert(p.id.clone(), models);
+        crate::db::with_db(|conn| {
+            let mut map = std::collections::HashMap::new();
+            if let Ok(providers) = provider::list_all(conn) {
+                for p in &providers {
+                    if let Ok(models) = provider::list_models(conn, &p.id) {
+                        map.insert(p.id.clone(), models);
+                    }
                 }
             }
-        }
-        map
+            map
+        })
     });
 
     // ── 编辑状态 ──
@@ -74,21 +72,21 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
     let mut viewing_prompt = use_signal(|| Option::<(String, String)>::None);
 
     // ── 加载工具组列表 ──
-    let all_groups: Vec<ToolGroupRow> = {
-        let conn = crate::db::get_db().lock().unwrap();
-        tool::list_groups(&conn).unwrap_or_default()
-    };
+    let all_groups: Vec<ToolGroupRow> = crate::db::with_db(|conn| {
+        tool::list_groups(conn).unwrap_or_default()
+    });
 
     // ── 工具组 → 工具名查找缓存 ──
     let group_tools_cache: std::collections::HashMap<String, Vec<String>> = {
-        let conn = crate::db::get_db().lock().unwrap();
-        let mut map = std::collections::HashMap::new();
-        for g in &all_groups {
-            if let Ok(tools) = tool::list_tools_in_group(&conn, &g.id) {
-                map.insert(g.id.clone(), tools.into_iter().map(|t| t.name).collect());
+        crate::db::with_db(|conn| {
+            let mut map = std::collections::HashMap::new();
+            for g in &all_groups {
+                if let Ok(tools) = tool::list_tools_in_group(conn, &g.id) {
+                    map.insert(g.id.clone(), tools.into_iter().map(|t| t.name).collect());
+                }
             }
-        }
-        map
+            map
+        })
     };
 
     let all_configs: Vec<AgentConfigRow> = configs.read().clone()
@@ -133,12 +131,10 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
                     serde_json::from_str(&c.tools).unwrap_or_default();
                 edit_tools.set(tools_set);
                 // 加载已保存的工具组关联
-                let conn = crate::db::get_db().lock().unwrap();
-                if let Ok(ids) = agent_config::load_group_ids(&conn, &c.id) {
-                    edit_groups.set(ids.into_iter().collect());
-                } else {
-                    edit_groups.set(std::collections::HashSet::new());
-                }
+                let ids = crate::db::with_db(|conn| {
+                    agent_config::load_group_ids(conn, &c.id).unwrap_or_default()
+                });
+                edit_groups.set(ids.into_iter().collect());
             } else {
                 editing_id.set(None);
                 edit_name.set(String::new());
@@ -152,6 +148,9 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
             }
         }
     };
+
+    let filter_type = filter_agent_type.clone();
+    let filter_type_clone = filter_type.clone();
 
     // ── 保存 ──
     let mut do_save = {
@@ -172,37 +171,40 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
             let tools = {
                 // 展开选中的工具组 → 工具名列表 → 去重
                 let mut tool_set: std::collections::HashSet<String> = std::collections::HashSet::new();
-                let conn = crate::db::get_db().lock().unwrap();
-                for gid in edit_groups.read().iter() {
-                    if let Ok(tools) = crate::db::metadata::tool::list_tools_in_group(&conn, gid) {
-                        for t in &tools {
-                            tool_set.insert(t.name.clone());
+                let group_ids: Vec<String> = edit_groups.read().iter().cloned().collect();
+                crate::db::with_db(|conn| {
+                    for gid in &group_ids {
+                        if let Ok(tools) = crate::db::metadata::tool::list_tools_in_group(conn, gid) {
+                            for t in &tools {
+                                tool_set.insert(t.name.clone());
+                            }
                         }
                     }
-                }
+                });
                 serde_json::to_string(&tool_set.into_iter().collect::<Vec<_>>()).unwrap_or_else(|_| "[]".to_string())
             };
             let is_new = editing_id.read().is_none();
 
             // 从 provider instance 获取 base_url 和 api_key
             let (base_url, api_key) = {
-                let conn = crate::db::get_db().lock().unwrap();
-                let inst = crate::db::metadata::provider_instance::get(&conn, &edit_provider_inst.read())
-                    .ok().flatten();
-                let (raw_key, prov_id) = match inst {
-                    Some(ref i) => (i.api_key.clone(), i.provider_id.clone()),
-                    None => (String::new(), String::new()),
-                };
-                let url = crate::db::metadata::provider::get(&conn, &prov_id)
-                    .ok().flatten().map(|p| p.base_url).unwrap_or_default();
-                drop(conn);
-                (url, raw_key)
+                let inst_id = edit_provider_inst.read().clone();
+                crate::db::with_db(|conn| {
+                    let inst = crate::db::metadata::provider_instance::get(conn, &inst_id)
+                        .ok().flatten();
+                    let (raw_key, prov_id) = match inst {
+                        Some(ref i) => (i.api_key.clone(), i.provider_id.clone()),
+                        None => (String::new(), String::new()),
+                    };
+                    let url = crate::db::metadata::provider::get(conn, &prov_id)
+                        .ok().flatten().map(|p| p.base_url).unwrap_or_default();
+                    (url, raw_key)
+                })
             };
 
             let row = AgentConfigRow {
                 id: if is_new { gen_id() } else { editing_id.read().clone().unwrap() },
                 name,
-                agent_type: filter_agent_type.clone(),
+                agent_type: filter_type.clone(),
                 provider_instance_id: provider_inst,
                 model,
                 base_url,
@@ -216,46 +218,28 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
             };
 
             let row_id = row.id.clone();
-            let conn = crate::db::get_db().lock().unwrap();
-            if is_new {
-                if let Err(e) = agent_config::insert(&conn, &row) { tracing::error!(target:"db", error=%e, "insert agent config"); }
-            } else {
-                if let Err(e) = agent_config::update(&conn, &row) { tracing::error!(target:"db", error=%e, "update agent config"); }
-            }
-            // 保存工具组关联
-            let group_ids: Vec<String> = edit_groups.read().iter().cloned().collect();
-            if let Err(e) = agent_config::save_groups(&conn, &row_id, &group_ids) {
-                tracing::error!(target:"db", error=%e, "save agent config groups");
-            }
-            drop(conn);
-            configs.set({
-                let conn = crate::db::get_db().lock().unwrap();
-                agent_config::list_all(&conn).unwrap_or_default()
+            crate::db::with_db(|conn| {
+                if is_new {
+                    if let Err(e) = agent_config::insert(conn, &row) { tracing::error!(target:"db", error=%e, "insert agent config"); }
+                } else {
+                    if let Err(e) = agent_config::update(conn, &row) { tracing::error!(target:"db", error=%e, "update agent config"); }
+                }
+                let group_ids: Vec<String> = edit_groups.read().iter().cloned().collect();
+                if let Err(e) = agent_config::save_groups(conn, &row_id, &group_ids) {
+                    tracing::error!(target:"db", error=%e, "save agent config groups");
+                }
             });
+            configs.set(crate::db::with_db(|conn| {
+                agent_config::list_by_type(conn, &filter_type).unwrap_or_default()
+            }));
             show_editor.set(false);
             editing_id.set(None);
+            on_change.call(());
         }
     };
-
-    // ── 删除 ──
-    let mut do_delete = {
-        move |id: String| {
-            let conn = crate::db::get_db().lock().unwrap();
-            if let Err(e) = agent_config::delete(&conn, &id) { tracing::error!(target:"db", error=%e, "delete agent config"); }
-            drop(conn);
-            configs.set({
-                let conn = crate::db::get_db().lock().unwrap();
-                agent_config::list_all(&conn).unwrap_or_default()
-            });
-            deleting.set(None);
-        }
-    };
-
 
     let is_new = editing_id().is_none();
     let is_provider_only = edit_mode == "provider_only";
-
-    // ── 工具组选择弹窗预计算 ──
     let sel_gcache = group_tools_cache.clone();
     let sel_grps = all_groups.clone();
     let sel_selected = edit_groups.read().clone();
@@ -562,7 +546,7 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
                                                 }
                                                 div { class: "provider-block-confirm-actions",
                                                     button { class: "btn btn-cancel", style: "padding: 2px 10px; font-size: 10px;", onclick: move |_| deleting.set(None), "cancel" }
-                                                    button { class: "btn btn-send", style: "padding: 2px 10px; font-size: 10px; background: var(--color-error); color: var(--color-paper);", onclick: { let sid = cfg.id.clone(); move |_| do_delete(sid.clone()) }, "confirm delete" }
+                                                    button { class: "btn btn-send", style: "padding: 2px 10px; font-size: 10px; background: var(--color-error); color: var(--color-paper);", onclick: { let sid = cfg.id.clone(); let mut dlt = deleting; let mut cfg_sig = configs; let ft = filter_type_clone.clone(); let oc = on_change; move |_| { crate::db::with_db(|conn| { if let Err(e) = agent_config::delete(conn, &sid) { tracing::error!(target:"db", error=%e, "delete agent config"); } }); cfg_sig.set(crate::db::with_db(|conn| agent_config::list_by_type(conn, &ft).unwrap_or_default())); dlt.set(None); oc.call(()); } }, "confirm delete" }
                                                 }
                                             }
                                         } else {

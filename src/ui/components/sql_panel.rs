@@ -24,7 +24,7 @@ struct SqlResult {
 #[component]
 pub fn SqlPanel() -> Element {
     // 表列表
-    let mut tables = use_signal(|| {
+    let tables = use_signal(|| {
         load_table_list().unwrap_or_default()
     });
     let mut selected_table = use_signal(String::new);
@@ -34,6 +34,8 @@ pub fn SqlPanel() -> Element {
     let mut query_result = use_signal(|| Option::<SqlResult>::None);
     let mut error_msg = use_signal(|| Option::<String>::None);
     let mut running = use_signal(|| false);
+    let mut confirm_reset = use_signal(|| false);
+    let mut reset_msg = use_signal(|| Option::<String>::None);
 
     // 执行 SQL（带分页参数）
     let mut run_query = move |sql: String, page: usize| {
@@ -43,13 +45,12 @@ pub fn SqlPanel() -> Element {
         let offset = page.saturating_sub(1) * PAGE_SIZE;
         // 先查总数
         let count_sql = format!("SELECT COUNT(*) FROM ({})", sql.trim_end_matches(';'));
-        let total = (|| -> Result<usize, String> {
-            let conn = crate::db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+        let total = crate::db::with_db(|conn| -> Result<usize, String> {
             let mut stmt = conn.prepare(&count_sql).map_err(|e| format!("count: {e}"))?;
             let total: usize = stmt.query_row([], |row| row.get::<_, i64>(0))
                 .map_err(|e| format!("count row: {e}"))? as usize;
             Ok(total)
-        })().unwrap_or(0);
+        }).unwrap_or(0);
         // 执行分页查询
         let paged_sql = format!("{} LIMIT {} OFFSET {}", sql.trim_end_matches(';'), PAGE_SIZE, offset);
         match execute_sql(&paged_sql) {
@@ -108,6 +109,52 @@ pub fn SqlPanel() -> Element {
                                 "{name}"
                             }
                         }
+                    }
+                }
+            }
+
+            // ── 重置数据库（开发用）──
+            div { class: "settings-field",
+                div { style: "display: flex; align-items: center; gap: var(--space-sm); padding: var(--space-sm) 0;",
+                    if confirm_reset() {
+                        span { style: "font-family: var(--font-mono); font-size: 10px; color: var(--color-error);", "confirm reset all tables?" }
+                        button {
+                            class: "btn btn-send",
+                            style: "background: var(--color-error); color: var(--color-paper); padding: 2px 10px; font-size: 10px;",
+                            onclick: move |_| {
+                                match crate::db::drop_all_tables() {
+                                    Ok(()) => {
+                                        // 重启应用让所有组件重新加载数据
+                                        if let Ok(exe) = std::env::current_exe() {
+                                            let _ = std::process::Command::new(&exe)
+                                                .args(std::env::args().skip(1))
+                                                .spawn();
+                                        }
+                                        std::process::exit(0);
+                                    }
+                                    Err(e) => {
+                                        reset_msg.set(Some(format!("reset failed: {e}")));
+                                    }
+                                }
+                            },
+                            "confirm"
+                        }
+                        button {
+                            class: "btn btn-cancel",
+                            style: "padding: 2px 10px; font-size: 10px;",
+                            onclick: move |_| { confirm_reset.set(false); reset_msg.set(None); },
+                            "cancel"
+                        }
+                    } else {
+                        button {
+                            class: "btn btn-cancel",
+                            style: "color: var(--color-error); border-color: var(--color-error); padding: 2px 10px; font-size: 10px;",
+                            onclick: move |_| confirm_reset.set(true),
+                            "reset database"
+                        }
+                    }
+                    if let Some(ref msg) = reset_msg() {
+                        span { style: "font-family: var(--font-mono); font-size: 10px; color: var(--color-ink-3);", "{msg}" }
                     }
                 }
             }
@@ -221,18 +268,19 @@ pub fn SqlPanel() -> Element {
 }
 
 fn load_table_list() -> Result<Vec<TableInfo>, String> {
-    let conn = crate::db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
-    let mut stmt = conn.prepare(
-        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-    ).map_err(|e| format!("prepare: {e}"))?;
-    let rows = stmt.query_map([], |row| {
-        Ok(TableInfo { name: row.get(0)? })
-    }).map_err(|e| format!("query: {e}"))?;
-    let mut tables = Vec::new();
-    for row in rows {
-        tables.push(row.map_err(|e| format!("row: {e}"))?);
-    }
-    Ok(tables)
+    crate::db::with_db(|conn| -> Result<Vec<TableInfo>, String> {
+        let mut stmt = conn.prepare(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        ).map_err(|e| format!("prepare: {e}"))?;
+        let rows = stmt.query_map([], |row| {
+            Ok(TableInfo { name: row.get(0)? })
+        }).map_err(|e| format!("query: {e}"))?;
+        let mut tables = Vec::new();
+        for row in rows {
+            tables.push(row.map_err(|e| format!("row: {e}"))?);
+        }
+        Ok(tables)
+    })
 }
 
 fn execute_sql(sql: &str) -> Result<SqlResult, String> {
@@ -246,8 +294,10 @@ fn execute_sql(sql: &str) -> Result<SqlResult, String> {
 
     if !is_query {
         // INSERT / UPDATE / DELETE / CREATE — 直接执行，不涉及分页
-        let conn = crate::db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
-        conn.execute(sql, []).map_err(|e| format!("execute: {e}"))?;
+        crate::db::with_db(|conn| {
+            conn.execute(sql, []).map_err(|e| format!("execute: {e}"))?;
+            Ok::<_, String>(())
+        })?;
         let elapsed = start.elapsed();
         return Ok(SqlResult {
             columns: Vec::new(),
@@ -260,11 +310,10 @@ fn execute_sql(sql: &str) -> Result<SqlResult, String> {
     }
 
     // 查询
-    let conn = crate::db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
-    let mut stmt = conn.prepare(sql).map_err(|e| format!("prepare: {e}"))?;
-    let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
+    let (columns, rows) = crate::db::with_db(|conn| -> Result<_, String> {
+        let mut stmt = conn.prepare(sql).map_err(|e| format!("prepare: {e}"))?;
+        let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
 
-    let rows = {
         let mut rows = Vec::new();
         let row_iter = stmt.query_map([], |row| {
             let mut vals = Vec::new();
@@ -284,8 +333,8 @@ fn execute_sql(sql: &str) -> Result<SqlResult, String> {
         for row in row_iter {
             rows.push(row.map_err(|e| format!("row: {e}"))?);
         }
-        rows
-    };
+        Ok((columns, rows))
+    })?;
     let elapsed = start.elapsed();
     // 没有显式 COUNT 时，rows.len() 就是总数
     let total = rows.len();

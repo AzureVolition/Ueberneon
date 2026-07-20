@@ -40,34 +40,34 @@ pub fn ToolsPanel() -> Element {
     let mut filter_group = use_signal(|| Option::<String>::None);
     let mut search_text = use_signal(String::new);
     let mut groups_cache: Signal<Vec<ToolGroupRow>> = use_signal(|| {
-        let conn = crate::db::get_db().lock().unwrap();
-        list_groups(&conn).unwrap_or_default()
+        crate::db::with_db(|conn| list_groups(conn).unwrap_or_default())
     });
 
     let tools_data = use_memo(move || {
-        let conn = crate::db::get_db().lock().unwrap();
         let gid = filter_group.read().clone();
         let s = search_text.read();
         let search = if s.is_empty() { None } else { Some(s.as_str()) };
-        let list = list_tools_paginated(&conn, gid.as_deref(), search, page_size, page() * page_size).unwrap_or_default();
-        let total = count_tools(&conn, gid.as_deref(), search).unwrap_or(0);
-        (list, total)
+        crate::db::with_db(|conn| {
+            let list = list_tools_paginated(conn, gid.as_deref(), search, page_size, page() * page_size).unwrap_or_default();
+            let total = count_tools(conn, gid.as_deref(), search).unwrap_or(0);
+            (list, total)
+        })
     });
 
     let mut groups: Signal<Vec<ToolGroupRow>> = use_signal(|| {
-        let conn = crate::db::get_db().lock().unwrap();
-        list_groups(&conn).unwrap_or_default()
+        crate::db::with_db(|conn| list_groups(conn).unwrap_or_default())
     });
     let mut group_tool_count: Signal<std::collections::HashMap<String, i64>> = use_signal(|| {
-        let conn = crate::db::get_db().lock().unwrap();
-        let grps = list_groups(&conn).unwrap_or_default();
-        let mut map = std::collections::HashMap::new();
-        for g in &grps {
-            if let Ok(cnt) = count_tools_in_group(&conn, &g.id) {
-                map.insert(g.id.clone(), cnt);
+        crate::db::with_db(|conn| {
+            let grps = list_groups(conn).unwrap_or_default();
+            let mut map = std::collections::HashMap::new();
+            for g in &grps {
+                if let Ok(cnt) = count_tools_in_group(conn, &g.id) {
+                    map.insert(g.id.clone(), cnt);
+                }
             }
-        }
-        map
+            map
+        })
     });
 
     let mut show_new_group = use_signal(|| false);
@@ -78,28 +78,29 @@ pub fn ToolsPanel() -> Element {
     let mut edit_group_tools: Signal<Vec<String>> = use_signal(Vec::new);
 
     let all_tools = use_memo(move || {
-        let conn = crate::db::get_db().lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, name, description, schema_json, read_only, source, mcp_server, created_at
-             FROM tools ORDER BY name"
-        ).ok()?;
-        let rows = stmt.query_map([], |row| {
-            Ok(ToolRow {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                description: row.get(2)?,
-                schema_json: row.get(3)?,
-                read_only: row.get::<_, i32>(4)? != 0,
-                source: row.get(5)?,
-                mcp_server: row.get(6)?,
-                created_at: row.get(7)?,
-            })
-        }).ok()?;
-        let mut result = Vec::new();
-        for r in rows {
-            if let Ok(t) = r { result.push(t); }
-        }
-        Some(result)
+        crate::db::with_db(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, name, description, schema_json, read_only, source, mcp_server, created_at
+                 FROM tools ORDER BY name"
+            ).ok()?;
+            let rows = stmt.query_map([], |row| {
+                Ok(ToolRow {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    description: row.get(2)?,
+                    schema_json: row.get(3)?,
+                    read_only: row.get::<_, i32>(4)? != 0,
+                    source: row.get(5)?,
+                    mcp_server: row.get(6)?,
+                    created_at: row.get(7)?,
+                })
+            }).ok()?;
+            let mut result = Vec::new();
+            for r in rows {
+                if let Ok(t) = r { result.push(t); }
+            }
+            Some(result)
+        })
     });
 
     let do_add_group = move |_| {
@@ -108,55 +109,61 @@ pub fn ToolsPanel() -> Element {
         let desc = new_group_desc.read().trim().to_string();
         let id = format!("grp-{}", name.to_lowercase().replace(' ', "-"));
         let now = chrono::Local::now().to_rfc3339();
-        let max_order: i32 = {
-            let conn = crate::db::get_db().lock().unwrap();
-            let grps = list_groups(&conn).unwrap_or_default();
-            grps.iter().map(|g| g.sort_order).max().unwrap_or(0) + 1
-        };
-        let row = ToolGroupRow { id, name, description: desc, sort_order: max_order, created_at: now };
-        let conn = crate::db::get_db().lock().unwrap();
-        if let Err(e) = insert_group(&conn, &row) {
-            tracing::error!(target:"db", error=%e, "insert tool group");
-        }
-        // 直接刷新，不用 refresh 闭包避免响应式丢失
-        let grps = list_groups(&conn).unwrap_or_default();
-        groups.set(grps.clone());
-        let mut map = std::collections::HashMap::new();
-        for g in &grps {
-            if let Ok(cnt) = count_tools_in_group(&conn, &g.id) {
-                map.insert(g.id.clone(), cnt);
+        let (grps, map) = crate::db::with_db(|conn| {
+            let max_order: i32 = {
+                let grps = list_groups(conn).unwrap_or_default();
+                grps.iter().map(|g| g.sort_order).max().unwrap_or(0) + 1
+            };
+            let row = ToolGroupRow { id: id.clone(), name, description: desc, sort_order: max_order, created_at: now };
+            if let Err(e) = insert_group(conn, &row) {
+                tracing::error!(target:"db", error=%e, "insert tool group");
             }
-        }
+            let grps = list_groups(conn).unwrap_or_default();
+            let mut map = std::collections::HashMap::new();
+            for g in &grps {
+                if let Ok(cnt) = count_tools_in_group(conn, &g.id) {
+                    map.insert(g.id.clone(), cnt);
+                }
+            }
+            (grps, map)
+        });
+        groups.set(grps.clone());
         group_tool_count.set(map);
-        groups_cache.set(list_groups(&conn).unwrap_or_default());
+        groups_cache.set(grps);
         show_new_group.set(false);
         new_group_name.set(String::new());
         new_group_desc.set(String::new());
     };
 
     let mut do_delete_group = move |id: String| {
-        let conn = crate::db::get_db().lock().unwrap();
-        if let Err(e) = delete_group(&conn, &id) {
-            tracing::error!(target:"db", error=%e, "delete tool group");
-        }
-        let grps = list_groups(&conn).unwrap_or_default();
-        groups.set(grps.clone());
-        let mut map = std::collections::HashMap::new();
-        for g in &grps {
-            if let Ok(cnt) = count_tools_in_group(&conn, &g.id) {
-                map.insert(g.id.clone(), cnt);
+        let (grps, map) = crate::db::with_db(|conn| {
+            if let Err(e) = delete_group(conn, &id) {
+                tracing::error!(target:"db", error=%e, "delete tool group");
             }
-        }
+            let grps = list_groups(conn).unwrap_or_default();
+            let mut map = std::collections::HashMap::new();
+            for g in &grps {
+                if let Ok(cnt) = count_tools_in_group(conn, &g.id) {
+                    map.insert(g.id.clone(), cnt);
+                }
+            }
+            (grps, map)
+        });
+        groups.set(grps.clone());
         group_tool_count.set(map);
-        groups_cache.set(list_groups(&conn).unwrap_or_default());
+        groups_cache.set(grps);
         deleting_group.set(None);
     };
 
     let mut open_edit = move |group_id: String| {
-        let conn = crate::db::get_db().lock().unwrap();
-        if let Ok(tools) = list_tools_in_group(&conn, &group_id) {
-            edit_group_tools.set(tools.into_iter().map(|t| t.id).collect());
-        }
+        let tools = crate::db::with_db(|conn| {
+            list_tools_in_group(conn, &group_id)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|t| t.id)
+                .collect()
+        });
+        edit_group_tools.set(tools);
         editing_group.set(Some(group_id));
     };
 
@@ -232,26 +239,33 @@ pub fn ToolsPanel() -> Element {
                                     div {
                                         class: if is_in { "tools-edit-group-item is-checked" } else { "tools-edit-group-item" },
                                         onclick: move |_| {
-                                            let conn = crate::db::get_db().lock().unwrap();
+                                            let (grps, map) = crate::db::with_db(|conn| {
+                                                if is_in {
+                                                    let _ = remove_tool_from_group(conn, &cid, &iid);
+                                                } else {
+                                                    let _ = add_tool_to_group(conn, &cid, &iid, 0);
+                                                }
+                                                let grps = crate::db::metadata::tool::list_groups(conn).unwrap_or_default();
+                                                let mut map = std::collections::HashMap::new();
+                                                for g in &grps {
+                                                    if let Ok(cnt) = crate::db::metadata::tool::count_tools_in_group(conn, &g.id) {
+                                                        map.insert(g.id.clone(), cnt);
+                                                    }
+                                                }
+                                                (grps, map)
+                                            });
+                                            // 更新工具列表信号
                                             if is_in {
-                                                let _ = remove_tool_from_group(&conn, &cid, &iid);
                                                 let mut list = egt2.write();
                                                 list.retain(|t| t != &iid);
                                             } else {
-                                                let _ = add_tool_to_group(&conn, &cid, &iid, 0);
                                                 egt2.write().push(iid.clone());
                                             }
-                                            // 直接刷新信号
-                                            let grps = crate::db::metadata::tool::list_groups(&conn).unwrap_or_default();
                                             grps_sig.set(grps.clone());
-                                            let mut map = std::collections::HashMap::new();
-                                            for g in &grps {
-                                                if let Ok(cnt) = crate::db::metadata::tool::count_tools_in_group(&conn, &g.id) {
-                                                    map.insert(g.id.clone(), cnt);
-                                                }
-                                            }
                                             gtc_sig.set(map);
-                                            gc_sig.set(crate::db::metadata::tool::list_groups(&conn).unwrap_or_default());
+                                            gc_sig.set(crate::db::with_db(|conn| {
+                                                crate::db::metadata::tool::list_groups(conn).unwrap_or_default()
+                                            }));
                                         },
                                         input {
                                             r#type: "checkbox",

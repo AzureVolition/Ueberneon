@@ -105,10 +105,11 @@ impl AgentManager {
         let pid = project_id.as_deref().unwrap_or(crate::db::DEFAULT_PROJECT_ID);
         
 
-        let conn = crate::db::get_db().lock().map_err(|e| format!("failed to get db conn: {e}"))?;
-        let project_row = crate::db::metadata::project::get(&conn, pid)
-            .map_err(|e| format!("db error: {e}"))?
-            .ok_or(format!("{} project not found", pid))?;
+        let project_row = crate::db::with_db(|conn| {
+            crate::db::metadata::project::get(conn, pid)
+                .map_err(|e| format!("db error: {e}"))?
+                .ok_or(format!("{} project not found", pid))
+        })?;
 
         let project_path = PathBuf::from(project_row.path);
         register_builtins(&registry, &project_path);
@@ -181,13 +182,13 @@ impl AgentManager {
                     "creating new conversation"
                 );
                 // 创建 conversation 数据库行
-                if let Ok(conn) = crate::db::get_db().lock() {
+                crate::db::with_db(|conn| {
                     let pid = project_id.as_deref().unwrap_or(crate::db::DEFAULT_PROJECT_ID);
                     if let Err(e) = conn.execute(
                         "INSERT INTO conversations (id, project_id, title, updated_at, agent_config_id) VALUES (?1, ?2, '', ?3, ?4)",
                         rusqlite::params![id, pid, chrono::Local::now().to_rfc3339(), agent_config_id],
                     ) { tracing::error!(target:"db", error=%e, "insert conversation"); }
-                }
+                });
                 let agent =
                     Self::build_agent_inner(id.clone(), Some(system_prompt), project_id, &agent_config)?;
                 let handler = agent.handler.clone();
@@ -202,21 +203,20 @@ impl AgentManager {
             return Ok(self.agents.get(id).unwrap().handler.clone());
         }
         // 从 DB 重建
-        let conn = crate::db::get_db()
-            .lock()
-            .map_err(|e| format!("db error: {e}"))?;
-        let exists = crate::db::metadata::conversation::get(&conn, &id)
-            .map_err(|e| format!("db error: {e}"))?
-            .is_some();
-        if !exists {
-            return Err(format!("conversation {id} not found"));
-        }
-        let conv = crate::db::metadata::conversation::get(&conn, &id)
-            .map_err(|e| format!("db error: {e}"))?.ok_or(format!("conversation not found"))?;
-        
-        let msgs = crate::db::metadata::message::list_as_llm_messages(&conn, &id)
-            .unwrap_or_default();
-        drop(conn);
+        let (conv, msgs) = crate::db::with_db(|conn| -> Result<_, String> {
+            let exists = crate::db::metadata::conversation::get(conn, &id)
+                .map_err(|e| format!("db error: {e}"))?
+                .is_some();
+            if !exists {
+                return Err(format!("conversation {id} not found"));
+            }
+            let conv = crate::db::metadata::conversation::get(conn, &id)
+                .map_err(|e| format!("db error: {e}"))?
+                .ok_or(format!("conversation not found"))?;
+            let msgs = crate::db::metadata::message::list_as_llm_messages(conn, &id)
+                .unwrap_or_default();
+            Ok((conv, msgs))
+        })?;
 
         // 读取 conversation 关联的 agent 配置
         let agent_config = conv.agent_config_id
@@ -238,13 +238,11 @@ impl AgentManager {
             agent_config_id = %agent_config_id,
             "reading agent config from db"
         );
-        let conn = crate::db::get_db()
-            .lock()
-            .map_err(|e| format!("db error: {e}"))?;
-        let row = crate::db::metadata::agent_config::get(&conn, agent_config_id)
-            .map_err(|e| format!("db error: {e}"))?
-            .ok_or_else(|| format!("agent config {agent_config_id} not found"))?;
-        drop(conn);
+        let row = crate::db::with_db(|conn| {
+            crate::db::metadata::agent_config::get(conn, agent_config_id)
+                .map_err(|e| format!("db error: {e}"))?
+                .ok_or_else(|| format!("agent config {agent_config_id} not found"))
+        })?;
         AgentConfig::from_row(&row).map_err(|e| format!("{e}"))
     }
 
@@ -266,12 +264,11 @@ impl AgentManager {
         if self.agents.contains_key(id) {
             return Ok(true);
         }
-        let conn = crate::db::get_db()
-            .lock()
-            .map_err(|e| format!("db error: {e}"))?;
-        let found = crate::db::metadata::conversation::get(&conn, id)
-            .map_err(|e| format!("db error: {e}"))?
-            .is_some();
+        let found = crate::db::with_db(|conn| {
+            crate::db::metadata::conversation::get(conn, id)
+                .map_err(|e| format!("db error: {e}"))
+        })?
+        .is_some();
         Ok(found)
     }
 

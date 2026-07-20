@@ -279,9 +279,9 @@ impl Agent {
     }
 
     pub fn push_message(&mut self, msg: Message) -> anyhow::Result<()> {
-        if let Ok(conn) = crate::db::get_db().lock() {
-            self.save_message(&conn, &msg).context("save message")?;
-            self.touch_conversation(&conn).context("touch conversation")?;
+        if let Ok(guard) = crate::db::get_db().lock() {
+            self.save_message(&guard, &msg).context("save message")?;
+            self.touch_conversation(&guard).context("touch conversation")?;
         }
         self.messages.push(msg);
         Ok(())

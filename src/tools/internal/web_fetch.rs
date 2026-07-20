@@ -396,7 +396,6 @@ impl CheckableTool for WebFetch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use llm::tool::ToolMeta;
 
     fn test_ctx() -> ToolContext {
         ToolContext {

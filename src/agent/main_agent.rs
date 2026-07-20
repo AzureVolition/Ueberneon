@@ -297,9 +297,9 @@ impl Agent {
         }
 
         // ── 更新对话时间 ──
-        if let Ok(conn) = crate::db::get_db().lock() {
-            if let Err(e) = self.touch_conversation(&conn) { tracing::error!(target:"db", error=%e, "touch conversation"); }
-        }
+        crate::db::try_with_db(|conn| {
+            if let Err(e) = self.touch_conversation(conn) { tracing::error!(target:"db", error=%e, "touch conversation"); }
+        });
 
         self.hook_register.emit(&AgentEvent::Stop { reason: if cancelled { "cancelled" } else { "completed" }.into() });
 

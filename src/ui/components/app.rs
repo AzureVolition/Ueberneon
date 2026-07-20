@@ -29,15 +29,14 @@ fn markdown_to_html(md: &str) -> String {
 }
 
 fn load_agent_configs() -> Vec<crate::db::metadata::agent_config::AgentConfigRow> {
-    let conn = crate::db::get_db().lock().unwrap();
-    crate::db::metadata::agent_config::list_all(&conn).unwrap_or_default()
+    crate::db::with_db(|conn| crate::db::metadata::agent_config::list_all(conn).unwrap_or_default())
 }
 
 /// 从 DB 加载指定对话的消息
 fn load_messages_from_db(conv_id: &str) -> Vec<ChatMessage> {
-    let conn = crate::db::get_db().lock().unwrap();
-    let msgs = crate::db::metadata::message::list_as_llm_messages(&conn, conv_id).unwrap_or_default();
-    drop(conn);
+    let msgs = crate::db::with_db(|conn| {
+        crate::db::metadata::message::list_as_llm_messages(conn, conv_id).unwrap_or_default()
+    });
     let mut result = Vec::new();
 
     for m in &msgs {
@@ -62,7 +61,6 @@ fn load_messages_from_db(conv_id: &str) -> Vec<ChatMessage> {
                     }
                 }).collect();
 
-                // 构建 segments：reasoning → text → tool call markers
                 let mut segments = Vec::new();
                 if let Some(ref r) = m.reasoning_content {
                     if !r.is_empty() {
@@ -78,14 +76,30 @@ fn load_messages_from_db(conv_id: &str) -> Vec<ChatMessage> {
                     segments.push(StreamSegment::ToolCall);
                 }
 
-                result.push(ChatMessage {
-                    role: Role::Assistant,
-                    content: m.content.clone().unwrap_or_default(),
-                    timestamp: chrono::Local::now(),
-                    reasoning: m.reasoning_content.clone().unwrap_or_default(),
-                    segments,
-                    tool_calls,
-                });
+                // 如果上一条也是 Assistant（连续的 Assistant 消息），合并到同一条
+                if let Some(prev) = result.last_mut().filter(|cm| cm.role == Role::Assistant) {
+                    prev.segments.extend(segments);
+                    prev.tool_calls.extend(tool_calls);
+                    if let Some(ref c) = m.content {
+                        if !c.is_empty() {
+                            prev.content = c.clone();
+                        }
+                    }
+                    if let Some(ref r) = m.reasoning_content {
+                        if !r.is_empty() {
+                            prev.reasoning = r.clone();
+                        }
+                    }
+                } else {
+                    result.push(ChatMessage {
+                        role: Role::Assistant,
+                        content: m.content.clone().unwrap_or_default(),
+                        timestamp: chrono::Local::now(),
+                        reasoning: m.reasoning_content.clone().unwrap_or_default(),
+                        segments,
+                        tool_calls,
+                    });
+                }
             }
             llm::Role::Tool => {
                 // 从后往前找匹配的 Assistant，回填 tool 结果
@@ -122,8 +136,9 @@ fn load_messages_from_db(conv_id: &str) -> Vec<ChatMessage> {
 pub fn App() -> Element {
     // ── 项目状态（从 DB 加载）──
     let mut projects: Signal<Vec<Project>> = use_signal(|| {
-        let conn = crate::db::get_db().lock().unwrap();
-        let rows = crate::db::metadata::project::list(&conn).unwrap_or_default();
+        let rows = crate::db::with_db(|conn| {
+            crate::db::metadata::project::list(conn).unwrap_or_default()
+        });
         rows.into_iter()
             .map(|r| Project {
                 id: r.id, name: r.name, path: r.path,
@@ -154,10 +169,10 @@ pub fn App() -> Element {
     let mut selected_agent_config_id = use_signal(|| {
         let default_id = crate::settings::get().general.default_agent_config_id;
         if !default_id.is_empty() {
-            let conn = crate::db::get_db().lock().unwrap();
-            let exists = crate::db::metadata::agent_config::get(&conn, &default_id)
-                .ok().flatten().is_some();
-            drop(conn);
+            let exists = crate::db::with_db(|conn| {
+                crate::db::metadata::agent_config::get(conn, &default_id)
+                    .ok().flatten().is_some()
+            });
             if exists { return default_id; }
         }
         String::new()
@@ -194,17 +209,17 @@ pub fn App() -> Element {
             sidebar_view.set(SidebarView::ConversationList(project_id.clone()));
 
             // 从 DB 加载对话列表到 signal
-            if let Ok(conn) = crate::db::get_db().lock() {
-                let convs = crate::db::metadata::conversation::list_by_project(&conn, &project_id).unwrap_or_default();
-                let mut projs = projects.write();
-                if let Some(proj) = projs.iter_mut().find(|p| p.id == project_id) {
-                    proj.conversations = convs.into_iter().map(|c| Conversation {
-                        id: c.id, title: c.title, messages: Vec::new(), updated_at: c.updated_at,
-                        message_count: c.message_count as usize,
-                    }).collect();
-                }
-                drop(projs);
+            let convs = crate::db::with_db(|conn| {
+                crate::db::metadata::conversation::list_by_project(conn, &project_id).unwrap_or_default()
+            });
+            let mut projs = projects.write();
+            if let Some(proj) = projs.iter_mut().find(|p| p.id == project_id) {
+                proj.conversations = convs.into_iter().map(|c| Conversation {
+                    id: c.id, title: c.title, messages: Vec::new(), updated_at: c.updated_at,
+                    message_count: c.message_count as usize,
+                }).collect();
             }
+            drop(projs);
 
             let projs = projects.read();
             if let Some(proj) = projs.iter().find(|p| p.id == project_id) {
@@ -237,11 +252,12 @@ pub fn App() -> Element {
     };
 
     let on_new_project = move |(name, path): (String, String)| {
-        let conn = crate::db::get_db().lock().unwrap();
-        let new_id = crate::db::metadata::project::create(&conn, &name, &path)
-            .unwrap_or_else(|_| String::new());
-        let rows = crate::db::metadata::project::list(&conn).unwrap_or_default();
-        drop(conn);
+        let (new_id, rows) = crate::db::with_db(|conn| {
+            let new_id = crate::db::metadata::project::create(conn, &name, &path)
+                .unwrap_or_else(|_| String::new());
+            let rows = crate::db::metadata::project::list(conn).unwrap_or_default();
+            (new_id, rows)
+        });
         projects.set(
             rows.into_iter().map(|r| Project {
                 id: r.id, name: r.name, path: r.path,
@@ -314,10 +330,10 @@ pub fn App() -> Element {
             streaming_segments.set(Vec::new());
             active_tool_calls.set(Vec::new());
         }
-        if let Ok(conn) = crate::db::get_db().lock() {
-            if let Err(e) = crate::db::metadata::message::delete_by_conversation(&conn, &conv_id) { tracing::error!(target:"db", error=%e, "delete messages"); }
-            if let Err(e) = crate::db::metadata::conversation::delete(&conn, &conv_id) { tracing::error!(target:"db", error=%e, "delete conversation"); }
-        }
+        crate::db::try_with_db(|conn| {
+            if let Err(e) = crate::db::metadata::message::delete_by_conversation(conn, &conv_id) { tracing::error!(target:"db", error=%e, "delete messages"); }
+            if let Err(e) = crate::db::metadata::conversation::delete(conn, &conv_id) { tracing::error!(target:"db", error=%e, "delete conversation"); }
+        });
         {
             let mut projs = projects.write();
             if let Some(proj) = projs.iter_mut().find(|p| p.id == proj_id) {
@@ -338,15 +354,23 @@ pub fn App() -> Element {
             messages.set(Vec::new());
             streaming_segments.set(Vec::new());
         }
-        if let Ok(conn) = crate::db::get_db().lock() {
-            let convs = crate::db::metadata::conversation::list_by_project(&conn, &project_id).unwrap_or_default();
-            let mut mgr = AgentManager::get().lock().unwrap();
-            for conv in &convs { mgr.remove(&conv.id); }
-            if let Err(e) = crate::db::metadata::project::delete(&conn, &project_id) { tracing::error!(target:"db", error=%e, "delete project"); }
-        }
-        let conn = crate::db::get_db().lock().unwrap();
-        let rows = crate::db::metadata::project::list(&conn).unwrap_or_default();
-        drop(conn);
+        // 获取项目下的对话 ID 列表（先释放 DB 锁再操作 AgentManager）
+        let conv_ids: Vec<String> = crate::db::with_db(|conn| {
+            crate::db::metadata::conversation::list_by_project(conn, &project_id)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|c| c.id)
+                .collect()
+        });
+        let mut mgr = AgentManager::get().lock().unwrap();
+        for cid in &conv_ids { mgr.remove(cid); }
+        drop(mgr);
+        crate::db::try_with_db(|conn| {
+            if let Err(e) = crate::db::metadata::project::delete(conn, &project_id) { tracing::error!(target:"db", error=%e, "delete project"); }
+        });
+        let rows = crate::db::with_db(|conn| {
+            crate::db::metadata::project::list(conn).unwrap_or_default()
+        });
         projects.set(
             rows.into_iter().map(|r| Project {
                 id: r.id, name: r.name, path: r.path,
@@ -357,13 +381,13 @@ pub fn App() -> Element {
     };
 
     let on_change_indicator_color = move |(project_id, color_key): (String, String)| {
-        let conn = crate::db::get_db().lock().unwrap();
-        if let Some(mut row) = crate::db::metadata::project::get(&conn, &project_id).unwrap_or(None) {
-            row.indicator_color = color_key;
-            if let Err(e) = crate::db::metadata::project::update(&conn, &row) { tracing::error!(target:"db", error=%e, "update project"); }
-        }
-        let rows = crate::db::metadata::project::list(&conn).unwrap_or_default();
-        drop(conn);
+        let rows = crate::db::with_db(|conn| {
+            if let Some(mut row) = crate::db::metadata::project::get(conn, &project_id).unwrap_or(None) {
+                row.indicator_color = color_key;
+                if let Err(e) = crate::db::metadata::project::update(conn, &row) { tracing::error!(target:"db", error=%e, "update project"); }
+            }
+            crate::db::metadata::project::list(conn).unwrap_or_default()
+        });
         projects.set(
             rows.into_iter().map(|r| Project {
                 id: r.id, name: r.name, path: r.path,
@@ -569,17 +593,18 @@ pub fn App() -> Element {
                  
 
                             // DB 更新对话标题 + 项目活跃时间
-                            if let Ok(conn) = crate::db::get_db().lock() {
+                            crate::db::try_with_db(|conn| {
                                 conn.execute(
                                     "UPDATE conversations SET title = ?1 WHERE id = ?2 and (title = '' or title is null)",
                                     rusqlite::params![crate::model::title_from_messages(&[user_msg.clone()]), cid],
                                 ).unwrap_or_else(|e| { tracing::error!(target:"db", error=%e, "update conversation title"); 0 });
-                                if let Err(e) = crate::db::metadata::project::touch(&conn, &pid) { tracing::error!(target:"db", error=%e, "touch project"); }
-                            }
+                                if let Err(e) = crate::db::metadata::project::touch(conn, &pid) { tracing::error!(target:"db", error=%e, "touch project"); }
+                            });
                             // 刷新 signal（标题、轮数、last_activity_at 同步）
-                            if let Ok(conn) = crate::db::get_db().lock() {
-                                let convs = crate::db::metadata::conversation::list_by_project(&conn, &pid).unwrap_or_default();
-                                let mut p = projs.write();
+                            let convs = crate::db::with_db(|conn| {
+                                crate::db::metadata::conversation::list_by_project(conn, &pid).unwrap_or_default()
+                            });
+                            let mut p = projs.write();
                                 if let Some(proj) = p.iter_mut().find(|pr| pr.id == pid) {
                                     proj.conversations = convs.into_iter().map(|c| Conversation {
                                         id: c.id, title: c.title, messages: Vec::new(),
@@ -588,7 +613,6 @@ pub fn App() -> Element {
                                     proj.last_activity_at = Some(chrono::Local::now());
                                 }
                                 drop(p);
-                            }
                             streaming_project_id.set(Some(pid.clone()));
 
                             

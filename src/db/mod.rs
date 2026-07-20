@@ -125,8 +125,23 @@ pub fn init_db() -> Result<Connection> {
         tracing::debug!("[SQL] {sql}");
     }));
 
-    // WAL 模式：写入性能好，且允许并发读取
+    // WAL 模式
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+
+    // 外键约束
+    conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+
+    // 建表 + 种子数据
+    let result = rebuild_schema(&conn);
+    if let Err(e) = result {
+        return Err(e);
+    }
+
+    Ok(conn)
+}
+
+/// 建表 + 种子数据（接收 &Connection，不持有所有权）
+fn rebuild_schema(conn: &Connection) -> Result<()> {
 
     // 外键约束
     conn.execute_batch("PRAGMA foreign_keys=ON;")?;
@@ -327,71 +342,7 @@ pub fn init_db() -> Result<Connection> {
         ],
     )?;
 
-    // ── 迁移：修复内置 SubAgent 的工具名（小写 → PascalCase）───────
-    // 旧版使用 "read_file" 等小写名称，与实际注册的工具名 "ReadFile" 不匹配
-    for cfg_id in &["acfg-builtin-explore", "acfg-builtin-plan"] {
-        if let Ok(row) = conn.query_row::<String, _, _>(
-            "SELECT tools FROM agent_configs WHERE id = ?1",
-            rusqlite::params![cfg_id],
-            |row| row.get(0),
-        ) {
-            if row.contains("read_file") {
-                conn.execute(
-                    "UPDATE agent_configs SET tools = ?1, updated_at = ?2 WHERE id = ?3",
-                    rusqlite::params![
-                        r#"["ReadFile","Grep","Glob","Ls","CodeIndex","WebFetch","ReadOnlyBash"]"#,
-                        chrono::Local::now().to_rfc3339(),
-                        cfg_id,
-                    ],
-                )?;
-            }
-        }
-    }
-
-    // ── 迁移：将旧版 config.json 中的 provider_keys 转为实例 ────────────
-    // 为每个已有 key 的 provider 创建一条实例记录（幂等）
-    let config_path = std::path::PathBuf::from(
-        std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())
-    ).join(".racpagent").join("config.json");
-    if config_path.exists() {
-        if let Ok(json) = std::fs::read_to_string(&config_path) {
-            if let Ok(old_config) = serde_json::from_str::<serde_json::Value>(&json) {
-                if let Some(keys) = old_config.get("provider_keys").and_then(|v| v.as_object()) {
-                    let now = chrono::Local::now().to_rfc3339();
-                    for (prov_id, key_val) in keys {
-                        // 检查该 provider 是否存在
-                        let exists: bool = conn.query_row(
-                            "SELECT 1 FROM providers WHERE id = ?1",
-                            rusqlite::params![prov_id],
-                            |_| Ok(()),
-                        ).is_ok();
-                        if !exists { continue; }
-                        // 检查是否已创建过实例
-                        let already: bool = conn.query_row(
-                            "SELECT 1 FROM provider_instances WHERE provider_id = ?1",
-                            rusqlite::params![prov_id],
-                            |_| Ok(()),
-                        ).is_ok();
-                        if already { continue; }
-                        // 生成唯一 ID（时间戳 + 进程 ID）
-                        use std::time::{SystemTime, UNIX_EPOCH};
-                        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
-                        let pid = std::process::id();
-                        let instance_id = format!("inst-{ts:x}-{pid:x}");
-                        let alias = prov_id.clone();
-                        let key_str = key_val.as_str().unwrap_or("");
-                        conn.execute(
-                            "INSERT INTO provider_instances (id, provider_id, alias, api_key, sort_order, created_at)
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                            rusqlite::params![instance_id, prov_id, alias, key_str, 0, now],
-                        )?;
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(conn)
+    Ok(())
 }
 
 /// 全局 DB 连接（懒加载）。整个应用生命周期内只需初始化一次。
@@ -402,6 +353,37 @@ pub fn get_db() -> &'static Mutex<Connection> {
     DB.get_or_init(|| {
         Mutex::new(init_db().expect("failed to initialize database"))
     })
+}
+
+/// 在闭包内使用 DB 连接，闭包结束后自动释放锁。
+/// 调用方无需手动获取/释放 MutexGuard。
+///
+/// # Panics
+/// 在锁被 poison 时 panic（与直接调用 `lock().unwrap()` 行为一致）。
+pub fn with_db<T>(f: impl FnOnce(&Connection) -> T) -> T {
+    let guard = get_db().lock().unwrap();
+    f(&guard)
+}
+
+/// 与 [`with_db`] 相同，但返回 `Result` —— 锁被 poison 时返回 `Err(...)`。
+pub fn with_db_result<T, E>(
+    f: impl FnOnce(&Connection) -> Result<T, E>,
+) -> Result<T, String>
+where
+    E: std::fmt::Display,
+{
+    let guard = get_db()
+        .lock()
+        .map_err(|e| format!("failed to acquire db lock: {e}"))?;
+    f(&guard).map_err(|e| format!("db error: {e}"))
+}
+
+/// 容错版：锁获取失败（poison）或未初始化时静默跳过。
+/// 适用于日志记录等非关键路径。
+pub fn try_with_db(f: impl FnOnce(&Connection)) {
+    if let Ok(guard) = get_db().lock() {
+        f(&guard);
+    }
 }
 
 /// 将 inventory 中的内置工具同步到 tools 表（幂等）。
@@ -475,6 +457,26 @@ fn seed_default_tool_groups(conn: &rusqlite::Connection) -> rusqlite::Result<()>
         }
     }
     Ok(())
+}
+
+/// 删除所有表并重新初始化（开发用）
+pub fn drop_all_tables() -> Result<(), Box<dyn std::error::Error>> {
+    with_db(|conn| -> Result<(), Box<dyn std::error::Error>> {
+        conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
+        let tables: Vec<String> = {
+            let mut stmt = conn.prepare(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            )?;
+            stmt.query_map([], |row| row.get(0))?
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+        for t in &tables {
+            conn.execute(&format!("DROP TABLE IF EXISTS \"{}\"", t), [])?;
+        }
+        rebuild_schema(conn).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+        Ok(())
+    })
 }
 
 #[cfg(test)]

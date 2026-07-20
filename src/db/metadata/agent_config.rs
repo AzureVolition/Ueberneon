@@ -132,6 +132,33 @@ pub fn list_all(conn: &Connection) -> Result<Vec<AgentConfigRow>> {
     rows.collect()
 }
 
+/// 按 agent_type 列出配置（按 updated_at 降序）
+pub fn list_by_type(conn: &Connection, agent_type: &str) -> Result<Vec<AgentConfigRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, agent_type, provider_instance_id, model,
+         base_url, api_key, system_prompt, temperature, max_tokens, tools, created_at, updated_at
+         FROM agent_configs WHERE agent_type = ?1 ORDER BY updated_at DESC"
+    )?;
+    let rows = stmt.query_map(params![agent_type], |row| {
+        Ok(AgentConfigRow {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            agent_type: row.get(2)?,
+            provider_instance_id: row.get(3)?,
+            model: row.get(4)?,
+            base_url: row.get(5)?,
+            api_key: row.get(6)?,
+            system_prompt: row.get(7)?,
+            temperature: row.get(8)?,
+            max_tokens: row.get(9)?,
+            tools: row.get(10)?,
+            created_at: row.get(11)?,
+            updated_at: row.get(12)?,
+        })
+    })?;
+    rows.collect()
+}
+
 // ── Agent 配置-工具组关联 ──────────────────────────────────────────────
 
 /// 保存关联（先删后插，事务内）
