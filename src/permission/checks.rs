@@ -43,7 +43,7 @@ impl Check for DenySystemPaths {
         "deny_system_paths"
     }
 
-    fn check(&self, _tool: &str, subject: &str) -> Option<Decision> {
+    fn check(&self, _tool: &str, subject: &str, _read_only: bool) -> Option<Decision> {
         if subject.is_empty() {
             return None;
         }
@@ -69,7 +69,7 @@ impl Check for ForcePushGuard {
         "force_push_guard"
     }
 
-    fn check(&self, tool: &str, subject: &str) -> Option<Decision> {
+    fn check(&self, tool: &str, subject: &str, _read_only: bool) -> Option<Decision> {
         if tool != "bash" || subject.is_empty() {
             return None;
         }
@@ -113,7 +113,7 @@ impl Check for MaxFileSize {
         "max_file_size"
     }
 
-    fn check(&self, _tool: &str, subject: &str) -> Option<Decision> {
+    fn check(&self, _tool: &str, subject: &str, _read_only: bool) -> Option<Decision> {
         if subject.is_empty() {
             return None;
         }
@@ -141,7 +141,7 @@ impl Check for ReadOnlyBashClassifier {
         "read_only_bash"
     }
 
-    fn check(&self, tool: &str, subject: &str) -> Option<Decision> {
+    fn check(&self, tool: &str, subject: &str, _read_only: bool) -> Option<Decision> {
         if tool != "bash" || subject.is_empty() {
             return None;
         }
@@ -298,7 +298,7 @@ impl Check for DangerousPatternDetector {
         "dangerous_pattern_detector"
     }
 
-    fn check(&self, tool: &str, subject: &str) -> Option<Decision> {
+    fn check(&self, tool: &str, subject: &str, _read_only: bool) -> Option<Decision> {
         if tool != "bash" || subject.is_empty() {
             return None;
         }
@@ -322,32 +322,32 @@ mod tests {
     #[test]
     fn deny_etc() {
         let c = DenySystemPaths;
-        assert_eq!(c.check("edit_file", "/etc/passwd"), Some(Decision::Deny("denied".into())));
-        assert_eq!(c.check("write_file", "/etc/nginx/nginx.conf"), Some(Decision::Deny("denied".into())));
+        assert_eq!(c.check("edit_file", "/etc/passwd", false), Some(Decision::Deny("denied".into())));
+        assert_eq!(c.check("write_file", "/etc/nginx/nginx.conf", false), Some(Decision::Deny("denied".into())));
     }
 
     #[test]
     fn deny_usr() {
         let c = DenySystemPaths;
-        assert_eq!(c.check("edit_file", "/usr/local/bin/something"), Some(Decision::Deny("denied".into())));
+        assert_eq!(c.check("edit_file", "/usr/local/bin/something", false), Some(Decision::Deny("denied".into())));
     }
 
     #[test]
     fn allow_project_file() {
         let c = DenySystemPaths;
-        assert_eq!(c.check("edit_file", "/home/user/project/main.rs"), None);
+        assert_eq!(c.check("edit_file", "/home/user/project/main.rs", false), None);
     }
 
     #[test]
     fn deny_not_applicable_to_bash() {
         let c = DenySystemPaths;
-        assert_eq!(c.check("bash", "rm /etc/passwd"), None);
+        assert_eq!(c.check("bash", "rm /etc/passwd", false), None);
     }
 
     #[test]
     fn deny_empty_subject() {
         let c = DenySystemPaths;
-        assert_eq!(c.check("edit_file", ""), None);
+        assert_eq!(c.check("edit_file", "", false), None);
     }
 
     // ── ForcePushGuard ──
@@ -356,7 +356,7 @@ mod tests {
     fn force_push_detected() {
         let c = ForcePushGuard;
         assert_eq!(
-            c.check("bash", "git push --force origin main"),
+            c.check("bash", "git push --force origin main", false),
             Some(Decision::Ask)
         );
     }
@@ -364,19 +364,19 @@ mod tests {
     #[test]
     fn force_push_short_flag() {
         let c = ForcePushGuard;
-        assert_eq!(c.check("bash", "git push -f origin"), Some(Decision::Ask));
+        assert_eq!(c.check("bash", "git push -f origin", false), Some(Decision::Ask));
     }
 
     #[test]
     fn normal_push_allowed() {
         let c = ForcePushGuard;
-        assert_eq!(c.check("bash", "git push origin main"), None);
+        assert_eq!(c.check("bash", "git push origin main", false), None);
     }
 
     #[test]
     fn force_push_not_applicable_to_edit() {
         let c = ForcePushGuard;
-        assert_eq!(c.check("edit_file", "git push --force"), None);
+        assert_eq!(c.check("edit_file", "git push --force", false), None);
     }
 
     // ── ReadOnlyBashClassifier ──
@@ -384,115 +384,115 @@ mod tests {
     #[test]
     fn echo_is_readonly() {
         let c = ReadOnlyBashClassifier;
-        assert_eq!(c.check("bash", "echo hello"), Some(Decision::Allow));
+        assert_eq!(c.check("bash", "echo hello", false), Some(Decision::Allow));
     }
 
     #[test]
     fn ls_is_readonly() {
         let c = ReadOnlyBashClassifier;
-        assert_eq!(c.check("bash", "ls -la /tmp"), Some(Decision::Allow));
+        assert_eq!(c.check("bash", "ls -la /tmp", false), Some(Decision::Allow));
     }
 
     #[test]
     fn git_status_is_readonly() {
         let c = ReadOnlyBashClassifier;
-        assert_eq!(c.check("bash", "git status"), Some(Decision::Allow));
+        assert_eq!(c.check("bash", "git status", false), Some(Decision::Allow));
     }
 
     #[test]
     fn git_log_is_readonly() {
         let c = ReadOnlyBashClassifier;
-        assert_eq!(c.check("bash", "git log --oneline -5"), Some(Decision::Allow));
+        assert_eq!(c.check("bash", "git log --oneline -5", false), Some(Decision::Allow));
     }
 
     #[test]
     fn git_push_not_readonly() {
         let c = ReadOnlyBashClassifier;
-        assert_eq!(c.check("bash", "git push origin main"), None);
+        assert_eq!(c.check("bash", "git push origin main", false), None);
     }
 
     #[test]
     fn go_version_readonly() {
         let c = ReadOnlyBashClassifier;
-        assert_eq!(c.check("bash", "go version"), Some(Decision::Allow));
+        assert_eq!(c.check("bash", "go version", false), Some(Decision::Allow));
     }
 
     #[test]
     fn go_build_not_readonly() {
         let c = ReadOnlyBashClassifier;
-        assert_eq!(c.check("bash", "go build ./..."), None);
+        assert_eq!(c.check("bash", "go build ./...", false), None);
     }
 
     #[test]
     fn cargo_check_readonly() {
         let c = ReadOnlyBashClassifier;
-        assert_eq!(c.check("bash", "cargo check"), Some(Decision::Allow));
+        assert_eq!(c.check("bash", "cargo check", false), Some(Decision::Allow));
     }
 
     #[test]
     fn cargo_build_not_readonly() {
         let c = ReadOnlyBashClassifier;
-        assert_eq!(c.check("bash", "cargo build"), None);
+        assert_eq!(c.check("bash", "cargo build", false), None);
     }
 
     #[test]
     fn curl_get_readonly() {
         let c = ReadOnlyBashClassifier;
-        assert_eq!(c.check("bash", "curl https://api.example.com"), Some(Decision::Allow));
+        assert_eq!(c.check("bash", "curl https://api.example.com", false), Some(Decision::Allow));
     }
 
     #[test]
     fn curl_post_not_readonly() {
         let c = ReadOnlyBashClassifier;
-        assert_eq!(c.check("bash", "curl -X POST -d data https://api.example.com"), None);
+        assert_eq!(c.check("bash", "curl -X POST -d data https://api.example.com", false), None);
     }
 
     #[test]
     fn sort_no_o_readonly() {
         let c = ReadOnlyBashClassifier;
-        assert_eq!(c.check("bash", "sort file.txt"), Some(Decision::Allow));
+        assert_eq!(c.check("bash", "sort file.txt", false), Some(Decision::Allow));
     }
 
     #[test]
     fn sort_with_o_not_readonly() {
         let c = ReadOnlyBashClassifier;
-        assert_eq!(c.check("bash", "sort -o output.txt file.txt"), None);
+        assert_eq!(c.check("bash", "sort -o output.txt file.txt", false), None);
     }
 
     #[test]
     fn docker_ps_readonly() {
         let c = ReadOnlyBashClassifier;
-        assert_eq!(c.check("bash", "docker ps"), Some(Decision::Allow));
+        assert_eq!(c.check("bash", "docker ps", false), Some(Decision::Allow));
     }
 
     #[test]
     fn docker_run_not_readonly() {
         let c = ReadOnlyBashClassifier;
-        assert_eq!(c.check("bash", "docker run nginx"), None);
+        assert_eq!(c.check("bash", "docker run nginx", false), None);
     }
 
     #[test]
     fn find_with_exec_not_readonly() {
         let c = ReadOnlyBashClassifier;
-        assert_eq!(c.check("bash", "find . -exec rm {} \\;"), None);
+        assert_eq!(c.check("bash", "find . -exec rm {} \\;", false), None);
     }
 
     #[test]
     fn find_without_exec_readonly() {
         let c = ReadOnlyBashClassifier;
-        assert_eq!(c.check("bash", "find . -name '*.rs'"), Some(Decision::Allow));
+        assert_eq!(c.check("bash", "find . -name '*.rs'", false), Some(Decision::Allow));
     }
 
     #[test]
     fn readonly_not_applicable_to_edit() {
         let c = ReadOnlyBashClassifier;
-        assert_eq!(c.check("edit_file", "echo hi"), None);
+        assert_eq!(c.check("edit_file", "echo hi", false), None);
     }
 
     #[test]
     fn readonly_empty_subject() {
         let c = ReadOnlyBashClassifier;
-        assert_eq!(c.check("bash", ""), None);
+        assert_eq!(c.check("bash", "", false), None);
     }
 
     // ── DangerousPatternDetector ──
@@ -500,25 +500,25 @@ mod tests {
     #[test]
     fn dangerous_rm_rf() {
         let c = DangerousPatternDetector;
-        assert_eq!(c.check("bash", "rm -rf /"), Some(Decision::Ask));
+        assert_eq!(c.check("bash", "rm -rf /", false), Some(Decision::Ask));
     }
 
     #[test]
     fn dangerous_sudo() {
         let c = DangerousPatternDetector;
-        assert_eq!(c.check("bash", "sudo rm -rf /"), Some(Decision::Ask));
+        assert_eq!(c.check("bash", "sudo rm -rf /", false), Some(Decision::Ask));
     }
 
     #[test]
     fn safe_command_no_danger() {
         let c = DangerousPatternDetector;
-        assert_eq!(c.check("bash", "ls -la"), None);
+        assert_eq!(c.check("bash", "ls -la", false), None);
     }
 
     #[test]
     fn dangerous_not_applicable_to_edit() {
         let c = DangerousPatternDetector;
-        assert_eq!(c.check("edit_file", "rm -rf /"), None);
+        assert_eq!(c.check("edit_file", "rm -rf /", false), None);
     }
 
     // ── 工具函数 ──

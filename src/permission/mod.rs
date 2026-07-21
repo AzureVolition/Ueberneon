@@ -93,7 +93,7 @@ pub trait Check: Send + Sync {
     ///
     /// 返回 `None` 表示此规则不适用（跳过），
     /// 返回 `Some(decision)` 表示匹配。
-    fn check(&self, tool: &str, subject: &str) -> Option<Decision>;
+    fn check(&self, tool: &str, subject: &str, read_only: bool) -> Option<Decision>;
 }
 
 // ── Subject 提取 ─────────────────────────────────────────────────────────────

@@ -65,7 +65,7 @@ impl Policy {
         let mut matched = false;
 
         for check in &self.checks {
-            match check.check(tool, subject) {
+            match check.check(tool, subject, read_only) {
                 Some(Decision::Deny(_)) => return Decision::Deny("denied".into()),
                 Some(Decision::Ask) => { decision = Decision::Ask; matched = true; }
                 Some(Decision::Allow) => { matched = true; /* Allow 不升级，保留当前 */ }
@@ -435,7 +435,7 @@ pub trait PermissionChecked {
 
         for check in self.permission_checks() {
             for subject in &subjects {
-                match check.check(tool, subject) {
+                match check.check(tool, subject, false) {
                     Some(Decision::Deny(_)) => {
                         return Decision::Deny(format!(
                             "denied by {}: {} is not allowed",
@@ -641,7 +641,7 @@ mod tests {
             "mock_check"
         }
 
-        fn check(&self, tool: &str, subject: &str) -> Option<Decision> {
+        fn check(&self, tool: &str, subject: &str, _read_only: bool) -> Option<Decision> {
             if tool != self.tool {
                 return None;
             }
@@ -839,13 +839,16 @@ mod tests {
             "safe_directory_guard"
         }
 
-        
-        fn check(&self, tool: &str, subject: &str) -> Option<Decision> {
+        fn check(&self, _tool: &str, subject: &str, read_only: bool) -> Option<Decision> {
             if subject.is_empty() {
                 return None;
             }
             for prefix in TEMP_PATH_PREFIXES {
                 if subject.starts_with(prefix) {
+                    // read_only 优先于文件路径守卫：只读工具不拦截临时目录访问
+                    if read_only {
+                        return None;
+                    }
                     return Some(Decision::Deny("denied".into()));
                 }
             }
@@ -1087,7 +1090,7 @@ mod tests {
         struct DenyForcePush;
         impl Check for DenyForcePush {
             fn name(&self) -> &'static str { "deny_force_push" }
-            fn check(&self, tool: &str, subject: &str) -> Option<Decision> {
+            fn check(&self, tool: &str, subject: &str, _read_only: bool) -> Option<Decision> {
                 if tool == "bash" && subject.contains("git push --force") {
                     Some(Decision::Deny("denied".into()))
                 } else { None }
@@ -1167,7 +1170,7 @@ mod tests {
         struct DenyRmRf;
         impl Check for DenyRmRf {
             fn name(&self) -> &'static str { "deny_rm_rf" }
-            fn check(&self, tool: &str, subject: &str) -> Option<Decision> {
+            fn check(&self, tool: &str, subject: &str, _read_only: bool) -> Option<Decision> {
                 if tool == "bash" && subject.trim() == "rm -rf /" {
                     Some(Decision::Deny("denied".into()))
                 } else { None }
