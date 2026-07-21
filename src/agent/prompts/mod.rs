@@ -1,4 +1,5 @@
 mod builder;
-pub mod templates;
+pub mod explore;
+pub mod plan;
 
 pub use builder::{BuilderState, PromptBuilder, PromptContext};
