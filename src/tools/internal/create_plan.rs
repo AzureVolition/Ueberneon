@@ -109,6 +109,7 @@ impl Tool for CreatePlan {
 
         // 重置状态
         plan.status = PlanStatus::NeedApproval;
+        plan.stall_count = 0;
         for step in &mut plan.steps {
             normalize_step(step);
         }

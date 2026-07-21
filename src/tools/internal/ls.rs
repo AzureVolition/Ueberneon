@@ -221,7 +221,7 @@ mod tests {
         ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
+            handler: AgentHandler::default(),
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
@@ -335,7 +335,7 @@ mod tests {
     async fn default_path_is_dot() {
         let tool = test_ls();
         let result = tool.execute(
-            &ToolContext { call_id: "test".into(), plan_mode: ActionMode::Regular, handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) }, progress: None, main_conversation_id: String::new(), project_id: None },
+            &ToolContext { call_id: "test".into(), plan_mode: ActionMode::Regular, handler: AgentHandler::default(), progress: None, main_conversation_id: String::new(), project_id: None },
             &serde_json::json!({}),
         ).await;
         // 应该成功列出当前目录

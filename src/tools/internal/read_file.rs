@@ -227,7 +227,7 @@ mod tests {
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
+            handler: AgentHandler::default(),
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
@@ -252,7 +252,7 @@ mod tests {
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
+            handler: AgentHandler::default(),
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
@@ -276,7 +276,7 @@ mod tests {
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
+            handler: AgentHandler::default(),
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
@@ -300,7 +300,7 @@ mod tests {
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
+            handler: AgentHandler::default(),
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
@@ -325,7 +325,7 @@ mod tests {
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
+            handler: AgentHandler::default(),
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
@@ -341,7 +341,7 @@ mod tests {
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
+            handler: AgentHandler::default(),
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
@@ -357,7 +357,7 @@ mod tests {
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
+            handler: AgentHandler::default(),
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
@@ -381,7 +381,7 @@ mod tests {
         let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
+            handler: AgentHandler::default(),
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,

@@ -5,7 +5,7 @@
 // 支持编码保留（UTF-8/16/GB18030 无损往返）。写前通过 checkpoint 记录快照。
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::agent::{ActionMode, Tool, AgentHandler, ToolContext, ToolResult};
 use llm::tool::ToolMeta;
@@ -223,7 +223,7 @@ mod tests {
         ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
+            handler: AgentHandler::default(),
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,

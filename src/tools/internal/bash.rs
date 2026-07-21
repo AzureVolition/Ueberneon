@@ -11,7 +11,7 @@ use racpagent_macros::ToolMetaImpl;
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::common::env::EnvBuilder;
@@ -247,7 +247,7 @@ mod tests {
         let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
+            handler: AgentHandler::default(),
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
@@ -266,7 +266,7 @@ mod tests {
         let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
+            handler: AgentHandler::default(),
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
@@ -283,7 +283,7 @@ mod tests {
         let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
+            handler: AgentHandler::default(),
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
@@ -301,7 +301,7 @@ mod tests {
         let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
+            handler: AgentHandler::default(),
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
@@ -318,7 +318,7 @@ mod tests {
         let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
+            handler: AgentHandler::default(),
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
@@ -337,7 +337,7 @@ mod tests {
         let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Plan,
-            handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
+            handler: AgentHandler::default(),
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
@@ -354,7 +354,7 @@ mod tests {
         let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Plan,
-            handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
+            handler: AgentHandler::default(),
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,

@@ -1,12 +1,14 @@
 pub mod bash;
 pub mod bash_output;
 pub mod code_index;
+pub mod complete_step;
 pub mod create_plan;
 pub mod edit_file;
 pub mod glob;
 pub mod grep;
 pub mod kill_shell;
 pub mod ls;
+pub mod modify_plan;
 pub mod multi_edit;
 pub mod read_file;
 pub mod read_only_bash;

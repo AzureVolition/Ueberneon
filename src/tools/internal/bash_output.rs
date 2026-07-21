@@ -8,7 +8,7 @@ use crate::agent::{Tool, AgentHandler, ToolContext, ToolResult};
 use crate::agent::{AgentMode, ActionMode, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::tools::jobs::JobManager;
 use crate::tools::internal::common::checkable_tool::CheckableTool;
@@ -102,7 +102,7 @@ mod tests {
         let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
+            handler: AgentHandler::default(),
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
@@ -124,7 +124,7 @@ mod tests {
         let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
+            handler: AgentHandler::default(),
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
@@ -143,7 +143,7 @@ mod tests {
         let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
+            handler: AgentHandler::default(),
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
