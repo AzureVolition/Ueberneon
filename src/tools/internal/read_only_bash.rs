@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::agent::{Tool, AgentHandler, AgentContext, ToolResult};
+use crate::agent::{Tool, AgentHandler, ToolContext, ToolResult};
 use std::sync::{Arc, Mutex};
 #[cfg(test)]
 use crate::agent::{AgentMode, ActionMode, ToolResultExt};
@@ -115,7 +115,7 @@ impl ReadOnlyBash {
 
 #[async_trait::async_trait]
 impl Tool for ReadOnlyBash {
-    async fn execute(&self, _ctx: &AgentContext, args: &Value) -> Result<ToolResult, String> {
+    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
         // 1. 解析参数
         let command = match args.get("command").and_then(|v| v.as_str()) {
             Some(c) if !c.trim().is_empty() => c,
@@ -160,7 +160,7 @@ impl Tool for ReadOnlyBash {
 
 #[async_trait::async_trait]
 impl CheckableTool for ReadOnlyBash {
-    fn check(&self, _ctx: &AgentContext, _args: &serde_json::Value) -> Decision {
+    fn check(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> Decision {
         Decision::Allow
     }
 
@@ -183,12 +183,14 @@ mod tests {
         )
     }
 
-    fn test_ctx() -> AgentContext {
-        AgentContext {
+    fn test_ctx() -> ToolContext {
+        ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
             handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
             progress: None,
+            main_conversation_id: String::new(),
+            project_id: None,
         }
     }
 

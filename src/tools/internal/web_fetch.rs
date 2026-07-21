@@ -3,7 +3,7 @@
 // 支持 HTTP/HTTPS，自动将 HTML 转为纯文本。
 // 内置 SSRF 防护：拒绝私有 IP、回环地址和链路本地地址。
 
-use crate::agent::{Tool, AgentHandler, AgentContext, ToolResult};
+use crate::agent::{Tool, AgentHandler, ToolContext, ToolResult};
 use std::sync::{Arc, Mutex};
 #[cfg(test)]
 use crate::agent::{AgentMode, ActionMode, ToolResultExt};
@@ -253,7 +253,7 @@ impl WebFetch {
 
 #[async_trait::async_trait]
 impl Tool for WebFetch {
-    async fn execute(&self, _ctx: &AgentContext, args: &Value) -> Result<ToolResult, String> {
+    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
         let url_str = match args.get("url").and_then(|v| v.as_str()) {
             Some(u) if !u.is_empty() => u.trim(),
             _ => return Err("web_fetch: missing required argument 'url'".into()),
@@ -387,7 +387,7 @@ impl Tool for WebFetch {
 
 #[async_trait::async_trait]
 impl CheckableTool for WebFetch {
-    fn check(&self, _ctx: &AgentContext, _args: &serde_json::Value) -> Decision {
+    fn check(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> Decision {
         Decision::Allow
     }
 
@@ -397,12 +397,14 @@ impl CheckableTool for WebFetch {
 mod tests {
     use super::*;
 
-    fn test_ctx() -> AgentContext {
-        AgentContext {
+    fn test_ctx() -> ToolContext {
+        ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
             handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
             progress: None,
+            main_conversation_id: String::new(),
+            project_id: None,
         }
     }
 

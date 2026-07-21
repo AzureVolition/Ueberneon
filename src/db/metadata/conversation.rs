@@ -109,7 +109,7 @@ pub fn list_by_project(conn: &Connection, project_id: &str) -> Result<Vec<Conver
     let mut stmt = conn.prepare(
         "SELECT c.id, c.project_id, c.parent_conversation_id, c.title, c.updated_at, c.created_at, c.agent_config_id, c.status,
                 (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id AND active = 'active') AS msg_count
-         FROM conversations c WHERE c.project_id = ?1 AND c.status = 'active'
+         FROM conversations c WHERE c.project_id = ?1 AND c.status = 'active' AND c.parent_conversation_id IS NULL
          ORDER BY c.updated_at DESC",
     )?;
     let rows = stmt.query_map(params![project_id], |row| {

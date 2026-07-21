@@ -11,7 +11,7 @@ pub use llm::tool::ToolMeta;
 #[async_trait::async_trait]
 pub trait Tool: ToolMeta {
     /// 执行工具，接收模型生成的 raw JSON args
-    async fn execute(&self, ctx: &AgentContext, args: &serde_json::Value) -> Result<ToolResult, String>;
+    async fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> Result<ToolResult, String>;
 }
 
 // ── ToolResult ───────────────────────────────────────────────────────────────
@@ -159,7 +159,7 @@ impl std::str::FromStr for AgentMode {
 // ── ToolContext ──────────────────────────────────────────────────────────────
 
 /// 执行上下文 
-pub struct AgentContext {
+pub struct ToolContext {
     /// 工具调用的唯一 ID（stream 中 LLM 返回的 tool_call_id）
     pub call_id: String,
     /// 计划模式（常规/计划），写工具在计划模式被阻止
@@ -168,6 +168,10 @@ pub struct AgentContext {
     pub progress: Option<Box<dyn Fn(&str) + Send + Sync>>,
     /// 运行时控制句柄（与 agent_mode 指向同一 Arc）
     pub handler: AgentHandler,
+    /// 主 Agent 的 conversation_id，用于子 Agent 设置 parent_conversation_id
+    pub main_conversation_id: String,
+    /// 项目 ID
+    pub project_id: Option<String>,
 }
 
 // ── BlockedKind ──────────────────────────────────────────────────────────────

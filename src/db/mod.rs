@@ -149,6 +149,7 @@ fn rebuild_schema(conn: &Connection) -> Result<()> {
             temperature         REAL NOT NULL DEFAULT 0.7,
             max_tokens          INTEGER,
             tools               TEXT NOT NULL DEFAULT '[]',
+            description         TEXT NOT NULL DEFAULT '',
             created_at          TEXT NOT NULL,
             updated_at          TEXT NOT NULL
         );
@@ -237,6 +238,9 @@ fn rebuild_schema(conn: &Connection) -> Result<()> {
     // migration: add status column for existing databases (ignore error if exists)
     let _ = conn.execute("ALTER TABLE conversations ADD COLUMN status TEXT NOT NULL DEFAULT 'active'", []);
 
+    // migration: add description column for existing databases (ignore error if exists)
+    let _ = conn.execute("ALTER TABLE agent_configs ADD COLUMN description TEXT NOT NULL DEFAULT ''", []);
+
     // ── 默认项目 ──────────────────────────────────────────────────────────
     // 确保 "racpagent" 默认项目始终存在
     conn.execute(
@@ -279,8 +283,8 @@ fn rebuild_schema(conn: &Connection) -> Result<()> {
     // 幂等插入 explore 子 agent（只读文件搜索专家）
     // provider 信息由用户在 Sub Agents 页面中配置
     conn.execute(
-        "INSERT OR REPLACE INTO agent_configs (id, name, agent_type, system_prompt, temperature, max_tokens, tools, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT OR REPLACE INTO agent_configs (id, name, agent_type, system_prompt, temperature, max_tokens, tools, description, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         rusqlite::params![
             "acfg-builtin-explore",
             "explore",
@@ -289,6 +293,7 @@ fn rebuild_schema(conn: &Connection) -> Result<()> {
             0.7,
             Option::<u32>::None,
             r#"["ReadFile","Grep","Glob","Ls","CodeIndex","WebFetch","ReadOnlyBash"]"#,
+            "只读代码搜索专家，快速探索代码库并输出搜索报告",
             chrono::Local::now().to_rfc3339(),
             chrono::Local::now().to_rfc3339(),
         ],
@@ -296,8 +301,8 @@ fn rebuild_schema(conn: &Connection) -> Result<()> {
 
     // ── 内置 Plan SubAgent ────────────────────────────────────────────────
     conn.execute(
-        "INSERT OR REPLACE INTO agent_configs (id, name, agent_type, system_prompt, temperature, max_tokens, tools, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT OR REPLACE INTO agent_configs (id, name, agent_type, system_prompt, temperature, max_tokens, tools, description, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         rusqlite::params![
             "acfg-builtin-plan",
             "plan",
@@ -306,6 +311,7 @@ fn rebuild_schema(conn: &Connection) -> Result<()> {
             0.7,
             Option::<u32>::None,
             r#"["ReadFile","Grep","Glob","Ls","CodeIndex","WebFetch","ReadOnlyBash"]"#,
+            "多阶段计划专家，分析需求并生成实施计划",
             chrono::Local::now().to_rfc3339(),
             chrono::Local::now().to_rfc3339(),
         ],

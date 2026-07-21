@@ -16,7 +16,7 @@ pub struct ReadFile {}
 impl racpagent::agent::Tool for ReadFile {
     async fn execute(
         &self,
-        _ctx: &racpagent::agent::AgentContext,
+        _ctx: &racpagent::agent::ToolContext,
         _args: &serde_json::Value,
     ) -> Result<racpagent::agent::ToolResult, String> {
         Ok(racpagent::agent::ToolResult::ok("executed"))
@@ -78,11 +78,13 @@ fn no_schema_attr_defaults_to_empty_object() {
 #[tokio::test]
 async fn execute_returns_ok() {
     let tool = ReadFile {};
-    let ctx = racpagent::agent::AgentContext {
+    let ctx = racpagent::agent::ToolContext {
         call_id: "test".into(),
         plan_mode: ActionMode::Regular,
         handler: racpagent::agent::AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
         progress: None,
+        main_conversation_id: "".into(),
+        project_id: None,
     };
     let args = serde_json::json!({});
     let result = tool.execute(&ctx, &args).await;

@@ -235,35 +235,6 @@ pub fn list_as_llm_messages(
     Ok(rows.iter().map(|r| r.to_llm()).collect())
 }
 
-/// 将某对话的所有消息（含父对话历史）转为 llm::Message 列表
-pub fn list_as_llm_messages_with_parent(
-    conn: &Connection,
-    conversation_id: &str,
-) -> Result<Vec<LlmMessage>> {
-    use crate::db::metadata::conversation;
-
-    let conv = match conversation::get(conn, conversation_id)? {
-        Some(c) => c,
-        None => return list_as_llm_messages(conn, conversation_id),
-    };
-
-    let mut all = Vec::new();
-
-    // 有父对话：拼接父对话的旧消息
-    if let Some(parent_id) = &conv.parent_conversation_id {
-        if let Ok(parent_msgs) = list_by_conversation_before(conn, parent_id, &conv.created_at.to_rfc3339()) {
-            all.extend(parent_msgs.iter().map(|r| r.to_llm()));
-        }
-    }
-
-    // 拼接自身消息
-    if let Ok(own) = list_as_llm_messages(conn, conversation_id) {
-        all.extend(own);
-    }
-
-    Ok(all)
-}
-
 /// 软删除消息
 pub fn delete(conn: &Connection, id: i64) -> Result<()> {
     conn.execute("UPDATE messages SET active='deleted' WHERE id=?1", params![id])?;

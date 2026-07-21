@@ -3,7 +3,7 @@
 // 通过 JobManager 读取后台任务的 stdout+stderr 增量。
 // 每次调用返回自上次读取以来的新内容。
 
-use crate::agent::{Tool, AgentHandler, AgentContext, ToolResult};
+use crate::agent::{Tool, AgentHandler, ToolContext, ToolResult};
 #[cfg(test)]
 use crate::agent::{AgentMode, ActionMode, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
@@ -34,7 +34,7 @@ impl BashOutput {
 
 #[async_trait::async_trait]
 impl Tool for BashOutput {
-    async fn execute(&self, _ctx: &AgentContext, args: &Value) -> Result<ToolResult, String> {
+    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
         let job_id = match args.get("job_id").and_then(|v| v.as_str()) {
             Some(id) => id,
             None => return Err("bash_output: missing required argument 'job_id'".into()),
@@ -77,7 +77,7 @@ impl Tool for BashOutput {
 
 #[async_trait::async_trait]
 impl CheckableTool for BashOutput {
-    fn check(&self, _ctx: &AgentContext, _args: &serde_json::Value) -> Decision {
+    fn check(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> Decision {
         Decision::Allow
     }
 
@@ -99,11 +99,13 @@ mod tests {
 
         let tool = BashOutput::new(mgr.clone());
         let args = serde_json::json!({"job_id": job_id});
-        let ctx = AgentContext {
+        let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
             handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
             progress: None,
+            main_conversation_id: String::new(),
+            project_id: None,
         };
 
         let result = tool.execute(&ctx, &args).await;
@@ -119,11 +121,13 @@ mod tests {
         let mgr = Arc::new(JobManager::new());
         let tool = BashOutput::new(mgr);
         let args = serde_json::json!({"job_id": "bg-99999"});
-        let ctx = AgentContext {
+        let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
             handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
             progress: None,
+            main_conversation_id: String::new(),
+            project_id: None,
         };
 
         let result = tool.execute(&ctx, &args).await;
@@ -136,11 +140,13 @@ mod tests {
         let mgr = Arc::new(JobManager::new());
         let tool = BashOutput::new(mgr);
         let args = serde_json::json!({});
-        let ctx = AgentContext {
+        let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
             handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
             progress: None,
+            main_conversation_id: String::new(),
+            project_id: None,
         };
 
         let result = tool.execute(&ctx, &args).await;

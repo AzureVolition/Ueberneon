@@ -172,6 +172,7 @@ impl AgentManager {
         conv_id: Option<String>,
         project_id: Option<String>,
         agent_config_id: Option<&str>,
+        parent_conversation_id: Option<&str>,
     ) -> Result<(String, AgentHandler), String> {
         match conv_id {
             Some(id) => {
@@ -194,8 +195,8 @@ impl AgentManager {
                 crate::db::with_db(|conn| {
                     let pid = project_id.as_deref().unwrap_or(crate::db::DEFAULT_PROJECT_ID);
                     if let Err(e) = conn.execute(
-                        "INSERT INTO conversations (id, project_id, title, updated_at, created_at, agent_config_id) VALUES (?1, ?2, '', ?3, ?4, ?5)",
-                        rusqlite::params![id, pid, chrono::Local::now().to_rfc3339(), chrono::Local::now().to_rfc3339(), agent_config_id],
+                        "INSERT INTO conversations (id, project_id, parent_conversation_id, title, updated_at, created_at, agent_config_id) VALUES (?1, ?2, ?3, '', ?4, ?5, ?6)",
+                        rusqlite::params![id, pid, parent_conversation_id, chrono::Local::now().to_rfc3339(), chrono::Local::now().to_rfc3339(), agent_config_id],
                     ) { tracing::error!(target:"db", error=%e, "insert conversation"); }
                 });
                 let agent =
@@ -293,7 +294,11 @@ impl AgentManager {
                     enabled_tools: serde_json::from_str(&row.tools).unwrap_or_default(),
                 });
             }
-            // 没有默认配置则走原来的逻辑（from_row 会报 api_key is empty）
+            // 没有默认配置 → 明确报错
+            return Err(format!(
+                "子 Agent '{}' 未配置 Provider/Model。请在 设置 > Sub Agents 中配置默认 SubAgent Provider 和 Model",
+                row.name
+            ));
         }
 
         AgentConfig::from_row(&row).map_err(|e| format!("{e}"))

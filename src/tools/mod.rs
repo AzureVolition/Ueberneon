@@ -23,6 +23,7 @@ pub use internal::ls::Ls;
 pub use internal::multi_edit::MultiEdit;
 pub use internal::read_file::ReadFile;
 pub use internal::read_only_bash::ReadOnlyBash;
+pub use internal::task::Task;
 pub use internal::web_fetch::WebFetch;
 pub use internal::write_file::WriteFile;
 pub use snapshot::SnapshotStore;
@@ -113,4 +114,7 @@ pub fn register_builtins(registry: &Registry, base_dir: &std::path::Path) {
         Duration::from_secs(30),
         Some(sandbox),
     )));
+
+    // 子 Agent 委派工具
+    registry.add(Box::new(Task::new()));
 }

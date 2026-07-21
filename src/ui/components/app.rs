@@ -630,6 +630,7 @@ pub fn App() -> Element {
                                     None,
                                     Some(pid.clone()),
                                     ac_id_for_conv,
+                                    None,
                                 ).unwrap_or_else(|_| (String::new(), AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) }));
                                 runtimes.write().entry(new_cid.clone()).or_default().agent_handler = Some(handler);
                                 let now = chrono::Local::now();

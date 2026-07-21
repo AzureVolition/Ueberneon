@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use crate::agent::{Tool, AgentHandler, AgentContext, ToolResult};
+use crate::agent::{Tool, AgentHandler, ToolContext, ToolResult};
 #[cfg(test)]
 use crate::agent::{AgentMode, ActionMode, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
@@ -63,7 +63,7 @@ impl ReadFile {
 
 #[async_trait::async_trait]
 impl Tool for ReadFile {
-    async fn execute(&self, _ctx: &AgentContext, args: &Value) -> Result<ToolResult, String> {
+    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
         let path_str = match args.get("path").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => return Err("read_file: missing required argument 'path'".into()),
@@ -189,7 +189,7 @@ impl Tool for ReadFile {
 
 #[async_trait::async_trait]
 impl CheckableTool for ReadFile {
-    fn check(&self, _ctx: &AgentContext, _args: &serde_json::Value) -> Decision {
+    fn check(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> Decision {
         Decision::Allow
     }
 
@@ -224,11 +224,13 @@ mod tests {
         let (path, _file) = create_temp_file(content);
         let tool = ReadFile::new(std::env::temp_dir(), make_tracker());
         let args = serde_json::json!({"path": path.to_str().unwrap()});
-        let result = tool.execute(&AgentContext {
+        let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
             handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
             progress: None,
+            main_conversation_id: String::new(),
+            project_id: None,
         }, &args).await;
         assert!(result.error().is_none());
         assert!(result.output().contains("hello"));
@@ -247,11 +249,13 @@ mod tests {
             "offset": 1,
             "limit": 2
         });
-        let result = tool.execute(&AgentContext {
+        let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
             handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
             progress: None,
+            main_conversation_id: String::new(),
+            project_id: None,
         }, &args).await;
         assert!(result.error().is_none());
         assert!(result.output().contains("line2"));
@@ -269,11 +273,13 @@ mod tests {
             "path": path.to_str().unwrap(),
             "head": 2
         });
-        let result = tool.execute(&AgentContext {
+        let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
             handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
             progress: None,
+            main_conversation_id: String::new(),
+            project_id: None,
         }, &args).await;
         assert!(result.error().is_none());
         assert!(result.output().contains("line1"));
@@ -291,11 +297,13 @@ mod tests {
             "path": path.to_str().unwrap(),
             "tail": 2
         });
-        let result = tool.execute(&AgentContext {
+        let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
             handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
             progress: None,
+            main_conversation_id: String::new(),
+            project_id: None,
         }, &args).await;
         assert!(result.error().is_none());
         assert!(!result.output().contains("line1"));
@@ -314,11 +322,13 @@ mod tests {
         let tool = ReadFile::new(dir, make_tracker());
         // 使用相对路径，resolve 后会拼到 work_dir 下
         let args = serde_json::json!({"path": "_test_git_repo/.git/config"});
-        let result = tool.execute(&AgentContext {
+        let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
             handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
             progress: None,
+            main_conversation_id: String::new(),
+            project_id: None,
         }, &args).await;
         let _ = std::fs::remove_dir_all(&repo_dir);
         assert!(result.is_err());
@@ -328,11 +338,13 @@ mod tests {
     async fn missing_path() {
         let tool = ReadFile::new(std::env::temp_dir(), make_tracker());
         let args = serde_json::json!({});
-        let result = tool.execute(&AgentContext {
+        let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
             handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
             progress: None,
+            main_conversation_id: String::new(),
+            project_id: None,
         }, &args).await;
         assert!(result.error().is_some());
     }
@@ -342,11 +354,13 @@ mod tests {
         let (path, _file) = create_temp_file(b"");
         let tool = ReadFile::new(std::env::temp_dir(), make_tracker());
         let args = serde_json::json!({"path": path.to_str().unwrap()});
-        let result = tool.execute(&AgentContext {
+        let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
             handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
             progress: None,
+            main_conversation_id: String::new(),
+            project_id: None,
         }, &args).await;
         assert!(result.error().is_none());
         assert!(result.output().contains("empty"));
@@ -364,11 +378,13 @@ mod tests {
         let (path, _file) = create_temp_file(&content);
         let tool = ReadFile::new(std::env::temp_dir(), make_tracker());
         let args = serde_json::json!({"path": path.to_str().unwrap()});
-        let result = tool.execute(&AgentContext {
+        let result = tool.execute(&ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
             handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
             progress: None,
+            main_conversation_id: String::new(),
+            project_id: None,
         }, &args).await;
         assert!(result.error().is_none(), "error: {:?}", result.error());
         assert!(result.output().contains("hello"), "output: {}", result.output());

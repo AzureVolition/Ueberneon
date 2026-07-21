@@ -213,6 +213,7 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
                 temperature,
                 max_tokens,
                 tools,
+                description: String::new(),
                 created_at: if is_new { now.clone() } else { String::new() },
                 updated_at: now,
             };

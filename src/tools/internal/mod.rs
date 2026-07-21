@@ -10,6 +10,7 @@ pub mod ls;
 pub mod multi_edit;
 pub mod read_file;
 pub mod read_only_bash;
+pub mod task;
 pub mod web_fetch;
 pub mod write_file;
 pub mod common;

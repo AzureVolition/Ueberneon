@@ -5,7 +5,7 @@
 // 前台：ProcessRunner 同步执行；后台：JobManager 异步 spawn，返回 job ID。
 // 支持沙箱隔离（macOS Seatbelt / Linux bubblewrap）和环境变量安全处理。
 
-use crate::agent::{ActionMode, Tool, AgentHandler, AgentContext, ToolResult, ToolResultExt};
+use crate::agent::{ActionMode, Tool, AgentHandler, ToolContext, ToolResult, ToolResultExt};
 use llm::tool::ToolMeta;
 use racpagent_macros::ToolMetaImpl;
 use serde::Deserialize;
@@ -98,7 +98,7 @@ impl PermissionChecked for Bash {
 #[async_trait::async_trait]
 impl Tool for Bash {
     
-    async fn execute(&self, _ctx: &AgentContext, args: &Value) -> Result<ToolResult, String> {
+    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
         // 1. 解析参数
         let params: BashParams = match serde_json::from_value(args.clone()) {
             Ok(p) => p,
@@ -150,7 +150,7 @@ impl Tool for Bash {
 
 #[async_trait::async_trait]
 impl CheckableTool for Bash {
-    fn check(&self, ctx: &AgentContext, args: &Value) -> Decision {
+    fn check(&self, ctx: &ToolContext, args: &Value) -> Decision {
         match self.check_permission(self.name(), args, *ctx.handler.agent_mode.lock().unwrap()) {
             Decision::Allow => {}
             decision => return decision,
@@ -244,11 +244,13 @@ mod tests {
     async fn execute_simple_echo() {
         let bash = test_bash();
         let args = serde_json::json!({"command": "echo hello"});
-        let ctx = AgentContext {
+        let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
             handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
             progress: None,
+            main_conversation_id: String::new(),
+            project_id: None,
         };
 
         let result = bash.execute(&ctx, &args).await;
@@ -261,11 +263,13 @@ mod tests {
     async fn execute_with_stderr() {
         let bash = test_bash();
         let args = serde_json::json!({"command": "echo to_stderr >&2"});
-        let ctx = AgentContext {
+        let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
             handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
             progress: None,
+            main_conversation_id: String::new(),
+            project_id: None,
         };
 
         let result = bash.execute(&ctx, &args).await;
@@ -276,11 +280,13 @@ mod tests {
     async fn execute_failing_command() {
         let bash = test_bash();
         let args = serde_json::json!({"command": "exit 42"});
-        let ctx = AgentContext {
+        let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
             handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
             progress: None,
+            main_conversation_id: String::new(),
+            project_id: None,
         };
 
         let result = bash.execute(&ctx, &args).await;
@@ -292,11 +298,13 @@ mod tests {
     async fn empty_command_rejected() {
         let bash = test_bash();
         let args = serde_json::json!({"command": "   "});
-        let ctx = AgentContext {
+        let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
             handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
             progress: None,
+            main_conversation_id: String::new(),
+            project_id: None,
         };
 
         let result = bash.execute(&ctx, &args).await;
@@ -307,11 +315,13 @@ mod tests {
     async fn background_returns_job_id() {
         let bash = test_bash();
         let args = serde_json::json!({"command": "sleep 1; echo done", "run_in_background": true});
-        let ctx = AgentContext {
+        let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
             handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
             progress: None,
+            main_conversation_id: String::new(),
+            project_id: None,
         };
 
         let result = bash.execute(&ctx, &args).await;
@@ -324,11 +334,13 @@ mod tests {
     async fn plan_mode_blocks_dangerous_commands() {
         let bash = test_bash();
         let args = serde_json::json!({"command": "rm -rf /tmp"});
-        let ctx = AgentContext {
+        let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Plan,
             handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
             progress: None,
+            main_conversation_id: String::new(),
+            project_id: None,
         };
 
         let result = bash.execute(&ctx, &args).await;
@@ -339,11 +351,13 @@ mod tests {
     async fn plan_mode_allows_readonly_commands() {
         let bash = test_bash();
         let args = serde_json::json!({"command": "ls"});
-        let ctx = AgentContext {
+        let ctx = ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Plan,
             handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
             progress: None,
+            main_conversation_id: String::new(),
+            project_id: None,
         };
 
         let result = bash.execute(&ctx, &args).await;

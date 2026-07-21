@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::agent::{Tool, AgentHandler, AgentContext, ToolResult};
+use crate::agent::{Tool, AgentHandler, ToolContext, ToolResult};
 #[cfg(test)]
 use crate::agent::{AgentMode, ActionMode, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
@@ -61,7 +61,7 @@ impl Ls {
 
 #[async_trait::async_trait]
 impl Tool for Ls {
-    async fn execute(&self, _ctx: &AgentContext, args: &Value) -> Result<ToolResult, String> {
+    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
         let path_str = args
             .get("path")
             .and_then(|v| v.as_str())
@@ -195,7 +195,7 @@ fn list_recursive(dir: &Path, display: &str) -> Result<ToolResult, String> {
 
 #[async_trait::async_trait]
 impl CheckableTool for Ls {
-    fn check(&self, _ctx: &AgentContext, _args: &serde_json::Value) -> Decision {
+    fn check(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> Decision {
         Decision::Allow
     }
 
@@ -217,12 +217,14 @@ mod tests {
         dir.join(format!("_test_ls_{}_{}", std::process::id(), id))
     }
 
-    fn test_ctx() -> AgentContext {
-        AgentContext {
+    fn test_ctx() -> ToolContext {
+        ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
             handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
             progress: None,
+            main_conversation_id: String::new(),
+            project_id: None,
         }
     }
 
@@ -333,7 +335,7 @@ mod tests {
     async fn default_path_is_dot() {
         let tool = test_ls();
         let result = tool.execute(
-            &AgentContext { call_id: "test".into(), plan_mode: ActionMode::Regular, handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) }, progress: None },
+            &ToolContext { call_id: "test".into(), plan_mode: ActionMode::Regular, handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) }, progress: None, main_conversation_id: String::new(), project_id: None },
             &serde_json::json!({}),
         ).await;
         // 应该成功列出当前目录

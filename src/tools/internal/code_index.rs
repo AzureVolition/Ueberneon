@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::path::Path;
 
-use crate::agent::{Tool, AgentHandler, AgentContext, ToolResult};
+use crate::agent::{Tool, AgentHandler, ToolContext, ToolResult};
 #[cfg(test)]
 use crate::agent::{AgentMode, ActionMode, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
@@ -411,7 +411,7 @@ fn parse_kotlin(file: &str, content: &str, _: &Regex, _: &Regex) -> Vec<CodeSymb
 
 #[async_trait::async_trait]
 impl Tool for CodeIndex {
-    async fn execute(&self, _ctx: &AgentContext, args: &Value) -> Result<ToolResult, String> {
+    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
         let action = match args.get("action").and_then(|v| v.as_str()) {
             Some("outline") => "outline",
             Some("search") => "search",
@@ -539,7 +539,7 @@ impl Tool for CodeIndex {
 
 #[async_trait::async_trait]
 impl CheckableTool for CodeIndex {
-    fn check(&self, _ctx: &AgentContext, _args: &serde_json::Value) -> Decision {
+    fn check(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> Decision {
         Decision::Allow
     }
 
@@ -560,12 +560,14 @@ mod tests {
         dir.join(format!("_test_code_index_{}_{}", std::process::id(), id))
     }
 
-    fn test_ctx() -> AgentContext {
-        AgentContext {
+    fn test_ctx() -> ToolContext {
+        ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
             handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
             progress: None,
+            main_conversation_id: String::new(),
+            project_id: None,
         }
     }
 

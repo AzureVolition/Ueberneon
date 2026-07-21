@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use crate::agent::{ActionMode, Tool, AgentHandler, AgentContext, ToolResult};
+use crate::agent::{ActionMode, Tool, AgentHandler, ToolContext, ToolResult};
 use llm::tool::ToolMeta;
 #[cfg(test)]
 use crate::agent::{AgentMode, ToolResultExt};
@@ -104,7 +104,7 @@ impl PermissionChecked for MultiEdit {
 
 #[async_trait::async_trait]
 impl Tool for MultiEdit {
-    async fn execute(&self, _ctx: &AgentContext, args: &Value) -> Result<ToolResult, String> {
+    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
         // 1. 解析参数
         let params: MultiEditParams = match serde_json::from_value(args.clone()) {
             Ok(p) => p,
@@ -200,7 +200,7 @@ impl Tool for MultiEdit {
 
 #[async_trait::async_trait]
 impl CheckableTool for MultiEdit {
-    fn check(&self, ctx: &AgentContext, args: &Value) -> Decision {
+    fn check(&self, ctx: &ToolContext, args: &Value) -> Decision {
         match self.check_permission(self.name(), args, *ctx.handler.agent_mode.lock().unwrap()) {
             Decision::Allow => {}
             decision => return decision,
@@ -226,12 +226,14 @@ mod tests {
         dir.join(format!("_test_multi_edit_{}_{}", std::process::id(), id))
     }
 
-    fn test_ctx() -> AgentContext {
-        AgentContext {
+    fn test_ctx() -> ToolContext {
+        ToolContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
             handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
             progress: None,
+            main_conversation_id: String::new(),
+            project_id: None,
         }
     }
 

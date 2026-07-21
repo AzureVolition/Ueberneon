@@ -3,7 +3,7 @@
 // 将 Plan（含多级 step）存入运行时 handler.current_plan 和数据库。
 // 所有 step 的状态会被重置为 pending，plan 状态为 need_approval。
 
-use crate::agent::{AgentContext, Tool, ToolResult};
+use crate::agent::{ToolContext, Tool, ToolResult};
 use crate::model::{ActionStep, Plan, PlanStatus, StepStatus};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
@@ -92,7 +92,7 @@ fn persist_step(
 
 #[async_trait::async_trait]
 impl Tool for CreatePlan {
-    async fn execute(&self, ctx: &AgentContext, args: &Value) -> Result<ToolResult, String> {
+    async fn execute(&self, ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
         let project_id = args
             .get("project_id")
             .and_then(|v| v.as_str())
@@ -132,7 +132,7 @@ impl Tool for CreatePlan {
 
 #[async_trait::async_trait]
 impl CheckableTool for CreatePlan {
-    fn check(&self, _ctx: &AgentContext, _args: &serde_json::Value) -> Decision {
+    fn check(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> Decision {
         Decision::Allow
     }
 }
