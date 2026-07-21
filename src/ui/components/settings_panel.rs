@@ -635,10 +635,89 @@ pub fn SettingsPanel(tab: SettingsTab, on_change: EventHandler<()>) -> Element {
                     }
                 }
                 SettingsTab::SubAgents => {
+                    // ── 默认 SubAgent 模型状态 ──
+                    let instances: Vec<ProviderInstanceRow> = crate::db::with_db(|conn| {
+                        provider_instance::list_all(conn).unwrap_or_default()
+                    });
+                    let providers_cache: Vec<ProviderRow> = crate::db::with_db(|conn| {
+                        provider::list_all(conn).unwrap_or_default()
+                    });
+                    let models_cache: std::collections::HashMap<String, Vec<String>> = crate::db::with_db(|conn| {
+                        let mut map = std::collections::HashMap::new();
+                        if let Ok(providers) = provider::list_all(conn) {
+                            for p in &providers {
+                                if let Ok(models) = provider::list_models(conn, &p.id) {
+                                    map.insert(p.id.clone(), models);
+                                }
+                            }
+                        }
+                        map
+                    });
+                    let provider_name_for_inst = |inst_id: &str| -> String {
+                        let inst = instances.iter().find(|i| i.id == inst_id);
+                        match inst {
+                            Some(i) => providers_cache.iter().find(|p| p.id == i.provider_id)
+                                .map(|p| p.name.clone()).unwrap_or_else(|| i.provider_id.clone()),
+                            None => String::new(),
+                        }
+                    };
+                    let provider_id_for_inst = |inst_id: &str| -> String {
+                        instances.iter()
+                            .find(|i| i.id == inst_id)
+                            .map(|i| i.provider_id.clone())
+                            .unwrap_or_default()
+                    };
+                    let mut default_subagent_inst = use_signal(|| settings::get().general.default_subagent_provider_instance_id.clone());
+                    let default_subagent_model_val = settings::get().general.default_subagent_model.clone();
+                    let mut default_subagent_model = use_signal(|| default_subagent_model_val);
+
                     rsx! {
                         div { class: "settings-header",
                             h2 { class: "settings-title", "sub agents" }
-                            span { class: "settings-subtitle", "configure provider and model for sub-agents" }
+                            span { class: "settings-subtitle", "default model for sub-agents that have no model configured" }
+                        }
+                        div { class: "settings-section",
+                            div { class: "settings-field",
+                                label { class: "settings-field-label", "default provider instance" }
+                                Dropdown {
+                                    value: default_subagent_inst(),
+                                    options: {
+                                        let mut opts = vec![DropdownOption { value: String::new(), label: "— none —".into() }];
+                                        for inst in &instances {
+                                            let pn = provider_name_for_inst(&inst.id);
+                                            opts.push(DropdownOption {
+                                                value: inst.id.clone(),
+                                                label: format!("{} ({})", inst.alias, pn),
+                                            });
+                                        }
+                                        opts
+                                    },
+                                    onchange: move |val: String| {
+                                        default_subagent_inst.set(val.clone());
+                                        default_subagent_model.set(String::new());
+                                        settings::update(|s| s.general.default_subagent_provider_instance_id = val);
+                                    },
+                                }
+                            }
+                            div { class: "settings-field",
+                                label { class: "settings-field-label", "default model" }
+                                Dropdown {
+                                    value: default_subagent_model(),
+                                    options: {
+                                        let pid = provider_id_for_inst(&default_subagent_inst());
+                                        let models = models_cache.get(&pid).cloned().unwrap_or_default();
+                                        let mut opts = vec![DropdownOption { value: String::new(), label: "— select —".into() }];
+                                        for m in &models {
+                                            opts.push(DropdownOption { value: m.clone(), label: m.clone() });
+                                        }
+                                        opts
+                                    },
+                                    onchange: move |val: String| {
+                                        default_subagent_model.set(val.clone());
+                                        settings::update(|s| s.general.default_subagent_model = val);
+                                    },
+                                }
+                            }
                         }
                         div { class: "settings-section",
                             AgentConfigPanel { filter_agent_type: "SubAgent".to_string(), readonly: true, edit_mode: "provider_only".to_string(), on_change }

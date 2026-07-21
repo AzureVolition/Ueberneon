@@ -24,6 +24,10 @@ pub struct GeneralSettings {
     pub default_action_mode: String,
     /// 默认 Agent Mode："cautious" | "ask" | "auto" | "unleashed"
     pub default_agent_mode: String,
+    /// 默认 SubAgent Provider Instance ID（当 subagent 未配置时使用）
+    pub default_subagent_provider_instance_id: String,
+    /// 默认 SubAgent 模型（当 subagent 未配置时使用）
+    pub default_subagent_model: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,6 +47,8 @@ impl Default for AppSettings {
                 default_agent_config_id: String::new(),
                 default_action_mode: "regular".into(),
                 default_agent_mode: "ask".into(),
+                default_subagent_provider_instance_id: String::new(),
+                default_subagent_model: String::new(),
             },
             appearance: AppearanceSettings {
                 font_size: "md".into(),

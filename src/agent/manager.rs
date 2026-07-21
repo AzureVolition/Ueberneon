@@ -255,6 +255,47 @@ impl AgentManager {
                 .map_err(|e| format!("db error: {e}"))?
                 .ok_or_else(|| format!("agent config {agent_config_id} not found"))
         })?;
+
+        // 如果是 SubAgent 且未配置 model，尝试使用默认设置
+        if row.agent_type == "SubAgent" && row.model.is_empty() {
+            let s = crate::settings::get();
+            let default_inst_id = s.general.default_subagent_provider_instance_id;
+            let default_model = s.general.default_subagent_model;
+
+            if !default_inst_id.is_empty() && !default_model.is_empty() {
+                let (base_url, api_key) = crate::db::with_db(|conn| {
+                    let inst = crate::db::metadata::provider_instance::get(conn, &default_inst_id)
+                        .ok().flatten();
+                    let (raw_key, prov_id) = match inst {
+                        Some(ref i) => (i.api_key.clone(), i.provider_id.clone()),
+                        None => (String::new(), String::new()),
+                    };
+                    let url = crate::db::metadata::provider::get(conn, &prov_id)
+                        .ok().flatten().map(|p| p.base_url).unwrap_or_default();
+                    (url, raw_key)
+                });
+                let decoded_key = if !api_key.is_empty() {
+                    use base64::Engine;
+                    base64::engine::general_purpose::STANDARD.decode(api_key.as_bytes())
+                        .ok().and_then(|v| String::from_utf8(v).ok())
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                return Ok(AgentConfig {
+                    model: default_model,
+                    base_url,
+                    api_key: decoded_key,
+                    system_prompt: row.system_prompt,
+                    temperature: row.temperature,
+                    max_tokens: row.max_tokens,
+                    agent_type: row.agent_type,
+                    enabled_tools: serde_json::from_str(&row.tools).unwrap_or_default(),
+                });
+            }
+            // 没有默认配置则走原来的逻辑（from_row 会报 api_key is empty）
+        }
+
         AgentConfig::from_row(&row).map_err(|e| format!("{e}"))
     }
 
