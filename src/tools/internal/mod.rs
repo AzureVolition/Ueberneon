@@ -1,6 +1,7 @@
 pub mod bash;
 pub mod bash_output;
 pub mod code_index;
+pub mod create_plan;
 pub mod edit_file;
 pub mod glob;
 pub mod grep;

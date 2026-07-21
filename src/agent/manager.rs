@@ -194,8 +194,8 @@ impl AgentManager {
                 crate::db::with_db(|conn| {
                     let pid = project_id.as_deref().unwrap_or(crate::db::DEFAULT_PROJECT_ID);
                     if let Err(e) = conn.execute(
-                        "INSERT INTO conversations (id, project_id, title, updated_at, agent_config_id) VALUES (?1, ?2, '', ?3, ?4)",
-                        rusqlite::params![id, pid, chrono::Local::now().to_rfc3339(), agent_config_id],
+                        "INSERT INTO conversations (id, project_id, title, updated_at, created_at, agent_config_id) VALUES (?1, ?2, '', ?3, ?4, ?5)",
+                        rusqlite::params![id, pid, chrono::Local::now().to_rfc3339(), chrono::Local::now().to_rfc3339(), agent_config_id],
                     ) { tracing::error!(target:"db", error=%e, "insert conversation"); }
                 });
                 let agent =

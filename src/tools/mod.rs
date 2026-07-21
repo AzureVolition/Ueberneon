@@ -14,6 +14,7 @@ use crate::permission::Check;
 pub use internal::bash::Bash;
 pub use internal::bash_output::BashOutput;
 pub use internal::code_index::CodeIndex;
+pub use internal::create_plan::CreatePlan;
 pub use internal::edit_file::EditFile;
 pub use internal::glob::Glob;
 pub use internal::grep::Grep;
@@ -102,6 +103,9 @@ pub fn register_builtins(registry: &Registry, base_dir: &std::path::Path) {
 
     // 网络工具
     registry.add(Box::new(WebFetch::new()));
+
+    // 计划工具
+    registry.add(Box::new(CreatePlan));
 
     // 只读 bash（用于 subagent / explore）
     registry.add(Box::new(ReadOnlyBash::new(

@@ -82,8 +82,10 @@ fn rebuild_schema(conn: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS conversations (
             id          TEXT PRIMARY KEY,
             project_id  TEXT NOT NULL REFERENCES projects(id),
+            parent_conversation_id TEXT REFERENCES conversations(id),
             title       TEXT DEFAULT '',
             updated_at  TEXT NOT NULL,
+            created_at  TEXT NOT NULL,
             agent_config_id TEXT REFERENCES agent_configs(id),
             status      TEXT NOT NULL DEFAULT 'active'
         );
@@ -187,6 +189,48 @@ fn rebuild_schema(conn: &Connection) -> Result<()> {
             tool_group_id   TEXT NOT NULL REFERENCES tool_groups(id) ON DELETE CASCADE,
             PRIMARY KEY (agent_config_id, tool_group_id)
         );
+
+        -- ── 计划 ──
+        CREATE TABLE IF NOT EXISTS plans (
+            id              TEXT PRIMARY KEY,
+            project_id      TEXT NOT NULL REFERENCES projects(id),
+            conversation_id TEXT NOT NULL REFERENCES conversations(id),
+            goal            TEXT NOT NULL,
+            description     TEXT NOT NULL DEFAULT '',
+            status          TEXT NOT NULL DEFAULT 'need_approval',
+            started_at      TEXT,
+            completed_at    TEXT,
+            created_at      TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_plans_project
+            ON plans(project_id, created_at);
+
+        CREATE INDEX IF NOT EXISTS idx_plans_conversation
+            ON plans(conversation_id);
+
+        -- ── 任务（支持父子关系，最多两层） ──
+        CREATE TABLE IF NOT EXISTS tasks (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            plan_id         TEXT NOT NULL REFERENCES plans(id),
+            project_id      TEXT NOT NULL REFERENCES projects(id),
+            parent_task_id  INTEGER REFERENCES tasks(id),
+            idx             INTEGER NOT NULL,
+            description     TEXT NOT NULL,
+            status          TEXT NOT NULL DEFAULT 'pending',
+            tool_hint       TEXT,
+            created_at      TEXT NOT NULL,
+            updated_at      TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_tasks_plan
+            ON tasks(plan_id, idx);
+
+        CREATE INDEX IF NOT EXISTS idx_tasks_project
+            ON tasks(project_id);
+
+        CREATE INDEX IF NOT EXISTS idx_tasks_parent
+            ON tasks(parent_task_id);
         "
     )?;
 

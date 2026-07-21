@@ -9,7 +9,7 @@ pub mod task;
 pub mod tool;
 
 pub use agent_config::AgentConfigRow;
-pub use conversation::ConversationRow;
+pub use conversation::{ConversationRow, ConversationStatus};
 pub use message::{MessageRow, MessageStatus};
 pub use plan::PlanRow;
 pub use project::ProjectRow;

@@ -2,7 +2,7 @@
 //
 // 通过 JobManager 终止后台任务，先 SIGTERM 后 SIGKILL。
 
-use crate::agent::{Tool, ToolContext, ToolResult};
+use crate::agent::{Tool, AgentHandler, AgentContext, ToolResult};
 #[cfg(test)]
 use crate::agent::{AgentMode, ActionMode, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
@@ -32,7 +32,7 @@ impl KillShell {
 
 #[async_trait::async_trait]
 impl Tool for KillShell {
-    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
+    async fn execute(&self, _ctx: &AgentContext, args: &Value) -> Result<ToolResult, String> {
         let job_id = match args.get("job_id").and_then(|v| v.as_str()) {
             Some(id) => id,
             None => return Err("kill_shell: missing required argument 'job_id'".into()),
@@ -62,7 +62,7 @@ impl Tool for KillShell {
 
 #[async_trait::async_trait]
 impl CheckableTool for KillShell {
-    fn check(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> Decision {
+    fn check(&self, _ctx: &AgentContext, _args: &serde_json::Value) -> Decision {
         Decision::Allow
     }
 
@@ -81,10 +81,10 @@ mod tests {
 
         let tool = KillShell::new(mgr.clone());
         let args = serde_json::json!({"job_id": job_id});
-        let ctx = ToolContext {
+        let ctx = AgentContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            agent_mode: Arc::new(Mutex::new(AgentMode::Ask)),
+            handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
             progress: None,
         };
 
@@ -102,10 +102,10 @@ mod tests {
         let mgr = Arc::new(JobManager::new());
         let tool = KillShell::new(mgr);
         let args = serde_json::json!({"job_id": "bg-404"});
-        let ctx = ToolContext {
+        let ctx = AgentContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            agent_mode: Arc::new(Mutex::new(AgentMode::Ask)),
+            handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
             progress: None,
         };
 

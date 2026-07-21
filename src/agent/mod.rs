@@ -11,7 +11,7 @@ pub use llm::tool::ToolMeta;
 #[async_trait::async_trait]
 pub trait Tool: ToolMeta {
     /// 执行工具，接收模型生成的 raw JSON args
-    async fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> Result<ToolResult, String>;
+    async fn execute(&self, ctx: &AgentContext, args: &serde_json::Value) -> Result<ToolResult, String>;
 }
 
 // ── ToolResult ───────────────────────────────────────────────────────────────
@@ -158,16 +158,16 @@ impl std::str::FromStr for AgentMode {
 
 // ── ToolContext ──────────────────────────────────────────────────────────────
 
-/// 工具执行上下文 
-pub struct ToolContext {
+/// 执行上下文 
+pub struct AgentContext {
     /// 工具调用的唯一 ID（stream 中 LLM 返回的 tool_call_id）
     pub call_id: String,
     /// 计划模式（常规/计划），写工具在计划模式被阻止
     pub plan_mode: ActionMode,
-    /// Agent 的全局门控模式
-    pub agent_mode: Arc<Mutex<AgentMode>>,
     /// 流式输出回调，长运行工具推送实时输出到前端
     pub progress: Option<Box<dyn Fn(&str) + Send + Sync>>,
+    /// 运行时控制句柄（与 agent_mode 指向同一 Arc）
+    pub handler: AgentHandler,
 }
 
 // ── BlockedKind ──────────────────────────────────────────────────────────────
@@ -211,7 +211,16 @@ pub struct AgentHandler {
     /// 全局门控模式（Arc 共享，供 handler 和内部读取）
     pub agent_mode: Arc<Mutex<AgentMode>>,
     /// 当前计划数据（Arc 共享，供 UI 读取）
-    pub currentplan: Arc<Mutex<Option<Plan>>>,
+    pub current_plan: Arc<Mutex<Option<Plan>>>,
+}
+
+impl AgentHandler {
+    /// 从父 handler 继承运行时状态（当前只继承 agent_mode）。
+    /// 子 agent 创建后调用此方法，将父 handler 的 agent_mode 同步过来。
+    pub fn inherit_from(&mut self, parent: &AgentHandler) {
+        let mode = *parent.agent_mode.lock().unwrap();
+        *self.agent_mode.lock().unwrap() = mode;
+    }
 }
 
 /// Agent —— 拥有 provider 和 registry，通过 mpsc channel 输出流式事件。
@@ -261,7 +270,7 @@ impl Agent {
     ) -> Self {
         let handler = AgentHandler {
             agent_mode: Arc::new(Mutex::new(AgentMode::default())),
-            currentplan: Arc::new(Mutex::new(None)),
+            current_plan: Arc::new(Mutex::new(None)),
         };        
         Self {
             provider,

@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use crate::agent::{ActionMode, Tool, ToolContext, ToolResult};
+use crate::agent::{ActionMode, Tool, AgentHandler, AgentContext, ToolResult};
 use llm::tool::ToolMeta;
 #[cfg(test)]
 use crate::agent::{AgentMode, ToolResultExt};
@@ -91,7 +91,7 @@ impl PermissionChecked for EditFile {
 
 #[async_trait::async_trait]
 impl Tool for EditFile {
-    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
+    async fn execute(&self, _ctx: &AgentContext, args: &Value) -> Result<ToolResult, String> {
 
         // 1. 解析参数
         let path_str = match args.get("path").and_then(|v| v.as_str()) {
@@ -175,8 +175,8 @@ impl Tool for EditFile {
 
 #[async_trait::async_trait]
 impl CheckableTool for EditFile {
-    fn check(&self, ctx: &ToolContext, args: &Value) -> Decision {
-        match self.check_permission(self.name(), args, *ctx.agent_mode.lock().unwrap()) {
+    fn check(&self, ctx: &AgentContext, args: &Value) -> Decision {
+        match self.check_permission(self.name(), args, *ctx.handler.agent_mode.lock().unwrap()) {
             Decision::Allow => {}
             decision => return decision,
         }
@@ -219,11 +219,11 @@ mod tests {
         (path, tool)
     }
 
-    fn test_ctx() -> ToolContext {
-        ToolContext {
+    fn test_ctx() -> AgentContext {
+        AgentContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            agent_mode: Arc::new(Mutex::new(AgentMode::Ask)),
+            handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
             progress: None,
         }
     }

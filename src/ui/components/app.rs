@@ -42,36 +42,42 @@ fn mock_plan() -> Plan {
                 status: StepStatus::Completed,
                 description: "设计用户数据模型（User / Role / Permission）".to_string(),
                 tool_hint: Some("schema".to_string()),
+                children: vec![],
             },
             ActionStep {
                 index: 2,
                 status: StepStatus::Completed,
                 description: "实现注册/登录接口（JWT + bcrypt）".to_string(),
                 tool_hint: Some("write".to_string()),
+                children: vec![],
             },
             ActionStep {
                 index: 3,
                 status: StepStatus::InProgress,
                 description: "集成前端登录页面与 token 管理".to_string(),
                 tool_hint: Some("write".to_string()),
+                children: vec![],
             },
             ActionStep {
                 index: 4,
                 status: StepStatus::Pending,
                 description: "实现 RBAC 权限中间件".to_string(),
                 tool_hint: Some("write".to_string()),
+                children: vec![],
             },
             ActionStep {
                 index: 5,
                 status: StepStatus::Pending,
                 description: "编写 API 测试用例与集成测试".to_string(),
                 tool_hint: Some("bash".to_string()),
+                children: vec![],
             },
             ActionStep {
                 index: 6,
                 status: StepStatus::Pending,
                 description: "编写迁移指南与 changelog".to_string(),
                 tool_hint: None,
+                children: vec![],
             },
         ],
     }
@@ -257,12 +263,14 @@ pub fn App() -> Element {
     let plan_signal = use_memo(move || {
         let cid = active_conversation_id();
         let _ = runtimes.read().get(&cid).map(|r| r.tick).unwrap_or(0);
-        let current_plan = runtimes.read().get(&cid).map(|r| r.currentplan.clone()).unwrap_or_default();
-        if let Ok(plan_guard) = current_plan.lock() {
-            if let Some(plan) = plan_guard.clone() {
-                return Some(plan);
+        if let Some(Some(agent_handler)) = runtimes.read().get(&cid).map(|r| r.agent_handler.clone()){
+            let current_plan = agent_handler.current_plan.clone();
+            if let Ok(plan_guard) = current_plan.lock() {
+                if let Some(plan) = plan_guard.clone() {
+                    return Some(plan);
+                }
             }
-        }
+        }    
         Some(mock_plan())  // ← 开发用假数据，方便调试 UI
     });
 
@@ -622,7 +630,7 @@ pub fn App() -> Element {
                                     None,
                                     Some(pid.clone()),
                                     ac_id_for_conv,
-                                ).unwrap_or_else(|_| (String::new(), AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), currentplan: Arc::new(Mutex::new(None)) }));
+                                ).unwrap_or_else(|_| (String::new(), AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) }));
                                 runtimes.write().entry(new_cid.clone()).or_default().agent_handler = Some(handler);
                                 let now = chrono::Local::now();
                                 {

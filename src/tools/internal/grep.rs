@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::path::Path;
 use std::time::Duration;
 
-use crate::agent::{Tool, ToolContext, ToolResult};
+use crate::agent::{Tool, AgentHandler, AgentContext, ToolResult};
 #[cfg(test)]
 use crate::agent::{AgentMode, ActionMode, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
@@ -57,7 +57,7 @@ impl Grep {
 
 #[async_trait::async_trait]
 impl Tool for Grep {
-    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
+    async fn execute(&self, _ctx: &AgentContext, args: &Value) -> Result<ToolResult, String> {
         // 1. 解析参数
         let pattern_str = match args.get("pattern").and_then(|v| v.as_str()) {
             Some(p) if !p.is_empty() => p,
@@ -268,7 +268,7 @@ fn format_grep_output(matches: &[MatchLine], timed_out: bool, timeout: Duration)
 
 #[async_trait::async_trait]
 impl CheckableTool for Grep {
-    fn check(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> Decision {
+    fn check(&self, _ctx: &AgentContext, _args: &serde_json::Value) -> Decision {
         Decision::Allow
     }
 
@@ -297,11 +297,11 @@ mod tests {
         path
     }
 
-    fn test_ctx() -> ToolContext {
-        ToolContext {
+    fn test_ctx() -> AgentContext {
+        AgentContext {
             call_id: "test".into(),
             plan_mode: ActionMode::Regular,
-            agent_mode: Arc::new(Mutex::new(AgentMode::Ask)),
+            handler: AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) },
             progress: None,
         }
     }

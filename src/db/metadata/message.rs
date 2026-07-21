@@ -208,6 +208,24 @@ pub fn list_all_by_conversation(conn: &Connection, conversation_id: &str) -> Res
     rows.collect()
 }
 
+/// 列出某对话下所有 active 消息（timestamp < cutoff），按 timestamp 升序
+pub fn list_by_conversation_before(
+    conn: &Connection,
+    conversation_id: &str,
+    cutoff: &str,
+) -> Result<Vec<MessageRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, conversation_id, role, content, timestamp,
+                reasoning_content, reasoning_signature,
+                tool_calls, tool_call_id, tool_name, images, active
+         FROM messages
+         WHERE conversation_id = ?1 AND active = 'active' AND timestamp < ?2
+         ORDER BY timestamp",
+    )?;
+    let rows = stmt.query_map(params![conversation_id, cutoff], row_mapper)?;
+    rows.collect()
+}
+
 /// 将某对话下所有 active 消息转换为 llm::Message 列表
 pub fn list_as_llm_messages(
     conn: &Connection,
@@ -215,6 +233,35 @@ pub fn list_as_llm_messages(
 ) -> Result<Vec<LlmMessage>> {
     let rows = list_by_conversation(conn, conversation_id)?;
     Ok(rows.iter().map(|r| r.to_llm()).collect())
+}
+
+/// 将某对话的所有消息（含父对话历史）转为 llm::Message 列表
+pub fn list_as_llm_messages_with_parent(
+    conn: &Connection,
+    conversation_id: &str,
+) -> Result<Vec<LlmMessage>> {
+    use crate::db::metadata::conversation;
+
+    let conv = match conversation::get(conn, conversation_id)? {
+        Some(c) => c,
+        None => return list_as_llm_messages(conn, conversation_id),
+    };
+
+    let mut all = Vec::new();
+
+    // 有父对话：拼接父对话的旧消息
+    if let Some(parent_id) = &conv.parent_conversation_id {
+        if let Ok(parent_msgs) = list_by_conversation_before(conn, parent_id, &conv.created_at.to_rfc3339()) {
+            all.extend(parent_msgs.iter().map(|r| r.to_llm()));
+        }
+    }
+
+    // 拼接自身消息
+    if let Ok(own) = list_as_llm_messages(conn, conversation_id) {
+        all.extend(own);
+    }
+
+    Ok(all)
 }
 
 /// 软删除消息
@@ -269,8 +316,11 @@ mod tests {
             );
             CREATE TABLE conversations (
                 id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
+                parent_conversation_id TEXT REFERENCES conversations(id),
                 title TEXT DEFAULT '', updated_at TEXT NOT NULL,
-                agent_config_id TEXT
+                created_at TEXT NOT NULL,
+                agent_config_id TEXT,
+                status TEXT NOT NULL DEFAULT 'active'
             );
             CREATE TABLE messages (
                 id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -303,7 +353,7 @@ mod tests {
     fn test_create_user_message() {
         let conn = test_conn();
         let pid = project::create(&conn, "p", "/p").unwrap();
-        let cid = conversation::create(&conn, &pid, "c", None).unwrap();
+        let cid = conversation::create(&conn, &pid, "c", None, None).unwrap();
 
         let llm_msg = LlmMessage {
             role: LlmRole::User,
@@ -323,7 +373,7 @@ mod tests {
     fn test_list_filters_active() {
         let conn = test_conn();
         let pid = project::create(&conn, "p", "/p").unwrap();
-        let cid = conversation::create(&conn, &pid, "c", None).unwrap();
+        let cid = conversation::create(&conn, &pid, "c", None, None).unwrap();
 
         let _id1 = create_test_msg(&conn, &cid, LlmRole::User, "active msg");
         // 手动插入一条 compressed 消息
@@ -345,7 +395,7 @@ mod tests {
     fn test_create_assistant_with_tool_calls() {
         let conn = test_conn();
         let pid = project::create(&conn, "p", "/p").unwrap();
-        let cid = conversation::create(&conn, &pid, "c", None).unwrap();
+        let cid = conversation::create(&conn, &pid, "c", None, None).unwrap();
 
         let llm_msg = LlmMessage {
             role: LlmRole::Assistant,
@@ -380,7 +430,7 @@ mod tests {
     fn test_create_tool_result() {
         let conn = test_conn();
         let pid = project::create(&conn, "p", "/p").unwrap();
-        let cid = conversation::create(&conn, &pid, "c", None).unwrap();
+        let cid = conversation::create(&conn, &pid, "c", None, None).unwrap();
 
         let llm_msg = LlmMessage {
             role: LlmRole::Tool,
@@ -400,7 +450,7 @@ mod tests {
     fn test_list_as_llm_messages() {
         let conn = test_conn();
         let pid = project::create(&conn, "p", "/p").unwrap();
-        let cid = conversation::create(&conn, &pid, "c", None).unwrap();
+        let cid = conversation::create(&conn, &pid, "c", None, None).unwrap();
 
         create_from_llm(
             &conn,
@@ -433,7 +483,7 @@ mod tests {
     fn test_delete() {
         let conn = test_conn();
         let pid = project::create(&conn, "p", "/p").unwrap();
-        let cid = conversation::create(&conn, &pid, "c", None).unwrap();
+        let cid = conversation::create(&conn, &pid, "c", None, None).unwrap();
         let llm_msg = LlmMessage {
             role: LlmRole::User,
             content: Some("x".into()),
@@ -448,7 +498,7 @@ mod tests {
     fn test_delete_by_conversation() {
         let conn = test_conn();
         let pid = project::create(&conn, "p", "/p").unwrap();
-        let cid = conversation::create(&conn, &pid, "c", None).unwrap();
+        let cid = conversation::create(&conn, &pid, "c", None, None).unwrap();
 
         for i in 0..3 {
             create_from_llm(

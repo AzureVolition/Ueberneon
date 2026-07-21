@@ -167,6 +167,7 @@ pub struct ActionStep {
     pub status: StepStatus,
     pub description: String,
     pub tool_hint: Option<String>,
+    pub children: Vec<ActionStep>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -184,6 +185,57 @@ pub enum PlanStatus {
     InProgress,
     Completed,
     Canceled,
+}
+
+// ── 与 db 层的枚举互转 ──
+
+use crate::db::metadata::plan::PlanStatus as DbPlanStatus;
+use crate::db::metadata::task::TaskStatus as DbTaskStatus;
+
+impl From<PlanStatus> for DbPlanStatus {
+    fn from(s: PlanStatus) -> Self {
+        match s {
+            PlanStatus::NeedApproval => DbPlanStatus::NeedApproval,
+            PlanStatus::InProgress => DbPlanStatus::InProgress,
+            PlanStatus::Completed => DbPlanStatus::Completed,
+            PlanStatus::Canceled => DbPlanStatus::Canceled,
+        }
+    }
+}
+
+impl From<DbPlanStatus> for PlanStatus {
+    fn from(s: DbPlanStatus) -> Self {
+        match s {
+            DbPlanStatus::NeedApproval => PlanStatus::NeedApproval,
+            DbPlanStatus::InProgress => PlanStatus::InProgress,
+            DbPlanStatus::Completed => PlanStatus::Completed,
+            DbPlanStatus::Canceled => PlanStatus::Canceled,
+        }
+    }
+}
+
+impl From<StepStatus> for DbTaskStatus {
+    fn from(s: StepStatus) -> Self {
+        match s {
+            StepStatus::Pending => DbTaskStatus::Pending,
+            StepStatus::InProgress => DbTaskStatus::InProgress,
+            StepStatus::Completed => DbTaskStatus::Completed,
+            StepStatus::Bolcked => DbTaskStatus::Blocked,
+            StepStatus::Failed => DbTaskStatus::Failed,
+        }
+    }
+}
+
+impl From<DbTaskStatus> for StepStatus {
+    fn from(s: DbTaskStatus) -> Self {
+        match s {
+            DbTaskStatus::Pending => StepStatus::Pending,
+            DbTaskStatus::InProgress => StepStatus::InProgress,
+            DbTaskStatus::Completed => StepStatus::Completed,
+            DbTaskStatus::Blocked => StepStatus::Bolcked,
+            DbTaskStatus::Failed => StepStatus::Failed,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema,PartialEq)]
