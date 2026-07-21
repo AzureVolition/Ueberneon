@@ -7,6 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::manager::AgentManager;
 use crate::agent::{ActionMode, AgentHandler, AgentMode};
+use crate::model::{ActionStep, Difficulty, Plan, PlanStatus, StepStatus};
 use crate::ui::components::chat_panel::ChatPanel;
 use crate::ui::components::input_bar::InputBar;
 use crate::ui::components::plan_panel::PlanPanel;
@@ -27,6 +28,55 @@ fn markdown_to_html(md: &str) -> String {
 
 fn load_agent_configs() -> Vec<crate::db::metadata::agent_config::AgentConfigRow> {
     crate::db::with_db(|conn| crate::db::metadata::agent_config::list_all(conn).unwrap_or_default())
+}
+
+/// 开发用 mock plan — 让计划面板显示假数据便于调试 UI
+fn mock_plan() -> Plan {
+    Plan {
+        goal: "为 racpagent 添加用户认证与权限管理".to_string(),
+        difficulty: Difficulty::Hard,
+        estimated_minutes: 45,
+        status: PlanStatus::InProgress,
+        started_at: None,
+        steps: vec![
+            ActionStep {
+                index: 1,
+                status: StepStatus::Completed,
+                description: "设计用户数据模型（User / Role / Permission）".to_string(),
+                tool_hint: Some("schema".to_string()),
+            },
+            ActionStep {
+                index: 2,
+                status: StepStatus::Completed,
+                description: "实现注册/登录接口（JWT + bcrypt）".to_string(),
+                tool_hint: Some("write".to_string()),
+            },
+            ActionStep {
+                index: 3,
+                status: StepStatus::InProgress,
+                description: "集成前端登录页面与 token 管理".to_string(),
+                tool_hint: Some("write".to_string()),
+            },
+            ActionStep {
+                index: 4,
+                status: StepStatus::Pending,
+                description: "实现 RBAC 权限中间件".to_string(),
+                tool_hint: Some("write".to_string()),
+            },
+            ActionStep {
+                index: 5,
+                status: StepStatus::Pending,
+                description: "编写 API 测试用例与集成测试".to_string(),
+                tool_hint: Some("bash".to_string()),
+            },
+            ActionStep {
+                index: 6,
+                status: StepStatus::Pending,
+                description: "编写迁移指南与 changelog".to_string(),
+                tool_hint: None,
+            },
+        ],
+    }
 }
 
 /// 从 DB 加载指定对话的消息
@@ -205,17 +255,15 @@ pub fn App() -> Element {
         Arc::new(Mutex::new(HashMap::new()));
 
     // 对话快照缓存（切走时暂存，切回时恢复）
-    // 计划看板信号 — 从流式消息中提取 Plan
+    // 计划看板信号 — 从流式消息中提取 Plan，暂无则用 mock 数据
     let plan_signal = use_memo(move || {
         let cid = active_conversation_id();
         let _ = runtimes.read().get(&cid).map(|r| r.tick).unwrap_or(0);
-        let msgs = runtimes.read().get(&cid).map(|r| r.messages.clone()).unwrap_or_default();
-        for msg in msgs.iter().rev() {
-            if let UiMessage::Streaming { plan, .. } = msg {
-                return plan.lock().unwrap().clone();
-            }
+        let current_plan = runtimes.read().get(&cid).map(|r| r.currentplan.clone()).unwrap_or_default();
+        if let Some(plan) = current_plan {
+            return plan.lock().unwrap().clone();
         }
-        None
+        Some(mock_plan())  // ← 开发用假数据，方便调试 UI
     });
 
     // ── 选择项目 ──
