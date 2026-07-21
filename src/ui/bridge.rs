@@ -63,7 +63,7 @@ pub async fn run_agent_loop(ctx: BridgeContext) {
         .remove(&conversation_id)
         .expect("agent must be in cache before run_agent_loop");
     agent.plan_mode = action_mode;
-    *agent.agent_mode.lock().unwrap() = agent_mode_val;
+    *agent.handler.agent_mode.lock().unwrap() = agent_mode_val;
 
     // Agent 内部创建流式状态
     let streaming = agent.create_streaming();

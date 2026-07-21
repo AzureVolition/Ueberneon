@@ -208,6 +208,7 @@ use llm::{Message, Provider, Role as LlmRole};
 /// Agent 运行时控制句柄，前端持有以实时调整 Agent 行为。
 #[derive(Clone)]
 pub struct AgentHandler {
+    /// 全局门控模式（Arc 共享，供 handler 和内部读取）
     pub agent_mode: Arc<Mutex<AgentMode>>,
 }
 
@@ -222,8 +223,6 @@ pub struct Agent {
     pub hook_register: HookRegister,
     /// 计划模式（常规/计划）
     pub plan_mode: ActionMode,
-    /// 全局门控模式（Arc 共享，供 handler 和内部读取）
-    pub agent_mode: Arc<Mutex<AgentMode>>,
     /// 运行时控制句柄（与 agent_mode 指向同一 Arc）
     pub handler: AgentHandler,
     /// 工具执行的工作目录（即项目路径）
@@ -251,7 +250,6 @@ impl Agent {
         registry: Registry,
         hook_register: HookRegister,
         plan_mode: ActionMode,
-        agent_mode: AgentMode,
         project_path: PathBuf,
         project_id: Option<String>,
         conversation_id: String,
@@ -259,14 +257,15 @@ impl Agent {
         max_tokens: Option<u32>,
         agent_type: String,
     ) -> Self {
-        let agent_mode = Arc::new(Mutex::new(agent_mode));
+        let handler = AgentHandler {
+            agent_mode: Arc::new(Mutex::new(AgentMode::default())),
+        };        
         Self {
             provider,
             registry,
             hook_register,
             plan_mode,
-            handler: AgentHandler { agent_mode: agent_mode.clone() },
-            agent_mode,
+            handler,
             project_path,
             project_id,
             conversation_id,

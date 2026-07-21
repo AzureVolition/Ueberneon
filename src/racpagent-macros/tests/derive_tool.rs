@@ -81,7 +81,7 @@ async fn execute_returns_ok() {
     let ctx = racpagent::agent::ToolContext {
         call_id: "test".into(),
         plan_mode: ActionMode::Regular,
-            agent_mode: Arc::new(Mutex::new(AgentMode::Ask)),
+        agent_mode: Arc::new(Mutex::new(AgentMode::Ask)),
         progress: None,
     };
     let args = serde_json::json!({});

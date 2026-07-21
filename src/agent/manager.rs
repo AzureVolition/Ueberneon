@@ -136,13 +136,12 @@ impl AgentManager {
                 .join(", "),
             env_info: PromptContext::default().env_info,
         };
-
+        
         let mut agent = Agent::new(
             Box::new(provider),
             registry,
             hook_register,
             ActionMode::Regular,
-            AgentMode::Ask,
             project_path,
             project_id,
             conversation_id,
