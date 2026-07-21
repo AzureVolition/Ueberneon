@@ -11,7 +11,7 @@ pub struct ConversationRuntime {
     pub tick: u64,
     pub agent_handler: Option<crate::agent::AgentHandler>,
     pub cancel_token: Option<tokio_util::sync::CancellationToken>,
-    pub currentplan: Option<Arc<Mutex<Option<Plan>>>>,
+    pub currentplan: Arc<Mutex<Option<Plan>>>,
 }
 
 impl Default for ConversationRuntime {
@@ -21,7 +21,7 @@ impl Default for ConversationRuntime {
             tick: 0,
             agent_handler: None,
             cancel_token: None,
-            currentplan: None,
+            currentplan: Arc::new(Mutex::new(None)),
         }
     }
 }

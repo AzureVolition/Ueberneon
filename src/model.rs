@@ -157,8 +157,6 @@ pub fn format_relative_time(dt: &DateTime<Local>) -> String {
 pub struct Plan {
     pub goal: String,
     pub steps: Vec<ActionStep>,
-    pub difficulty: Difficulty,
-    pub estimated_minutes: u32,
     pub status: PlanStatus,
     pub started_at: Option<DateTime<Utc>>,
 }
@@ -176,15 +174,15 @@ pub enum StepStatus {
     Pending,
     InProgress,
     Completed,
+    Bolcked,
     Failed,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum PlanStatus {
-    Pending,
+    NeedApproval,
     InProgress,
     Completed,
-    Failed,
     Canceled,
 }
 

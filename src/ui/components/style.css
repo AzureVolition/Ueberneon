@@ -4386,7 +4386,6 @@ body {
 }
 
 /* ── 呼吸光晕 ── */
-/* ── 呼吸光晕 ── */
 .plan-pill::before {
   content: "";
   position: absolute;
@@ -4401,7 +4400,6 @@ body {
 
 /* hover 仅增亮度，频率不变 */
 .plan-pill:hover::before {
-  animation: plan-pill-breathe 3s ease-in-out infinite;
   filter: blur(14px) brightness(1.8);
 }
 
@@ -4543,22 +4541,45 @@ body {
   line-height: 1;
 }
 
-.plan-floating-tag {
+.plan-floating-state {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  line-height: 1;
+}
+
+.plan-floating-state--pending {
   color: oklch(55% 0 0);
-  letter-spacing: 0.03em;
+}
+
+.plan-floating-state--doing {
+  color: var(--color-accent);
+}
+
+.plan-floating-state--done {
+  color: var(--color-success);
+}
+
+.plan-floating-state--failed {
+  color: var(--color-error);
+}
+
+.plan-floating-state--canceled {
+  color: oklch(45% 0 0);
 }
 
 .plan-floating-sep {
   color: oklch(40% 0 0);
 }
 
-.plan-floating-time {
+.plan-floating-elapsed {
   font-family: var(--font-mono);
   font-size: 9px;
   color: oklch(55% 0 0);
   letter-spacing: 0.03em;
+  font-variant-numeric: tabular-nums;
 }
 
 .plan-floating-spacer {

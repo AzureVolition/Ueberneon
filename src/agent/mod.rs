@@ -201,7 +201,7 @@ impl std::fmt::Display for BlockedKind {
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use crate::tools::Registry;
-use crate::model::{ChatMessage, StreamSegment, ToolCallRecord, ToolCallStatus};
+use crate::model::{ChatMessage, Plan, StreamSegment, ToolCallRecord, ToolCallStatus};
 use hook::HookRegister;
 use llm::{Message, Provider, Role as LlmRole};
 
@@ -210,6 +210,8 @@ use llm::{Message, Provider, Role as LlmRole};
 pub struct AgentHandler {
     /// 全局门控模式（Arc 共享，供 handler 和内部读取）
     pub agent_mode: Arc<Mutex<AgentMode>>,
+    /// 当前计划数据（Arc 共享，供 UI 读取）
+    pub currentplan: Arc<Mutex<Option<Plan>>>,
 }
 
 /// Agent —— 拥有 provider 和 registry，通过 mpsc channel 输出流式事件。
@@ -259,6 +261,7 @@ impl Agent {
     ) -> Self {
         let handler = AgentHandler {
             agent_mode: Arc::new(Mutex::new(AgentMode::default())),
+            currentplan: Arc::new(Mutex::new(None)),
         };        
         Self {
             provider,

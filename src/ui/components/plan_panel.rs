@@ -6,7 +6,7 @@
 
 use dioxus::prelude::*;
 
-use crate::model::{ActionStep, Difficulty, Plan, PlanStatus, StepStatus};
+use crate::model::{ActionStep, Plan, PlanStatus, StepStatus};
 
 /// PlanPanel — floating collapsible kanban board for plan mode.
 ///
@@ -71,12 +71,28 @@ pub fn PlanPanel(plan: Option<Plan>) -> Element {
         }
     } else {
         // ── Expanded: floating overlay panel ──
-        let difficulty_label = match plan_data.difficulty {
-            Difficulty::Easy => "easy",
-            Difficulty::Medium => "medium",
-            Difficulty::Hard => "hard",
-        };
         let current_step = doing_steps.first().map(|s| s.description.as_str());
+
+        let (status_label, status_mod) = match plan_data.status {
+            PlanStatus::NeedApproval => ("need approval", "pending"),
+            PlanStatus::InProgress => ("in progress", "doing"),
+            PlanStatus::Completed => ("completed", "done"),
+            PlanStatus::Canceled => ("canceled", "canceled"),
+        };
+
+        let elapsed_text = match plan_data.started_at {
+            Some(t) => {
+                let dur = chrono::Utc::now() - t;
+                let mins = dur.num_minutes();
+                let secs = dur.num_seconds() % 60;
+                if mins > 0 {
+                    format!("{mins}m {secs}s")
+                } else {
+                    format!("{secs}s")
+                }
+            }
+            None => "—".to_string(),
+        };
 
         rsx! {
             // Click-outside backdrop
@@ -89,10 +105,10 @@ pub fn PlanPanel(plan: Option<Plan>) -> Element {
             div { class: "plan-floating",
                 // ── Header row ──
                 div { class: "plan-floating-header",
-                    h2 { class: "plan-floating-title", "plan" }
-                    span { class: "plan-floating-tag", "{difficulty_label}" }
+                    // h2 { class: "plan-floating-title", "plan" }
+                    span { class: "plan-floating-state plan-floating-state--{status_mod}", "plan {status_label}" }
                     span { class: "plan-floating-sep", "·" }
-                    span { class: "plan-floating-time", "~{plan_data.estimated_minutes} min" }
+                    span { class: "plan-floating-elapsed", "{elapsed_text}" }
                     div { class: "plan-floating-spacer" }
                     button {
                         class: "plan-floating-close",
@@ -120,12 +136,12 @@ pub fn PlanPanel(plan: Option<Plan>) -> Element {
 
                 // ── 3-column board ──
                 div { class: "plan-floating-board",
-                    // TODO column
+                    // DONE column
                     div { class: "plan-floating-col",
-                        div { class: "plan-floating-col-head plan-floating-col-head--todo",
-                            "todo ({todo_steps.len()})"
+                        div { class: "plan-floating-col-head plan-floating-col-head--done",
+                            "done ({done_steps.len()})"
                         }
-                        {todo_steps.iter().map(|step| render_card(step))}
+                        {done_steps.iter().map(|step| render_card(step))}
                     }
                     // DOING column
                     div { class: "plan-floating-col",
@@ -134,12 +150,12 @@ pub fn PlanPanel(plan: Option<Plan>) -> Element {
                         }
                         {doing_steps.iter().map(|step| render_card(step))}
                     }
-                    // DONE column
+                    // TODO column
                     div { class: "plan-floating-col",
-                        div { class: "plan-floating-col-head plan-floating-col-head--done",
-                            "done ({done_steps.len()})"
+                        div { class: "plan-floating-col-head plan-floating-col-head--todo",
+                            "todo ({todo_steps.len()})"
                         }
-                        {done_steps.iter().map(|step| render_card(step))}
+                        {todo_steps.iter().map(|step| render_card(step))}
                     }
                 }
 
@@ -152,7 +168,7 @@ pub fn PlanPanel(plan: Option<Plan>) -> Element {
                     } else if matches!(plan_data.status, PlanStatus::Completed) {
                         span { class: "plan-floating-status-arrow", "✓" }
                         span { class: "plan-floating-status-text", "all steps completed." }
-                    } else if matches!(plan_data.status, PlanStatus::Failed) {
+                    } else if matches!(plan_data.status, PlanStatus::Canceled) {
                         span { class: "plan-floating-status-arrow", "✗" }
                         span { class: "plan-floating-status-text", "execution failed." }
                     } else {
@@ -172,6 +188,7 @@ fn render_card(step: &ActionStep) -> Element {
         StepStatus::InProgress => ("plan-card--doing", "plan-card-dot--doing"),
         StepStatus::Completed => ("plan-card--done", "plan-card-dot--done"),
         StepStatus::Failed => ("plan-card--failed", "plan-card-dot--failed"),
+        StepStatus::Bolcked => ("plan-card--blocked", "plan-card-dot--blocked"),
     };
 
     let is_done = matches!(step.status, StepStatus::Completed);

@@ -175,13 +175,6 @@ impl Agent {
                 break;
             }
 
-            // ── Plan mode: try to extract plan from first response ──
-            if matches!(self.plan_mode, ActionMode::Plan) && round == 1 {
-                if let Some(plan) = try_extract_plan(&output) {
-                    *plan_arc.lock().unwrap() = Some(plan);
-                    inc_version_atomic(&version_arc);
-                }
-            }
 
             // Assistant 消息入 self.messages
             {
@@ -383,31 +376,6 @@ fn build_content_from_segments(segments: &[StreamSegment]) -> String {
         if let StreamSegment::Text(t) = seg { content.push_str(t); }
     }
     content
-}
-
-/// Try to extract a Plan from LLM output text.
-/// Looks for JSON code blocks or raw JSON objects containing plan fields.
-fn try_extract_plan(text: &str) -> Option<Plan> {
-    // Try to find JSON inside ```json fences
-    if let Some(start) = text.find("```json") {
-        let after_fence = &text[start + 7..];
-        if let Some(end) = after_fence.find("```") {
-            let json_str = after_fence[..end].trim();
-            if let Ok(plan) = serde_json::from_str::<Plan>(json_str) {
-                return Some(plan);
-            }
-        }
-    }
-    // Try raw JSON (find first { and last })
-    if let Some(start) = text.find('{') {
-        if let Some(end) = text.rfind('}') {
-            let json_str = &text[start..=end];
-            if let Ok(plan) = serde_json::from_str::<Plan>(json_str) {
-                return Some(plan);
-            }
-        }
-    }
-    None
 }
 
 pub fn defautlt_main_agent_prompt() -> String {

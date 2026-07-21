@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::manager::AgentManager;
 use crate::agent::{ActionMode, AgentHandler, AgentMode};
-use crate::model::{ActionStep, Difficulty, Plan, PlanStatus, StepStatus};
+use crate::model::{ActionStep, Plan, PlanStatus, StepStatus};
 use crate::ui::components::chat_panel::ChatPanel;
 use crate::ui::components::input_bar::InputBar;
 use crate::ui::components::plan_panel::PlanPanel;
@@ -34,10 +34,8 @@ fn load_agent_configs() -> Vec<crate::db::metadata::agent_config::AgentConfigRow
 fn mock_plan() -> Plan {
     Plan {
         goal: "为 racpagent 添加用户认证与权限管理".to_string(),
-        difficulty: Difficulty::Hard,
-        estimated_minutes: 45,
-        status: PlanStatus::InProgress,
-        started_at: None,
+        status: PlanStatus::NeedApproval,
+        started_at: Some(chrono::Utc::now() - chrono::Duration::minutes(3)),
         steps: vec![
             ActionStep {
                 index: 1,
@@ -260,8 +258,10 @@ pub fn App() -> Element {
         let cid = active_conversation_id();
         let _ = runtimes.read().get(&cid).map(|r| r.tick).unwrap_or(0);
         let current_plan = runtimes.read().get(&cid).map(|r| r.currentplan.clone()).unwrap_or_default();
-        if let Some(plan) = current_plan {
-            return plan.lock().unwrap().clone();
+        if let Ok(plan_guard) = current_plan.lock() {
+            if let Some(plan) = plan_guard.clone() {
+                return Some(plan);
+            }
         }
         Some(mock_plan())  // ← 开发用假数据，方便调试 UI
     });
@@ -622,7 +622,7 @@ pub fn App() -> Element {
                                     None,
                                     Some(pid.clone()),
                                     ac_id_for_conv,
-                                ).unwrap_or_else(|_| (String::new(), AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)) }));
+                                ).unwrap_or_else(|_| (String::new(), AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), currentplan: Arc::new(Mutex::new(None)) }));
                                 runtimes.write().entry(new_cid.clone()).or_default().agent_handler = Some(handler);
                                 let now = chrono::Local::now();
                                 {
