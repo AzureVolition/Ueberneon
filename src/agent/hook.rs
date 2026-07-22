@@ -156,7 +156,7 @@ mod tests {
             Box::new(move |event| {
                 if let AgentEvent::Stop { reason } = event {
                     assert_eq!(reason, "done");
-                    *received_clone.lock().unwrap() = true;
+                    *received_clone.lock().expect("received_clone lock poisoned") = true;
                 }
             }),
         );
@@ -168,7 +168,7 @@ mod tests {
             reason: "done".to_string(),
         });
 
-        assert!(*received.lock().unwrap());
+        assert!(*received.lock().expect("received lock poisoned"));
     }
 
     #[test]
@@ -214,7 +214,7 @@ mod tests {
             },
             Some("my_tool".to_string()),
             Box::new(move |_| {
-                *received_clone.lock().unwrap() = true;
+                *received_clone.lock().expect("received_clone lock poisoned") = true;
             }),
         );
 
@@ -226,13 +226,13 @@ mod tests {
             tool_name: "other_tool".to_string(),
             args: serde_json::Value::Null,
         });
-        assert!(!*received.lock().unwrap());
+        assert!(!*received.lock().expect("received lock poisoned"));
 
         // 匹配工具名 → 应触发
         register.emit(&AgentEvent::PreToolUse {
             tool_name: "my_tool".to_string(),
             args: serde_json::Value::Null,
         });
-        assert!(*received.lock().unwrap());
+        assert!(*received.lock().expect("received lock poisoned"));
     }
 }

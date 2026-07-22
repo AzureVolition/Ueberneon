@@ -202,7 +202,7 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
             };
 
             let row = AgentConfigRow {
-                id: if is_new { gen_id() } else { editing_id.read().clone().unwrap() },
+                id: if is_new { gen_id() } else { editing_id.read().clone().expect("editing_id should be Some when is_new is false") },
                 name,
                 agent_type: filter_type.clone(),
                 provider_instance_id: provider_inst,

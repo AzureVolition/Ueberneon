@@ -176,7 +176,7 @@ impl Tool for EditFile {
 #[async_trait::async_trait]
 impl CheckableTool for EditFile {
     fn check(&self, ctx: &ToolContext, args: &Value) -> Decision {
-        match self.check_permission(self.name(), args, *ctx.handler.agent_mode.lock().unwrap()) {
+        match self.check_permission(self.name(), args, *ctx.handler.agent_mode.lock().expect("agent_mode lock poisoned")) {
             Decision::Allow => {}
             decision => return decision,
         }

@@ -138,7 +138,7 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
     // 检查是否有正在等待审批的 tool call
     let has_approval_pending = msgs.iter().any(|m| {
         matches!(m, UiMessage::Streaming { tool_calls, .. }
-            if tool_calls.lock().unwrap().iter().any(|tc| matches!(tc.status, ToolCallStatus::AwaitingApproval { .. })))
+            if tool_calls.lock().expect("tool_calls lock poisoned").iter().any(|tc| matches!(tc.status, ToolCallStatus::AwaitingApproval { .. })))
     });
     let last_user_idx = user_messages.last().map(|(i, _)| *i);
 
@@ -190,8 +190,8 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
                         }
                     }
                     UiMessage::Streaming { segments, tool_calls, approval_tx, .. } => {
-                        let segs = segments.lock().unwrap().clone();
-                        let tcs = tool_calls.lock().unwrap().clone();
+                        let segs = segments.lock().expect("segments lock poisoned").clone();
+                        let tcs = tool_calls.lock().expect("tool_calls lock poisoned").clone();
                         let has_approval = tcs.iter().any(|tc| matches!(tc.status, ToolCallStatus::AwaitingApproval { .. }));
                         let streaming_class = if has_approval {
                             "message-bubble message-assistant streaming awaiting-approval"
@@ -201,7 +201,7 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
                         // 审批处理
                         let atx = approval_tx.clone();
                         let on_stream_approve = move |(allowed,): (bool,)| {
-                            if let Some(tx) = atx.lock().unwrap().take() {
+                            if let Some(tx) = atx.lock().expect("atx lock poisoned").take() {
                                 let _ = tx.send(allowed);
                             }
                         };

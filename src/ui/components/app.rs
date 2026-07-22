@@ -249,7 +249,7 @@ pub fn App() -> Element {
                 // ── 从 runtime 恢复 agent_mode ──
                 if let Some(rt) = runtimes.read().get(&first_id) {
                     if let Some(ref h) = rt.agent_handler {
-                        agent_mode.set(*h.agent_mode.lock().unwrap());
+                        agent_mode.set(*h.agent_mode.lock().expect("agent_mode lock poisoned"));
                     }
                 }
 
@@ -323,7 +323,7 @@ pub fn App() -> Element {
             // ── 从 runtime 恢复 agent_mode ──
             if let Some(rt) = runtimes.read().get(&conv_id) {
                 if let Some(ref h) = rt.agent_handler {
-                    agent_mode.set(*h.agent_mode.lock().unwrap());
+                    agent_mode.set(*h.agent_mode.lock().expect("agent_mode lock poisoned"));
                 }
             }
 
@@ -582,7 +582,7 @@ pub fn App() -> Element {
                                     let cid = cid_sig();
                                     if let Some(rt) = rt_sig.read().get(&cid) {
                                         if let Some(ref h) = rt.agent_handler {
-                                            *h.agent_mode.lock().unwrap() = new_mode;
+                                            *h.agent_mode.lock().expect("agent_mode lock poisoned") = new_mode;
                                         }
                                     }
                                 }

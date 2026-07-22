@@ -12,7 +12,8 @@ pub mod provider_presets;
 
 use std::sync::{Mutex, OnceLock};
 
-use rusqlite::{Connection, Result};
+use anyhow::Context;
+use rusqlite::Connection;
 
 /// 默认项目的固定 id（与 store.rs 迁移至此）
 pub const DEFAULT_PROJECT_ID: &str = "racpagent-default";
@@ -31,7 +32,7 @@ fn db_path() -> std::path::PathBuf {
 /// - 执行 CREATE TABLE IF NOT EXISTS + CREATE INDEX IF NOT EXISTS
 ///
 /// 返回打开后的 Connection，调用方应持有该连接以供后续读写。
-pub fn init_db() -> Result<Connection> {
+pub fn init_db() -> anyhow::Result<Connection> {
     let path = db_path();
 
     // 确保目录存在
@@ -53,10 +54,7 @@ pub fn init_db() -> Result<Connection> {
     conn.execute_batch("PRAGMA foreign_keys=ON;")?;
 
     // 建表 + 种子数据
-    let result = rebuild_schema(&conn);
-    if let Err(e) = result {
-        return Err(e);
-    }
+    rebuild_schema(&conn)?;
 
     Ok(conn)
 }
@@ -249,7 +247,7 @@ fn rebuild_schema(conn: &Connection) -> Result<()> {
         rusqlite::params![
             DEFAULT_PROJECT_ID,
             "racpagent",
-            db_path().parent().unwrap().to_string_lossy().to_string(),
+            db_path().parent().context("db_path has no parent directory")?.to_string_lossy().to_string(),
             chrono::Local::now().to_rfc3339(),
         ],
     )?;
@@ -320,7 +318,7 @@ pub fn get_db() -> &'static Mutex<Connection> {
 /// # Panics
 /// 在锁被 poison 时 panic（与直接调用 `lock().unwrap()` 行为一致）。
 pub fn with_db<T>(f: impl FnOnce(&Connection) -> T) -> T {
-    let guard = get_db().lock().unwrap();
+    let guard = get_db().lock().expect("db lock poisoned");
     f(&guard)
 }
 

@@ -201,7 +201,7 @@ impl AgentManager {
                 let agent =
                     Self::build_agent_inner(id.clone(), project_id, &agent_config)?;
                 let handler = agent.handler.clone();
-                self.agents.write().unwrap().insert(id.clone(), agent);
+                self.agents.write().expect("agents lock poisoned").insert(id.clone(), agent);
                 Ok((id, handler))
             }
         }
@@ -209,7 +209,7 @@ impl AgentManager {
 
     pub fn init(&self, id: &str) -> Result<AgentHandler, String> {
         {
-            let agents = self.agents.read().unwrap();
+            let agents = self.agents.read().expect("agents lock poisoned");
             if let Some(agent) = agents.get(id) {
                 return Ok(agent.handler.clone());
             }
@@ -239,7 +239,7 @@ impl AgentManager {
         let mut agent = Self::build_agent_inner(id.to_string(), Some(conv.project_id), &agent_config)?;
         agent.messages.extend(msgs);
         let handler = agent.handler.clone();
-        self.agents.write().unwrap().insert(id.to_string(), agent);
+        self.agents.write().expect("agents lock poisoned").insert(id.to_string(), agent);
         Ok(handler)
     }
 
@@ -307,18 +307,18 @@ impl AgentManager {
 
     /// 从缓存移除并返回 Agent（ownership 转移，适合取出后异步执行）。
     pub fn remove(&self, id: &str) -> Option<Agent> {
-        self.agents.write().unwrap().remove(id)
+        self.agents.write().expect("agents lock poisoned").remove(id)
     }
 
     /// 将 Agent 注册回缓存。
     pub fn register(&self, agent: Agent) {
         let id = agent.conversation_id.clone();
-        self.agents.write().unwrap().insert(id, agent);
+        self.agents.write().expect("agents lock poisoned").insert(id, agent);
     }
 
     /// 检查对话是否存在（缓存 or DB）。
     pub fn exists(&self, id: &str) -> Result<bool, String> {
-        if self.agents.read().unwrap().contains_key(id) {
+        if self.agents.read().expect("agents lock poisoned").contains_key(id) {
             return Ok(true);
         }
         let found = crate::db::with_db(|conn| {
@@ -331,6 +331,6 @@ impl AgentManager {
 
     /// 读取缓存的 Agent handler（不取出所有权，适合只读场景）。
     pub fn get_agent(&self, id: &str) -> Option<AgentHandler> {
-        self.agents.read().unwrap().get(id).map(|a| a.handler.clone())
+        self.agents.read().expect("agents lock poisoned").get(id).map(|a| a.handler.clone())
     }
 }

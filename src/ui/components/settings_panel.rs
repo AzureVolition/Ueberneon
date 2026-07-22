@@ -125,7 +125,7 @@ pub fn SettingsPanel(tab: SettingsTab, on_change: EventHandler<()>) -> Element {
                 match prov {
                     Some(p) => {
                         match crate::db::model_fetch::refresh_and_save(
-                            &crate::db::get_db().lock().unwrap(),
+                            &crate::db::get_db().lock().expect("db lock poisoned"),
                             &p,
                             &key2,
                         )

@@ -232,20 +232,20 @@ impl AgentHandler {
     /// 从父 handler 继承运行时状态（agent_mode + action_mode）。
     /// 子 agent 创建后调用此方法，将父 handler 的状态同步过来。
     pub fn inherit_from(&mut self, parent: &AgentHandler) {
-        let mode = *parent.agent_mode.lock().unwrap();
-        *self.agent_mode.lock().unwrap() = mode;
-        let am = *parent.action_mode.read().unwrap();
-        *self.action_mode.write().unwrap() = am;
+        let mode = *parent.agent_mode.lock().expect("agent_mode lock poisoned");
+        *self.agent_mode.lock().expect("agent_mode lock poisoned") = mode;
+        let am = *parent.action_mode.read().expect("action_mode lock poisoned");
+        *self.action_mode.write().expect("action_mode lock poisoned") = am;
     }
 
     /// 读取当前 action_mode。
     pub fn action_mode(&self) -> ActionMode {
-        *self.action_mode.read().unwrap()
+        *self.action_mode.read().expect("action_mode lock poisoned")
     }
 
     /// 设置 action_mode（前端/测试使用）。
     pub fn set_action_mode(&self, mode: ActionMode) {
-        *self.action_mode.write().unwrap() = mode;
+        *self.action_mode.write().expect("action_mode lock poisoned") = mode;
     }
 
     /// 创建默认的 AgentHandler（用于测试）。
@@ -258,8 +258,8 @@ impl AgentHandler {
     }
 
     pub fn current_plan_state(&self) -> Option<CurrentPlanState> {
-        let guard = self.current_plan.lock().unwrap().clone();
-        let action_mode_guard = self.action_mode.read().unwrap();
+        let guard = self.current_plan.lock().expect("current_plan lock poisoned").clone();
+        let action_mode_guard = self.action_mode.read().expect("action_mode lock poisoned");
         if guard.is_none() && *action_mode_guard == ActionMode::Regular {
             return None;
         }
@@ -301,7 +301,7 @@ impl AgentHandler {
     pub fn approve_plan(&self, project_id: &str, conversation_id: &str) -> Result<(), String> {
         let plan_clone;
         {
-            let mut guard = self.current_plan.lock().unwrap();
+            let mut guard = self.current_plan.lock().expect("current_plan lock poisoned");
             let plan = match guard.as_mut() {
                 Some(p) => p,
                 None => return Err("no active plan to approve".to_string()),
@@ -325,7 +325,7 @@ impl AgentHandler {
             plan_clone = plan.clone();
 
             // 切换 action_mode
-            *self.action_mode.write().unwrap() = ActionMode::Regular;
+            *self.action_mode.write().expect("action_mode lock poisoned") = ActionMode::Regular;
         }
 
         // ── 写入数据库（此时才真正入库）──
@@ -383,7 +383,7 @@ impl AgentHandler {
 
     /// 拒绝当前计划：清除内存中的 current_plan（不入库）。
     pub fn reject_plan(&self) -> Result<(), String> {
-        let guard = self.current_plan.lock().unwrap();
+        let guard = self.current_plan.lock().expect("current_plan lock poisoned");
         if guard.is_none() {
             return Err("no active plan to reject".to_string());
         }

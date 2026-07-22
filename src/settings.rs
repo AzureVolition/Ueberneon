@@ -106,12 +106,12 @@ fn save_inner(s: &AppSettings) -> Result<(), String> {
 
 /// 获取当前设置的克隆
 pub fn get() -> AppSettings {
-    global().lock().unwrap().clone()
+    global().lock().expect("settings lock poisoned").clone()
 }
 
 /// 更新设置（传入闭包修改），自动持久化
 pub fn update(f: impl FnOnce(&mut AppSettings)) {
-    let mut guard = global().lock().unwrap();
+    let mut guard = global().lock().expect("settings lock poisoned");
     f(&mut guard);
     let cloned = guard.clone();
     drop(guard);
@@ -122,6 +122,6 @@ pub fn update(f: impl FnOnce(&mut AppSettings)) {
 
 /// 获取当前设置的引用（临时读锁）
 pub fn with<T>(f: impl FnOnce(&AppSettings) -> T) -> T {
-    let guard = global().lock().unwrap();
+    let guard = global().lock().expect("settings lock poisoned");
     f(&guard)
 }

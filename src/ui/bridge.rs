@@ -63,12 +63,12 @@ pub async fn run_agent_loop(ctx: BridgeContext) {
         .remove(&conversation_id)
         .expect("agent must be in cache before run_agent_loop");
     agent.handler.set_action_mode(action_mode);
-    *agent.handler.agent_mode.lock().unwrap() = agent_mode_val;
+    *agent.handler.agent_mode.lock().expect("agent_mode lock poisoned") = agent_mode_val;
 
     // Agent 内部创建流式状态
     let streaming = agent.create_streaming();
     runtimes.write().entry(conversation_id.clone()).or_default().messages.push(streaming.clone());
-    streaming_states.lock().unwrap().insert(conversation_id.clone(), streaming.clone());
+    streaming_states.lock().expect("streaming_states lock poisoned").insert(conversation_id.clone(), streaming.clone());
 
 
     // Agent 通过 result_cell 传回结果（避免 tokio::spawn 中访问 Signal）
@@ -77,7 +77,7 @@ pub async fn run_agent_loop(ctx: BridgeContext) {
 
     tokio::spawn(async move {
         let result = agent.accept_message(user_input, cancel_token).await;
-        *result_cell2.lock().unwrap() = Some((agent, result));
+        *result_cell2.lock().expect("result_cell2 lock poisoned") = Some((agent, result));
     });
 
     // 主循环：轮询 version 更新 tick_signal，检查 Agent 是否完成
@@ -101,7 +101,7 @@ pub async fn run_agent_loop(ctx: BridgeContext) {
             runtimes.write().entry(conversation_id.clone()).or_default().tick = v;
         }
 
-        if let Some((ag, result)) = result_cell.lock().unwrap().take() {
+        if let Some((ag, result)) = result_cell.lock().expect("result_cell lock poisoned").take() {
             match result {
                 Ok(ui_msg) => {
                     // 替换 Streaming → Static
@@ -136,7 +136,7 @@ pub async fn run_agent_loop(ctx: BridgeContext) {
             is_streaming.set(false);
             streaming_project_id.write().retain(|id| id != &project_id);
             
-            streaming_states.lock().unwrap().remove(&conversation_id);
+            streaming_states.lock().expect("streaming_states lock poisoned").remove(&conversation_id);
             crate::agent::manager::AgentManager::get()
                 .register(ag);
             return;

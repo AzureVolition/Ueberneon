@@ -42,7 +42,7 @@ pub async fn stream_with_reconnect(
         if err.is_none() {
             return; // 正常结束
         }
-        let err = err.unwrap();
+        let err = err.expect("err should be Some after is_none check");
 
         if !emitted && attempt < MAX_STREAM_RECONNECTS {
             // 还没发出任何 token，重放整个请求

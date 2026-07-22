@@ -142,11 +142,11 @@ fn persist_step(
 #[async_trait::async_trait]
 impl Tool for CreatePlan {
     async fn execute(&self, ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
-        let project_id = ctx
+        let _project_id = ctx
             .project_id
             .as_deref()
             .ok_or_else(|| "missing project_id in context".to_string())?;
-        let conversation_id = &ctx.main_conversation_id;
+        let _conversation_id = &ctx.main_conversation_id;
         let plan_val = args
             .get("plan")
             .ok_or_else(|| "missing 'plan'".to_string())?;
@@ -163,7 +163,7 @@ impl Tool for CreatePlan {
 
         // ── 存入运行时 handler（不入库，审批通过后才入库）──
         {
-            let mut guard = ctx.handler.current_plan.lock().unwrap();
+            let mut guard = ctx.handler.current_plan.lock().expect("current_plan lock poisoned");
             *guard = Some(plan.clone());
         }
 

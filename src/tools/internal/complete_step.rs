@@ -145,7 +145,7 @@ impl Tool for CompleteStep {
         let all_done: bool;
         let next_step: Option<(u8, String)>;
         {
-            let mut guard = ctx.handler.current_plan.lock().unwrap();
+            let mut guard = ctx.handler.current_plan.lock().expect("current_plan lock poisoned");
             let plan = match guard.as_mut() {
                 Some(p) => p,
                 None => return Err("no active plan to complete step".to_string()),

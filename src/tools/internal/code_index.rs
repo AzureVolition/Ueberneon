@@ -11,8 +11,58 @@ use crate::agent::{Tool, AgentHandler, ToolContext, ToolResult};
 use crate::agent::{AgentMode, ActionMode, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
 use regex::Regex;
+use std::sync::LazyLock;
 use serde_json::Value;
 use crate::tools::internal::common::checkable_tool::CheckableTool;
+// ── Lazy-compiled regexes (compiled once, reused across calls) ──────────
+
+macro_rules! lazy_regex {
+    ($name:ident, $pat:literal) => {
+        static $name: LazyLock<Regex> = LazyLock::new(|| Regex::new($pat).expect("invalid hardcoded regex"));
+    };
+}
+
+// Common
+lazy_regex!(RE_LEADING_WS, r"^\s*");
+lazy_regex!(RE_TRAILING, r"\s*$");
+
+// Rust
+lazy_regex!(RUST_RE_FN, r"^\s*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)");
+lazy_regex!(RUST_RE_ITEM, r"^\s*(?:pub\s+)?(struct|enum|trait|union|type|mod)\s+(\w+)");
+lazy_regex!(RUST_RE_IMPL, r"^\s*(?:pub\s+)?(?:unsafe\s+)?impl\s*(?:<[^>]+>)?\s+(\w+(?:\s+for\s+\w+)?)");
+lazy_regex!(RUST_RE_CONST, r"^\s*(?:pub\s+)?const\s+(\w+)");
+lazy_regex!(RUST_RE_MACRO, r"^\s*macro_rules!\s*(\w+)");
+
+// Python
+lazy_regex!(PY_RE_CLASS, r"^\s*class\s+(\w+)");
+lazy_regex!(PY_RE_FN, r"^\s*(?:async\s+)?def\s+(\w+)");
+
+// JS/TS
+lazy_regex!(JS_RE_FN, r"^\s*(?:export\s+)?(?:async\s+)?function\s+(\w+)");
+lazy_regex!(JS_RE_CLASS, r"^\s*(?:export\s+)?(?:abstract\s+)?class\s+(\w+)");
+lazy_regex!(JS_RE_INTERFACE, r"^\s*(?:export\s+)?interface\s+(\w+)");
+lazy_regex!(JS_RE_TYPE, r"^\s*(?:export\s+)?type\s+(\w+)");
+lazy_regex!(JS_RE_ENUM, r"^\s*(?:export\s+)?enum\s+(\w+)");
+lazy_regex!(JS_RE_CONST, r"^\s*(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=");
+
+// Go
+lazy_regex!(GO_RE_FUNC, r"^\s*func\s+(?:\([^)]*\)\s+)?(\w+)");
+lazy_regex!(GO_RE_TYPE, r"^\s*type\s+(\w+)\s+(struct|interface)");
+
+// Java
+lazy_regex!(JAVA_RE_CLASS, r"^\s*(?:public\s+|private\s+|protected\s+)?(?:abstract\s+|final\s+)?(?:class|interface|enum|record)\s+(\w+)");
+
+// C/C++
+lazy_regex!(CPP_RE_CLASS, r"^\s*(?:class|struct|enum)\s+(\w+)");
+
+// C#
+lazy_regex!(CS_RE_TYPE, r"^\s*(?:public|private|protected|internal|static|abstract|sealed|readonly|partial\s+)*(?:class|interface|struct|enum|record)\s+(\w+)");
+
+// Kotlin
+lazy_regex!(KT_RE_FUN, r"^\s*(?:public|private|protected|internal|override|suspend|inline|tailrec|operator|infix)\s+*(?:fun\s+)(\w+)");
+lazy_regex!(KT_RE_CLASS, r"^\s*(?:public|private|protected|internal|data|sealed|open|abstract)\s+*(?:class|interface|object|enum)\s+(\w+)");
+
+
 use crate::permission::Decision;
 
 /// code_index — 提取源文件中的符号定义。
@@ -138,8 +188,8 @@ impl CodeIndex {
         let file_path = path.to_string_lossy().to_string();
 
         // 准备通用正则
-        let re_leading_ws = Regex::new(r"^\s*").unwrap();
-        let re_trailing = Regex::new(r"\s*$").unwrap();
+        let re_leading_ws = &RE_LEADING_WS;
+        let re_trailing = &RE_TRAILING;
 
         (lang.parser)(&file_path, &content, &re_leading_ws, &re_trailing)
     }
@@ -151,11 +201,11 @@ fn parse_rust(file: &str, content: &str, _: &Regex, _: &Regex) -> Vec<CodeSymbol
     let mut symbols = Vec::new();
     let lines: Vec<&str> = content.lines().collect();
 
-    let re_fn = Regex::new(r"^\s*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)").unwrap();
-    let re_item = Regex::new(r"^\s*(?:pub\s+)?(struct|enum|trait|union|type|mod)\s+(\w+)").unwrap();
-    let re_impl = Regex::new(r"^\s*(?:pub\s+)?(?:unsafe\s+)?impl\s*(?:<[^>]+>)?\s+(\w+(?:\s+for\s+\w+)?)").unwrap();
-    let re_const = Regex::new(r"^\s*(?:pub\s+)?const\s+(\w+)").unwrap();
-    let re_macro = Regex::new(r"^\s*macro_rules!\s*(\w+)").unwrap();
+    let re_fn = &RUST_RE_FN;
+    let re_item = &RUST_RE_ITEM;
+    let re_impl = &RUST_RE_IMPL;
+    let re_const = &RUST_RE_CONST;
+    let re_macro = &RUST_RE_MACRO;
 
     for (i, line) in lines.iter().enumerate() {
         let line_num = i + 1;
@@ -203,8 +253,8 @@ fn parse_python(file: &str, content: &str, _: &Regex, _: &Regex) -> Vec<CodeSymb
     let mut symbols = Vec::new();
     let lines: Vec<&str> = content.lines().collect();
 
-    let re_class = Regex::new(r"^\s*class\s+(\w+)").unwrap();
-    let re_fn = Regex::new(r"^\s*(?:async\s+)?def\s+(\w+)").unwrap();
+    let re_class = &PY_RE_CLASS;
+    let re_fn = &PY_RE_FN;
 
     for (i, line) in lines.iter().enumerate() {
         if let Some(cap) = re_fn.captures(line) {
@@ -231,12 +281,12 @@ fn parse_jsts(file: &str, content: &str, _: &Regex, _: &Regex) -> Vec<CodeSymbol
     let mut symbols = Vec::new();
     let lines: Vec<&str> = content.lines().collect();
 
-    let re_fn = Regex::new(r"^\s*(?:export\s+)?(?:async\s+)?function\s+(\w+)").unwrap();
-    let re_class = Regex::new(r"^\s*(?:export\s+)?(?:abstract\s+)?class\s+(\w+)").unwrap();
-    let re_interface = Regex::new(r"^\s*(?:export\s+)?interface\s+(\w+)").unwrap();
-    let re_type = Regex::new(r"^\s*(?:export\s+)?type\s+(\w+)").unwrap();
-    let re_enum = Regex::new(r"^\s*(?:export\s+)?enum\s+(\w+)").unwrap();
-    let re_const = Regex::new(r"^\s*(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=").unwrap();
+    let re_fn = &JS_RE_FN;
+    let re_class = &JS_RE_CLASS;
+    let re_interface = &JS_RE_INTERFACE;
+    let re_type = &JS_RE_TYPE;
+    let re_enum = &JS_RE_ENUM;
+    let re_const = &JS_RE_CONST;
 
     for (i, line) in lines.iter().enumerate() {
         if let Some(cap) = re_fn.captures(line) {
@@ -287,8 +337,8 @@ fn parse_go(file: &str, content: &str, _: &Regex, _: &Regex) -> Vec<CodeSymbol> 
     let mut symbols = Vec::new();
     let lines: Vec<&str> = content.lines().collect();
 
-    let re_func = Regex::new(r"^\s*func\s+(?:\([^)]*\)\s+)?(\w+)").unwrap();
-    let re_type = Regex::new(r"^\s*type\s+(\w+)\s+(struct|interface)").unwrap();
+    let re_func = &GO_RE_FUNC;
+    let re_type = &GO_RE_TYPE;
 
     for (i, line) in lines.iter().enumerate() {
         if let Some(cap) = re_func.captures(line) {
@@ -315,7 +365,7 @@ fn parse_java(file: &str, content: &str, _: &Regex, _: &Regex) -> Vec<CodeSymbol
     let mut symbols = Vec::new();
     let lines: Vec<&str> = content.lines().collect();
 
-    let re_class = Regex::new(r"^\s*(?:public\s+|private\s+|protected\s+)?(?:abstract\s+|final\s+)?(?:class|interface|enum|record)\s+(\w+)").unwrap();
+    let re_class = &JAVA_RE_CLASS;
 
     for (i, line) in lines.iter().enumerate() {
         if let Some(cap) = re_class.captures(line) {
@@ -336,7 +386,7 @@ fn parse_c_cpp(file: &str, content: &str, _: &Regex, _: &Regex) -> Vec<CodeSymbo
     let mut symbols = Vec::new();
     let lines: Vec<&str> = content.lines().collect();
 
-    let re_class = Regex::new(r"^\s*(?:class|struct|enum)\s+(\w+)").unwrap();
+    let re_class = &CPP_RE_CLASS;
 
     for (i, line) in lines.iter().enumerate() {
         if let Some(cap) = re_class.captures(line) {
@@ -358,7 +408,7 @@ fn parse_csharp(file: &str, content: &str, _: &Regex, _: &Regex) -> Vec<CodeSymb
     let mut symbols = Vec::new();
     let lines: Vec<&str> = content.lines().collect();
 
-    let re_type = Regex::new(r"^\s*(?:public|private|protected|internal|static|abstract|sealed|readonly|partial\s+)*(?:class|interface|struct|enum|record)\s+(\w+)").unwrap();
+    let re_type = &CS_RE_TYPE;
 
     for (i, line) in lines.iter().enumerate() {
         if let Some(cap) = re_type.captures(line) {
@@ -382,8 +432,8 @@ fn parse_kotlin(file: &str, content: &str, _: &Regex, _: &Regex) -> Vec<CodeSymb
     let mut symbols = Vec::new();
     let lines: Vec<&str> = content.lines().collect();
 
-    let re_fun = Regex::new(r"^\s*(?:public|private|protected|internal|override|suspend|inline|tailrec|operator|infix)\s+*(?:fun\s+)(\w+)").unwrap();
-    let re_class = Regex::new(r"^\s*(?:public|private|protected|internal|data|sealed|open|abstract)\s+*(?:class|interface|object|enum)\s+(\w+)").unwrap();
+    let re_fun = &KT_RE_FUN;
+    let re_class = &KT_RE_CLASS;
 
     for (i, line) in lines.iter().enumerate() {
         if let Some(cap) = re_fun.captures(line) {

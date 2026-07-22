@@ -40,7 +40,7 @@ impl SnapshotStore {
     ///
     /// 返回 `true` 表示这是该文件在本 turn 的首次快照。
     pub fn snapshot(&self, path: &str, content: &str, turn: usize) -> bool {
-        let mut snaps = self.snapshots.write().unwrap();
+        let mut snaps = self.snapshots.write().expect("snapshots lock poisoned");
         if snaps.contains_key(path) {
             false
         } else {
@@ -53,7 +53,7 @@ impl SnapshotStore {
     ///
     /// 返回需要恢复的文件列表：(path, original_content)。
     pub fn restore_up_to(&self, turn: usize) -> Vec<(String, String)> {
-        let snaps = self.snapshots.read().unwrap();
+        let snaps = self.snapshots.read().expect("snapshots lock poisoned");
         snaps
             .iter()
             .filter(|(_, v)| v.0 <= turn)
@@ -63,12 +63,12 @@ impl SnapshotStore {
 
     /// 获取某个文件的快照。
     pub fn get_snapshot(&self, path: &str) -> Option<(usize, String)> {
-        self.snapshots.read().unwrap().get(path).cloned()
+        self.snapshots.read().expect("snapshots lock poisoned").get(path).cloned()
     }
 
     /// 获取所有快照的数量。
     pub fn len(&self) -> usize {
-        self.snapshots.read().unwrap().len()
+        self.snapshots.read().expect("snapshots lock poisoned").len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -77,7 +77,7 @@ impl SnapshotStore {
 
     /// 清空所有快照。
     pub fn clear(&self) {
-        self.snapshots.write().unwrap().clear();
+        self.snapshots.write().expect("snapshots lock poisoned").clear();
     }
 }
 

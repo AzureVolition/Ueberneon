@@ -59,7 +59,7 @@ impl FileObserveTracker {
 
     /// 记录一次文件观察（由 read_file 在成功读取后调用）。
     pub fn observe(&self, path: &str, content: &str) {
-        let mut observed = self.observed.write().unwrap();
+        let mut observed = self.observed.write().expect("observed lock poisoned");
         observed.insert(path.to_string(), Self::content_hash(content));
     }
 
@@ -69,7 +69,7 @@ impl FileObserveTracker {
     /// - `Ok(())` — 内容一致或文件从未被观察过（首次编辑允许通过）
     /// - `Err(msg)` — 内容已变更，返回建议重新读取的错误信息
     pub fn check_anchor(&self, path: &str, content: &str) -> Result<(), String> {
-        let observed = self.observed.read().unwrap();
+        let observed = self.observed.read().expect("observed lock poisoned");
         let current_hash = Self::content_hash(content);
 
         match observed.get(path) {
@@ -89,13 +89,13 @@ impl FileObserveTracker {
     ///
     /// 这使后续的编辑操作能够基于新内容继续，而不需要重新读取。
     pub fn record_write(&self, path: &str, content: &str) {
-        let mut observed = self.observed.write().unwrap();
+        let mut observed = self.observed.write().expect("observed lock poisoned");
         observed.insert(path.to_string(), Self::content_hash(content));
     }
 
     /// 清除文件的观察记录（用于测试或重置）。
     pub fn forget(&self, path: &str) {
-        let mut observed = self.observed.write().unwrap();
+        let mut observed = self.observed.write().expect("observed lock poisoned");
         observed.remove(path);
     }
 
@@ -108,7 +108,7 @@ impl FileObserveTracker {
     /// - `Err(msg)` — 重复编辑，阻止并提示
     pub fn check_loop(&self, path: &str, old_string: &str, new_string: &str) -> Result<(), String> {
         let sig = Self::edit_signature(path, old_string, new_string);
-        let set = self.edit_set.read().unwrap();
+        let set = self.edit_set.read().expect("edit_set lock poisoned");
         if set.contains(&sig) {
             return Err(format!(
                 "this exact edit was already applied to `{}` — it is a no-op.\n\
@@ -126,8 +126,8 @@ impl FileObserveTracker {
     pub fn record_edit(&self, path: &str, old_string: &str, new_string: &str) {
         let sig = Self::edit_signature(path, old_string, new_string);
 
-        let mut history = self.edit_history.write().unwrap();
-        let mut set = self.edit_set.write().unwrap();
+        let mut history = self.edit_history.write().expect("edit_history lock poisoned");
+        let mut set = self.edit_set.write().expect("edit_set lock poisoned");
 
         // 如果已达上限，淘汰最旧的
         if history.len() >= MAX_EDIT_HISTORY {
@@ -146,19 +146,19 @@ impl FileObserveTracker {
 
     /// 返回当前观察的文件数量。
     pub fn observed_count(&self) -> usize {
-        self.observed.read().unwrap().len()
+        self.observed.read().expect("observed lock poisoned").len()
     }
 
     /// 返回已记录的编辑历史数量。
     pub fn edit_history_count(&self) -> usize {
-        self.edit_history.read().unwrap().len()
+        self.edit_history.read().expect("edit_history lock poisoned").len()
     }
 
     /// 清空所有状态（测试用）。
     pub fn clear(&self) {
-        self.observed.write().unwrap().clear();
-        self.edit_history.write().unwrap().clear();
-        self.edit_set.write().unwrap().clear();
+        self.observed.write().expect("observed lock poisoned").clear();
+        self.edit_history.write().expect("edit_history lock poisoned").clear();
+        self.edit_set.write().expect("edit_set lock poisoned").clear();
     }
 }
 

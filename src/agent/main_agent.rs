@@ -207,7 +207,7 @@ impl Agent {
 
                     // push tool record + ToolCall marker
                     {
-                        let mut tcs = tool_calls_arc.lock().unwrap();
+                        let mut tcs = tool_calls_arc.lock().expect("tool_calls_arc lock poisoned");
                         tcs.push(ToolCallRecord {
                             tool_name: tool_name.clone(), args: args.clone(),
                             result: None, status: ToolCallStatus::Running, approval_reason: None,
@@ -233,7 +233,7 @@ impl Agent {
                         Decision::Ask => {
                             let reason = format!("{} needs approval", tool_name);
                             {
-                                let mut tcs = tool_calls_arc.lock().unwrap();
+                                let mut tcs = tool_calls_arc.lock().expect("tool_calls_arc lock poisoned");
                                 if let Some(rec) = tcs.iter_mut().rev().find(|tc| tc.tool_name == tool_name && tc.status == ToolCallStatus::Running) {
                                     rec.status = ToolCallStatus::AwaitingApproval { reason: reason.clone() };
                                     rec.approval_reason = Some(reason.clone());
@@ -242,7 +242,7 @@ impl Agent {
                             push_tool_marker(&segments_arc, &version_arc);
 
                             let (atx, arx) = tokio::sync::oneshot::channel();
-                            *approval_arc.lock().unwrap() = Some(atx);
+                            *approval_arc.lock().expect("approval_arc lock poisoned") = Some(atx);
 
                             let approval = tokio::select! {
                                 _ = cancel_token.cancelled() => {
@@ -256,14 +256,14 @@ impl Agent {
                                 Some(true) => {
                                     // 立即更新状态为 Running，让 UI 及时响应
                                     {
-                                        let mut tcs = tool_calls_arc.lock().unwrap();
+                                        let mut tcs = tool_calls_arc.lock().expect("tool_calls_arc lock poisoned");
                                         if let Some(rec) = tcs.iter_mut().rev().find(|tc| {
                                             tc.tool_name == tool_name && matches!(tc.status, ToolCallStatus::AwaitingApproval { .. })
                                         }) {
                                             rec.status = ToolCallStatus::Running;
                                         }
                                     }
-                                    *approval_arc.lock().unwrap() = None;
+                                    *approval_arc.lock().expect("approval_arc lock poisoned") = None;
                                     inc_version_atomic(&version_arc);
                                     let exec = tool.execute(&ctx, &args);
                                     tokio::pin!(exec);
@@ -284,7 +284,7 @@ impl Agent {
 
                     // 更新 tool record 状态
                     {
-                        let mut tcs = tool_calls_arc.lock().unwrap();
+                        let mut tcs = tool_calls_arc.lock().expect("tool_calls_arc lock poisoned");
                         if let Some(rec) = tcs.iter_mut().rev().find(|tc| {
                             tc.tool_name == tool_name
                                 && (tc.status == ToolCallStatus::Running || matches!(tc.status, ToolCallStatus::AwaitingApproval { .. }))
@@ -299,7 +299,7 @@ impl Agent {
                             };
                         }
                     }
-                    *approval_arc.lock().unwrap() = None;
+                    *approval_arc.lock().expect("approval_arc lock poisoned") = None;
                     inc_version_atomic(&version_arc);
 
                     self.hook_register.emit(&AgentEvent::PostToolUse { tool_name: tool_name.clone(), result: result.clone() });
@@ -318,7 +318,7 @@ impl Agent {
 
             // ── stall_count 计数与催促 ──
             {
-                let mut plan_guard = self.handler.current_plan.lock().unwrap();
+                let mut plan_guard = self.handler.current_plan.lock().expect("current_plan lock poisoned");
                 if let Some(ref mut plan) = *plan_guard {
                     let completed_this_round = pending_tool_calls.iter().any(|tc| tc.name == "CompleteStep");
                     if completed_this_round {
@@ -354,8 +354,8 @@ impl Agent {
         self.hook_register.emit(&AgentEvent::Stop { reason: if cancelled { "cancelled" } else { "completed" }.into() });
 
         // ── 构建 Static 消息 ──
-        let segments_snapshot = segments_arc.lock().unwrap().clone();
-        let tool_records_snapshot = tool_calls_arc.lock().unwrap().clone();
+        let segments_snapshot = segments_arc.lock().expect("segments_arc lock poisoned").clone();
+        let tool_records_snapshot = tool_calls_arc.lock().expect("tool_calls_arc lock poisoned").clone();
 
         let content = build_content_from_segments(&segments_snapshot);
         let content = if content.is_empty() { _final_output.clone() } else { content };
@@ -403,7 +403,7 @@ fn inc_version_atomic(version: &Arc<AtomicU64>) {
 }
 
 fn push_text(segments: &Arc<Mutex<Vec<StreamSegment>>>, text: &str, version: &Arc<AtomicU64>) {
-    let mut segs = segments.lock().unwrap();
+    let mut segs = segments.lock().expect("segments lock poisoned");
     match segs.last_mut() {
         Some(StreamSegment::Text(t)) => t.push_str(text),
         _ => segs.push(StreamSegment::Text(text.to_string())),
@@ -413,7 +413,7 @@ fn push_text(segments: &Arc<Mutex<Vec<StreamSegment>>>, text: &str, version: &Ar
 }
 
 fn push_reasoning(segments: &Arc<Mutex<Vec<StreamSegment>>>, text: &str, version: &Arc<AtomicU64>) {
-    let mut segs = segments.lock().unwrap();
+    let mut segs = segments.lock().expect("segments lock poisoned");
     match segs.last_mut() {
         Some(StreamSegment::Reasoning(t)) => t.push_str(text),
         _ => segs.push(StreamSegment::Reasoning(text.to_string())),
@@ -423,7 +423,7 @@ fn push_reasoning(segments: &Arc<Mutex<Vec<StreamSegment>>>, text: &str, version
 }
 
 fn push_tool_marker(segments: &Arc<Mutex<Vec<StreamSegment>>>, version: &Arc<AtomicU64>) {
-    segments.lock().unwrap().push(StreamSegment::ToolCall);
+    segments.lock().expect("segments lock poisoned").push(StreamSegment::ToolCall);
     inc_version_atomic(version);
 }
 

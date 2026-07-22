@@ -42,7 +42,7 @@ impl Registry {
     /// 插入（或替换）一个工具。保持首次插入顺序。
     /// Schema 在此处规范化并缓存，后续 schemas() 直接返回缓存。
     pub fn add(&self, tool: Box<dyn CheckableTool>) {
-        let mut inner = self.tools.write().unwrap();
+        let mut inner = self.tools.write().expect("tools lock poisoned");
         let name = tool.name().to_string();
 
         if !inner.map.contains_key(&name) {
@@ -60,7 +60,7 @@ impl Registry {
     /// 用于 MCP 服务器断开时清理 `mcp__<server>__*`。
     /// 返回删除数量。
     pub fn remove_prefix(&self, prefix: &str) -> usize {
-        let mut inner = self.tools.write().unwrap();
+        let mut inner = self.tools.write().expect("tools lock poisoned");
 
         let to_remove: Vec<String> = inner.order.iter()
             .filter(|name| name.starts_with(prefix))
@@ -81,12 +81,12 @@ impl Registry {
 
     /// 按名查找工具。
     pub fn get(&self, name: &str) -> Option<Arc<dyn CheckableTool + Send + Sync>> {
-        self.tools.read().unwrap().map.get(name).cloned()
+        self.tools.read().expect("tools lock poisoned").map.get(name).cloned()
     }
 
     /// 已注册工具数量。
     pub fn len(&self) -> usize {
-        self.tools.read().unwrap().order.len()
+        self.tools.read().expect("tools lock poisoned").order.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -95,13 +95,13 @@ impl Registry {
 
     /// 返回工具名列表（插入顺序）。
     pub fn names(&self) -> Vec<String> {
-        self.tools.read().unwrap().order.clone()
+        self.tools.read().expect("tools lock poisoned").order.clone()
     }
 
     /// 返回工具 Schema 列表（按名字母序排序）。
     /// 排序保证相同的工具集产生完全相同的字节序列 → LLM prefix cache 命中。
     pub fn schemas(&self) -> Vec<ToolSchema> {
-        let inner = self.tools.read().unwrap();
+        let inner = self.tools.read().expect("tools lock poisoned");
 
         let mut names: Vec<&String> = inner.order.iter().collect();
         names.sort();

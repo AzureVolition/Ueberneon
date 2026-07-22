@@ -32,7 +32,7 @@ pub struct JobHandle {
 impl JobHandle {
     /// 读取自上次调用以来的新输出。
     pub fn read_new_output(&self) -> String {
-        let buf = self.output_buf.lock().unwrap();
+        let buf = self.output_buf.lock().expect("output_buf lock poisoned");
         let prev = self.read_offset.swap(buf.len(), Ordering::SeqCst);
         if prev >= buf.len() {
             return String::new();
@@ -44,7 +44,7 @@ impl JobHandle {
     /// 终止后台任务（先 SIGTERM，后 SIGKILL）。
     pub async fn kill(&self) {
         // take 出子进程，释放 MutexGuard 后再做 async 操作
-        let child = { self.child.lock().unwrap().take() };
+        let child = { self.child.lock().expect("child lock poisoned").take() };
 
         if let Some(mut child) = child {
             let pid = child.id().unwrap_or(0);
@@ -128,7 +128,7 @@ impl JobManager {
                     exit_code: AtomicUsize::new(usize::MAX),
                     started_at: Instant::now(),
                 });
-                self.jobs.write().unwrap().insert(job_id.clone(), handle);
+                self.jobs.write().expect("jobs lock poisoned").insert(job_id.clone(), handle);
                 return job_id;
             }
         };
@@ -163,17 +163,17 @@ impl JobManager {
 
     /// 获取 job handle。
     pub fn get(&self, job_id: &str) -> Option<Arc<JobHandle>> {
-        self.jobs.read().unwrap().get(job_id).cloned()
+        self.jobs.read().expect("jobs lock poisoned").get(job_id).cloned()
     }
 
     /// 列出所有活跃的 job ID。
     pub fn list_ids(&self) -> Vec<String> {
-        self.jobs.read().unwrap().keys().cloned().collect()
+        self.jobs.read().expect("jobs lock poisoned").keys().cloned().collect()
     }
 
     /// 清理已完成的 job（调用 kill 后或进程自然退出后）。
     pub fn reap(&self) -> usize {
-        let mut jobs = self.jobs.write().unwrap();
+        let mut jobs = self.jobs.write().expect("jobs lock poisoned");
         let before = jobs.len();
         jobs.retain(|_, h| !h.finished.load(Ordering::SeqCst));
         before - jobs.len()
@@ -204,7 +204,7 @@ impl JobManager {
                     }
                     Ok(n) => {
                         if n > 0 {
-                            let mut buf = handle.output_buf.lock().unwrap();
+                            let mut buf = handle.output_buf.lock().expect("output_buf lock poisoned");
                             buf.extend_from_slice(&out_buf[..n]);
                             did_read = true;
                         }
@@ -224,7 +224,7 @@ impl JobManager {
                     }
                     Ok(n) => {
                         if n > 0 {
-                            let mut buf = handle.output_buf.lock().unwrap();
+                            let mut buf = handle.output_buf.lock().expect("output_buf lock poisoned");
                             buf.extend_from_slice(&err_buf[..n]);
                             did_read = true;
                         }
@@ -248,7 +248,7 @@ impl JobManager {
 
         // 等待子进程真正退出，记录 exit_code
         // take 出子进程，释放 MutexGuard 后再 await
-        let child = { handle.child.lock().unwrap().take() };
+        let child = { handle.child.lock().expect("child lock poisoned").take() };
         if let Some(mut child) = child {
             match child.wait().await {
                 Ok(status) => {
