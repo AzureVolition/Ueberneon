@@ -31,7 +31,7 @@ fn load_agent_configs() -> Vec<crate::db::metadata::agent_config::AgentConfigRow
 
 
 /// 从 DB 加载指定对话的消息
-fn load_messages_from_db(conv_id: &str) -> Vec<ChatMessage> {
+fn load_messages_from_db(conv_id: &str, md_to_html: fn(&str) -> String) -> Vec<ChatMessage> {
     let msgs = crate::db::with_db(|conn| {
         crate::db::metadata::message::list_as_llm_messages(conn, conv_id).unwrap_or_default()
     });
@@ -40,11 +40,14 @@ fn load_messages_from_db(conv_id: &str) -> Vec<ChatMessage> {
     for m in &msgs {
         match m.role {
             llm::Role::User => {
+                let content = m.content.clone().unwrap_or_default();
+                let html = md_to_html(&content);
                 result.push(ChatMessage {
                     role: Role::User,
-                    content: m.content.clone().unwrap_or_default(),
+                    content,
                     timestamp: chrono::Local::now(),
                     tool_calls: vec![], reasoning: String::new(), segments: Vec::new(),
+                    content_html: html,
                 });
             }
             llm::Role::Assistant => {
@@ -81,6 +84,7 @@ fn load_messages_from_db(conv_id: &str) -> Vec<ChatMessage> {
                     if let Some(ref c) = m.content {
                         if !c.is_empty() {
                             prev.content = c.clone();
+                            prev.content_html = md_to_html(c);
                         }
                     }
                     if let Some(ref r) = m.reasoning_content {
@@ -89,13 +93,16 @@ fn load_messages_from_db(conv_id: &str) -> Vec<ChatMessage> {
                         }
                     }
                 } else {
+                    let content = m.content.clone().unwrap_or_default();
+                    let html = md_to_html(&content);
                     result.push(ChatMessage {
                         role: Role::Assistant,
-                        content: m.content.clone().unwrap_or_default(),
+                        content,
                         timestamp: chrono::Local::now(),
                         reasoning: m.reasoning_content.clone().unwrap_or_default(),
                         segments,
                         tool_calls,
+                        content_html: html,
                     });
                 }
             }
@@ -136,12 +143,13 @@ fn ensure_conv_loaded(
     conv_id: &str,
     mut runtimes: Signal<HashMap<String, ConversationRuntime>>,
     streaming_states: Arc<Mutex<HashMap<String, UiMessage>>>,
+    md_to_html: fn(&str) -> String,
 ) {
     if runtimes.read().contains_key(conv_id) {
         return;
     }
     let mut msgs: Vec<UiMessage> = {
-        load_messages_from_db(conv_id).into_iter().map(UiMessage::Static).collect()
+        load_messages_from_db(conv_id, md_to_html).into_iter().map(UiMessage::Static).collect()
     };
     if let Some(streaming) = streaming_states.lock().unwrap_or_else(|e| e.into_inner()).get(conv_id) {
         while msgs.last().map_or(false, |m| matches!(m, UiMessage::Static(cm) if cm.role == Role::Assistant)) {
@@ -252,7 +260,7 @@ pub fn App() -> Element {
                     }
                 }
 
-                ensure_conv_loaded(&first_id, runtimes, ss.clone());
+                ensure_conv_loaded(&first_id, runtimes, ss.clone(), markdown_to_html);
             }
         }
     };
@@ -327,7 +335,7 @@ pub fn App() -> Element {
             }
 
             // ── 首次进入：从 DB 加载 ──
-            ensure_conv_loaded(&conv_id, runtimes, ss.clone());
+            ensure_conv_loaded(&conv_id, runtimes, ss.clone(), markdown_to_html);
         }
     };
 
@@ -622,6 +630,7 @@ pub fn App() -> Element {
                                 content: input.clone(),
                                 timestamp: chrono::Local::now(),
                                 tool_calls: vec![], reasoning: String::new(), segments: Vec::new(),
+                                content_html: markdown_to_html(&input),
                             };
 
                             // 对话 ID

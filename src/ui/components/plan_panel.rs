@@ -4,9 +4,8 @@
 // floating overlay panel showing the 3-column kanban board.
 // Matching the Night Foundry design system (violet + cyan + pink).
 //
-// v2: supports recursive sub-tasks (ActionStep.children).
-//     when plan.status == NeedApproval, shows approve/reject buttons.
-//     on_approve / on_reject callbacks triggered from App component.
+// v4: sub-tasks nested inside parent cards (not separate cards).
+//     approval mode shows only top-level todo as horizontal chips.
 
 use dioxus::prelude::*;
 
@@ -30,13 +29,13 @@ pub fn PlanPanel(
         }
     };
 
-    // ── 递归收集所有步骤（含子步骤），返回 (step, depth) ──
-    let all_steps = collect_steps_recursive(&plan_data.steps, 0);
+    // ── 递归收集所有步骤（含子步骤），用于进度统计 ──
+    let all_steps = collect_all_steps(&plan_data.steps);
 
     let total = all_steps.len() as u32;
     let completed = all_steps
         .iter()
-        .filter(|(s, _)| matches!(s.status, StepStatus::Completed))
+        .filter(|s| matches!(s.status, StepStatus::Completed))
         .count() as u32;
     let progress_pct = if total > 0 {
         (completed as f64 / total as f64 * 100.0) as u32
@@ -44,24 +43,39 @@ pub fn PlanPanel(
         0
     };
 
-    let todo_steps: Vec<&(&ActionStep, u8)> = all_steps
+    // 顶层步骤分类
+    let top_todo: Vec<&ActionStep> = plan_data
+        .steps
         .iter()
-        .filter(|(s, _)| matches!(s.status, StepStatus::Pending))
+        .filter(|s| matches!(s.status, StepStatus::Pending))
         .collect();
-    let doing_steps: Vec<&(&ActionStep, u8)> = all_steps
+    let top_doing: Vec<&ActionStep> = plan_data
+        .steps
         .iter()
-        .filter(|(s, _)| matches!(s.status, StepStatus::InProgress))
+        .filter(|s| matches!(s.status, StepStatus::InProgress))
         .collect();
-    let done_steps: Vec<&(&ActionStep, u8)> = all_steps
+    let top_done: Vec<&ActionStep> = plan_data
+        .steps
         .iter()
-        .filter(|(s, _)| matches!(s.status, StepStatus::Completed | StepStatus::Failed))
+        .filter(|s| matches!(s.status, StepStatus::Completed | StepStatus::Failed))
         .collect();
 
-    let doing_count = doing_steps.len();
+    let doing_count = top_doing.len();
     let is_need_approval = matches!(plan_data.status, PlanStatus::NeedApproval);
 
+    // 审批摘要
+    let approval_summary = if is_need_approval {
+        let tops: Vec<&str> = plan_data
+            .steps
+            .iter()
+            .map(|s| s.description.as_str())
+            .collect();
+        format!("{} 个步骤待审批 — {}", tops.len(), tops.join(" · "))
+    } else {
+        String::new()
+    };
+
     if !*is_expanded.read() {
-        // ── Collapsed: floating toggle pill ──
         rsx! {
             button {
                 class: "plan-pill",
@@ -76,8 +90,7 @@ pub fn PlanPanel(
             }
         }
     } else {
-        // ── Expanded: floating overlay panel ──
-        let current_step = doing_steps.first().map(|(s, _)| s.description.as_str());
+        let current_step = top_doing.first().map(|s| s.description.as_str());
 
         let (status_label, status_mod) = match plan_data.status {
             PlanStatus::NeedApproval => ("need approval", "pending"),
@@ -90,25 +103,16 @@ pub fn PlanPanel(
                 let dur = chrono::Utc::now() - t;
                 let mins = dur.num_minutes();
                 let secs = dur.num_seconds() % 60;
-                if mins > 0 {
-                    format!("{mins}m {secs}s")
-                } else {
-                    format!("{secs}s")
-                }
+                if mins > 0 { format!("{mins}m {secs}s") } else { format!("{secs}s") }
             }
             None => "—".to_string(),
         };
 
         rsx! {
-            // Click-outside backdrop
-            div {
-                class: "plan-backdrop",
-                onclick: move |_| is_expanded.set(false),
-            }
+            div { class: "plan-backdrop", onclick: move |_| is_expanded.set(false) }
 
-            // Floating panel
             div { class: "plan-floating",
-                // ── Header row ──
+                // Header
                 div { class: "plan-floating-header",
                     span { class: "plan-floating-state plan-floating-state--{status_mod}", "plan {status_label}" }
                     span { class: "plan-floating-sep", "·" }
@@ -122,65 +126,54 @@ pub fn PlanPanel(
                     }
                 }
 
-                // ── Goal ──
                 p { class: "plan-floating-goal", "{plan_data.goal}" }
 
-                // ── Progress bar ──
+                // Progress
                 div { class: "plan-floating-progress",
                     div { class: "plan-floating-progress-track",
-                        div {
-                            class: "plan-floating-progress-fill",
-                            style: "width: {progress_pct}%",
-                        }
+                        div { class: "plan-floating-progress-fill", style: "width: {progress_pct}%" }
                     }
-                    span { class: "plan-floating-progress-label",
-                        "{completed}/{total} completed"
+                    span { class: "plan-floating-progress-label", "{completed}/{total} done" }
+                }
+
+                // Board
+                if is_need_approval {
+                    div { class: "plan-floating-chips",
+                        div { class: "plan-floating-chips-head", "to review ({top_todo.len()})" }
+                        {top_todo.iter().enumerate().map(|(i, s)| render_chip(s, i))}
+                    }
+                } else {
+                    div { class: "plan-floating-board",
+                        div { class: "plan-floating-col",
+                            div { class: "plan-floating-col-head plan-floating-col-head--done", "done ({top_done.len()})" }
+                            {top_done.iter().enumerate().map(|(i, s)| render_card(s, i))}
+                        }
+                        div { class: "plan-floating-col",
+                            div { class: "plan-floating-col-head plan-floating-col-head--doing", "doing ({top_doing.len()})" }
+                            {top_doing.iter().enumerate().map(|(i, s)| render_card(s, i))}
+                        }
+                        div { class: "plan-floating-col",
+                            div { class: "plan-floating-col-head plan-floating-col-head--todo", "todo ({top_todo.len()})" }
+                            {top_todo.iter().enumerate().map(|(i, s)| render_card(s, i))}
+                        }
                     }
                 }
 
-                // ── 3-column board ──
-                div { class: "plan-floating-board",
-                    // DONE column
-                    div { class: "plan-floating-col",
-                        div { class: "plan-floating-col-head plan-floating-col-head--done",
-                            "done ({done_steps.len()})"
-                        }
-                        {done_steps.iter().map(|(step, depth)| render_card(step, *depth))}
-                    }
-                    // DOING column
-                    div { class: "plan-floating-col",
-                        div { class: "plan-floating-col-head plan-floating-col-head--doing",
-                            "doing ({doing_steps.len()})"
-                        }
-                        {doing_steps.iter().map(|(step, depth)| render_card(step, *depth))}
-                    }
-                    // TODO column
-                    div { class: "plan-floating-col",
-                        div { class: "plan-floating-col-head plan-floating-col-head--todo",
-                            "todo ({todo_steps.len()})"
-                        }
-                        {todo_steps.iter().map(|(step, depth)| render_card(step, *depth))}
-                    }
-                }
-
-                // ── Status bar / Approval buttons ──
+                // Approval / Status
                 if is_need_approval {
                     div { class: "plan-floating-approval",
-                        button {
-                            class: "plan-approve-btn plan-approve-btn--accept",
-                            onclick: move |_| {
-                                on_approve.call(());
-                                is_expanded.set(false);
-                            },
-                            "✓ 通过审批"
-                        }
-                        button {
-                            class: "plan-approve-btn plan-approve-btn--reject",
-                            onclick: move |_| {
-                                on_reject.call(());
-                                is_expanded.set(false);
-                            },
-                            "✎ 输入修改意见"
+                        p { class: "plan-floating-approval-summary", "{approval_summary}" }
+                        div { class: "plan-floating-approval-actions",
+                            button {
+                                class: "plan-approve-btn plan-approve-btn--accept",
+                                onclick: move |_| { on_approve.call(()); is_expanded.set(false); },
+                                "✓ 通过审批"
+                            }
+                            button {
+                                class: "plan-approve-btn plan-approve-btn--reject",
+                                onclick: move |_| { on_reject.call(()); is_expanded.set(false); },
+                                "✎ 输入修改意见"
+                            }
                         }
                     }
                 } else {
@@ -203,22 +196,22 @@ pub fn PlanPanel(
     }
 }
 
-/// 递归收集所有步骤（含子步骤），返回带 depth 的扁平列表。
-fn collect_steps_recursive(steps: &[ActionStep], depth: u8) -> Vec<(&ActionStep, u8)> {
+/// 递归收集所有步骤（用于进度统计）。
+fn collect_all_steps(steps: &[ActionStep]) -> Vec<&ActionStep> {
     let mut result = Vec::new();
     for step in steps {
-        result.push((step, depth));
+        result.push(step);
         if let Some(children) = &step.children {
-            if !children.is_empty() {
-                result.extend(collect_steps_recursive(children, depth + 1));
-            }
+            result.extend(collect_all_steps(children));
         }
     }
     result
 }
 
-/// Render a single step card with optional depth indent.
-fn render_card(step: &ActionStep, depth: u8) -> Element {
+/// Kanban 卡片 —— 子任务嵌套在卡片内部。
+fn render_card(step: &ActionStep, index: usize) -> Element {
+    let num = (index + 1).to_string();
+
     let (status_class, dot_class) = match step.status {
         StepStatus::Pending => ("plan-card--pending", "plan-card-dot--pending"),
         StepStatus::InProgress => ("plan-card--doing", "plan-card-dot--doing"),
@@ -228,20 +221,90 @@ fn render_card(step: &ActionStep, depth: u8) -> Element {
     };
 
     let is_done = matches!(step.status, StepStatus::Completed);
-    let indent_px = depth.saturating_mul(16);
+    let has_children = step.children.as_ref().map_or(false, |c| !c.is_empty());
 
     rsx! {
-        div {
-            class: "plan-card {status_class}",
-            style: if indent_px > 0 { "margin-left: {indent_px}px; border-left: 1px solid var(--color-rule); padding-left: 8px;" },
+        div { class: "plan-card {status_class}",
             div { class: "plan-card-row",
                 span { class: "plan-card-dot {dot_class}" }
-                span { class: "plan-card-index", "{step.index}" }
+                span { class: "plan-card-index", "{num}" }
                 if is_done {
                     span { class: "plan-card-check", "✓" }
                 }
             }
             p { class: "plan-card-desc", "{step.description}" }
+
+            if has_children {
+                div { class: "plan-card-subs",
+                    {
+                        let children = step.children.as_ref().unwrap();
+                        children.iter().enumerate().map(|(ci, child)| {
+                            render_sub_step(child, &num, ci)
+                        })
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 卡片内的子步骤行。
+fn render_sub_step(step: &ActionStep, parent_num: &str, child_index: usize) -> Element {
+    let sub_num = format!("{}.{}", parent_num, child_index + 1);
+
+    let (dot_class, desc_class) = match step.status {
+        StepStatus::Completed => ("plan-sub-dot--done", "plan-sub-desc--done"),
+        StepStatus::InProgress => ("plan-sub-dot--doing", ""),
+        _ => ("plan-sub-dot--pending", ""),
+    };
+
+    rsx! {
+        div { class: "plan-card-sub",
+            span { class: "plan-sub-dot {dot_class}" }
+            span { class: "plan-sub-index", "{sub_num}" }
+            span { class: "plan-sub-desc {desc_class}", "{step.description}" }
+        }
+    }
+}
+
+/// 审批模式 chip —— 子任务嵌套在 chip 内部。
+fn render_chip(step: &ActionStep, index: usize) -> Element {
+    let num = (index + 1).to_string();
+
+    let dot_class = match step.status {
+        StepStatus::Pending => "plan-chip-dot--pending",
+        _ => "plan-chip-dot--pending",
+    };
+
+    let has_children = step.children.as_ref().map_or(false, |c| !c.is_empty());
+
+    rsx! {
+        div {
+            class: if has_children { "plan-chip plan-chip--has-subs" } else { "plan-chip" },
+            // 主行：始终横向
+            div { class: "plan-chip-row",
+                span { class: "plan-chip-dot {dot_class}" }
+                span { class: "plan-chip-index", "{num}" }
+                span { class: "plan-chip-desc", "{step.description}" }
+            }
+
+            if has_children {
+                div { class: "plan-chip-subs",
+                    {
+                        let children = step.children.as_ref().unwrap();
+                        children.iter().enumerate().map(|(ci, child)| {
+                            let sub_num = format!("{}.{}", num, ci + 1);
+                            rsx! {
+                                div { class: "plan-chip-sub",
+                                    span { class: "plan-sub-dot plan-sub-dot--pending" }
+                                    span { class: "plan-sub-index", "{sub_num}" }
+                                    span { class: "plan-sub-desc", "{child.description}" }
+                                }
+                            }
+                        })
+                    }
+                }
+            }
         }
     }
 }

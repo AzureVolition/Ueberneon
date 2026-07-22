@@ -53,8 +53,11 @@ pub fn ChatPanel(
         })
         .collect();
 
-    // 注入滚动监听
+    // 注入滚动监听（仅首次挂载）
+    let mut js_injected = use_signal(|| false);
     use_effect(move || {
+        if *js_injected.read() { return; }
+        js_injected.set(true);
         let script = r#"
 (function(){
 var p=document.querySelector('.chat-panel');
@@ -140,9 +143,10 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
         matches!(m, UiMessage::Streaming { tool_calls, .. }
             if tool_calls.lock().expect("tool_calls lock poisoned").iter().any(|tc| matches!(tc.status, ToolCallStatus::AwaitingApproval { .. })))
     });
+    let expanded_tc = use_signal(|| std::collections::HashSet::<String>::new());
     let last_user_idx = user_messages.last().map(|(i, _)| *i);
 
-    rsx! {
+    let el = rsx! {
         div {
             class: "chat-panel",
 
@@ -172,7 +176,6 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
                         let msg_id = format!("msg-{i}");
                         let segments = chat_msg.segments.clone();
                         let tool_calls = chat_msg.tool_calls.clone();
-                        let content = chat_msg.content.clone();
                         rsx! {
                             div { key: "{i}", id: "{msg_id}", class: bubble_class,
                                 div { class: "message-header",
@@ -180,10 +183,15 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
                                     span { class: "message-time", "{formatted_time}" }
                                 }
                                 {
-                                    if segments.is_empty() && !content.is_empty() {
-                                        rsx! { div { class: "message-content", dangerous_inner_html: markdown_to_html(&content) } }
+                                    if segments.is_empty() && !chat_msg.content.is_empty() {
+                                        let html = if chat_msg.content_html.is_empty() {
+                                            markdown_to_html(&chat_msg.content)
+                                        } else {
+                                            chat_msg.content_html.clone()
+                                        };
+                                        rsx! { div { class: "message-content", dangerous_inner_html: "{html}" } }
                                     } else {
-                                        rsx! { {render_segments(false, &segments, &tool_calls, markdown_to_html, on_approve).into_iter()} }
+                                        rsx! { {render_segments(false, &segments, &tool_calls, markdown_to_html, on_approve, expanded_tc, format!("{i}")).into_iter()} }
                                     }
                                 }
                             }
@@ -207,7 +215,7 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
                         };
                         rsx! {
                             div { key: "{streaming_key}", class: "{streaming_class}",
-                                {render_segments(true, &segs, &tcs, markdown_to_html, EventHandler::new(on_stream_approve)).into_iter()}
+                                {render_segments(true, &segs, &tcs, markdown_to_html, EventHandler::new(on_stream_approve), expanded_tc, "stream".into()).into_iter()}
                             }
                         }
                     }
@@ -247,7 +255,8 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
                 }
             }
         }
-    }
+    };
+    el
 }
 
 fn render_segments(
@@ -256,6 +265,8 @@ fn render_segments(
     tool_calls: &[ToolCallRecord],
     markdown_to_html: fn(&str) -> String,
     on_approve: EventHandler<(bool,)>,
+    expanded_tc: Signal<std::collections::HashSet<String>>,
+    msg_key: String,
 ) -> Vec<Element> {
     let mut items: Vec<Element> = Vec::new();
     let mut tc_idx = 0usize;
@@ -315,9 +326,21 @@ fn render_segments(
                             }
                         }
                     } else {
+                        let tc_key = format!("{}:{}", msg_key, tc_idx);
+                        let expanded = expanded_tc.read().contains(&tc_key);
+                        let mut extc = expanded_tc;
+                        let tck = tc_key.clone();
                         rsx! {
                             details { class: "tool-call-details {sc}",
-                                summary { class: "tool-call-summary",
+                                summary {
+                                    class: "tool-call-summary",
+                                    onclick: move |_| {
+                                        if extc.read().contains(&tck) {
+                                            extc.write().remove(&tck);
+                                        } else {
+                                            extc.write().insert(tck.clone());
+                                        }
+                                    },
                                     span { class: "tool-call-name", "{call.tool_name}" }
                                     if call.tool_name == "write_file" || call.tool_name == "edit_file" {
                                         span { class: "tool-call-args", "{file_path_from_args(&call.args)}" }
@@ -336,12 +359,12 @@ fn render_segments(
                                     }
                                     span { class: "tool-call-status {sc}", "{status_text}" }
                                 }
-                                if call.tool_name == "WriteFile" || call.tool_name == "EditFile" {
-                                    if let Some(ref result) = call.result {
-                                        {render_diff_view(result)}
-                                    }
-                                } else {
-                                    div { class: "tool-call-section",
+                                if expanded {
+                                    if call.tool_name == "WriteFile" || call.tool_name == "EditFile" {
+                                        if let Some(ref result) = call.result {
+                                            {render_diff_view(result)}
+                                        }
+                                    } else {
                                         {
                                             let mut md = format!("**Args**\n\n```json\n{}\n```",
                                                 serde_json::to_string_pretty(&call.args).unwrap_or_default());
@@ -349,9 +372,11 @@ fn render_segments(
                                                 md.push_str(&format!("\n\n**Result**\n\n```\n{}\n```", result));
                                             }
                                             rsx! {
-                                                div {
-                                                    class: "tool-call-section-body",
-                                                    dangerous_inner_html: markdown_to_html(&md),
+                                                div { class: "tool-call-section",
+                                                    div {
+                                                        class: "tool-call-section-body",
+                                                        dangerous_inner_html: markdown_to_html(&md),
+                                                    }
                                                 }
                                             }
                                         }

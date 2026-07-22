@@ -302,10 +302,6 @@ body {
   opacity: 0.8;
 }
 
-.conv-rounds {
-  /* default style */
-}
-
 .conv-time {
   margin-left: auto;
 }
@@ -970,6 +966,23 @@ body {
   color: var(--color-ink-3);
   opacity: 0.7;
   text-transform: lowercase;
+}
+
+.chat-show-older {
+  text-align: center;
+  padding: var(--space-sm) var(--space-md);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-ink-3);
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  border-bottom: 1px solid var(--color-rule);
+  transition: color var(--dur-fast) var(--ease-out);
+  user-select: none;
+}
+
+.chat-show-older:hover {
+  color: var(--color-accent);
 }
 
 /* ═══════════════════════════════════════════════
@@ -4490,23 +4503,23 @@ body {
 .plan-floating {
   position: fixed;
   z-index: var(--z-modal, 400);
-  bottom: 88px;
-  right: 24px;
-  width: 440px;
-  max-width: calc(100vw - 48px);
-  max-height: min(70vh, 600px);
-  background: oklch(18% 0.012 260 / 0.96);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid oklch(70% 0.06 260 / 0.12);
-  border-radius: 14px;
+  bottom: 72px;
+  right: 48px;
+  width: 720px;
+  max-width: calc(100vw - 64px);
+  max-height: min(82vh, 860px);
+  background: oklch(16% 0.010 260 / 0.97);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid oklch(70% 0.06 260 / 0.10);
+  border-radius: 16px;
   box-shadow:
-    0 12px 48px oklch(0% 0 0 / 0.5),
-    0 0 0 1px oklch(100% 0 0 / 0.04) inset;
+    0 16px 64px oklch(0% 0 0 / 0.55),
+    0 0 0 1px oklch(100% 0 0 / 0.03) inset;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  animation: plan-floating-enter 250ms var(--ease-out) both;
+  animation: plan-floating-enter 280ms var(--ease-out) both;
   transform-origin: bottom right;
 }
 
@@ -4618,13 +4631,12 @@ body {
 .plan-floating-goal {
   font-family: var(--font-body);
   font-size: var(--text-md);
-  font-weight: 400;
+  font-weight: 500;
   color: var(--color-ink);
-  line-height: 1.3;
+  line-height: 1.4;
   margin: 0;
   padding: 0 var(--space-md) var(--space-sm);
   letter-spacing: var(--tracking-tight);
-  text-transform: lowercase;
 }
 
 /* ── Progress ── */
@@ -4666,10 +4678,10 @@ body {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: var(--space-xs) var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
-  gap: var(--space-xs);
+  gap: var(--space-sm);
   align-content: start;
 }
 
@@ -4681,13 +4693,14 @@ body {
 
 .plan-floating-col-head {
   font-family: var(--font-mono);
-  font-size: 9px;
-  letter-spacing: 0.08em;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
-  padding: 4px 6px;
+  padding: 6px 10px;
   border-radius: var(--radius-sm);
-  text-align: center;
-  line-height: 1.4;
+  text-align: left;
+  line-height: 1.3;
 }
 
 .plan-floating-col-head--todo {
@@ -4714,15 +4727,16 @@ body {
   align-items: center;
   gap: var(--space-xs);
   font-family: var(--font-mono);
-  font-size: 10px;
-  color: oklch(52% 0 0);
-  letter-spacing: 0.03em;
-  min-height: 36px;
+  font-size: 11px;
+  color: oklch(55% 0 0);
+  letter-spacing: 0.02em;
+  min-height: 40px;
 }
 
 .plan-floating-status-arrow {
   color: var(--color-accent);
   flex-shrink: 0;
+  font-size: 12px;
 }
 
 .plan-floating-status-text {
@@ -4749,38 +4763,57 @@ body {
   50%      { opacity: 0; }
 }
 
-/* ── Approval buttons ── */
+/* ── Approval section ── */
 .plan-floating-approval {
   display: flex;
+  flex-direction: column;
   gap: var(--space-sm);
-  padding: var(--space-sm) var(--space-md);
-  border-top: 1px solid var(--color-rule);
-  margin-top: var(--space-xs);
+  padding: var(--space-md);
+  border-top: 1px solid oklch(100% 0 0 / 0.08);
+  flex-shrink: 0;
+}
+
+.plan-floating-approval-summary {
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  color: var(--color-ink-2);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.plan-floating-approval-actions {
+  display: flex;
+  gap: var(--space-sm);
 }
 
 .plan-approve-btn {
   flex: 1;
-  padding: var(--space-xs) var(--space-md);
+  padding: var(--space-sm) var(--space-md);
   border-radius: var(--radius-md);
   font-family: var(--font-body);
   font-size: var(--text-sm);
   font-weight: 600;
   cursor: pointer;
-  transition: background-color 150ms var(--ease-out), transform 80ms var(--ease-out);
+  transition: background-color 150ms var(--ease-out),
+              transform 80ms var(--ease-out),
+              box-shadow 150ms var(--ease-out);
   border: 1px solid transparent;
+  line-height: 1.3;
 }
 
 .plan-approve-btn:active {
-  transform: translateY(1px);
+  transform: scale(0.98);
 }
 
 .plan-approve-btn--accept {
   background: var(--color-accent);
   color: var(--color-accent-ink, #fff);
+  box-shadow: 0 2px 12px var(--color-glow-2);
 }
 
 .plan-approve-btn--accept:hover {
-  filter: brightness(1.1);
+  filter: brightness(1.15);
+  box-shadow: 0 4px 20px var(--color-glow);
 }
 
 .plan-approve-btn--reject {
@@ -4790,8 +4823,9 @@ body {
 }
 
 .plan-approve-btn--reject:hover {
-  background: var(--color-paper-3);
+  background: oklch(100% 0 0 / 0.04);
   color: var(--color-ink);
+  border-color: var(--color-rule-2);
 }
 
 /* Canceled reason text */
@@ -4807,7 +4841,7 @@ body {
   background: var(--color-paper-2);
   border: 1px solid var(--color-rule);
   border-radius: var(--radius-md);
-  padding: var(--space-xs) var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
   display: flex;
   flex-direction: column;
   gap: var(--space-2xs);
@@ -4820,13 +4854,65 @@ body {
 
 .plan-card:hover {
   border-color: var(--color-rule-2);
+  transform: translateY(-1px);
+}
+
+/* ── Sub-steps inside parent card ── */
+.plan-card-subs {
+  margin-top: var(--space-xs);
+  padding-top: var(--space-xs);
+  border-top: 1px solid oklch(100% 0 0 / 0.05);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.plan-card-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+}
+
+.plan-sub-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.plan-sub-dot--pending {
+  border: 1.5px solid var(--color-ink-4);
+  background: transparent;
+}
+.plan-sub-dot--doing {
+  background: var(--color-accent);
+  box-shadow: 0 0 4px var(--color-glow-2);
+}
+.plan-sub-dot--done {
+  background: var(--color-success);
+}
+
+.plan-sub-index {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--color-ink-4);
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+}
+
+.plan-sub-desc {
+  font-family: var(--font-body);
+  font-size: var(--text-xs);
+  color: var(--color-ink-3);
+  line-height: 1.4;
+}
+.plan-sub-desc--done {
+  text-decoration: line-through;
+  opacity: 0.6;
 }
 
 /* ── Card status indicators ── */
-.plan-card--pending {
-  /* default style */
-}
-
 .plan-card--doing {
   border-color: oklch(72% 0.20 200 / 0.25);
   background: oklch(16% 0.016 265);
@@ -4903,10 +4989,10 @@ body {
 /* Step index */
 .plan-card-index {
   font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 500;
+  font-size: 11px;
+  font-weight: 600;
   color: var(--color-ink-3);
-  letter-spacing: 0.04em;
+  letter-spacing: 0.02em;
   line-height: 1;
 }
 
@@ -4920,7 +5006,7 @@ body {
 
 /* Done checkmark */
 .plan-card-check {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--color-success);
   margin-left: auto;
   line-height: 1;
@@ -4929,10 +5015,9 @@ body {
 /* Card description */
 .plan-card-desc {
   font-family: var(--font-body);
-  font-size: var(--text-xs);
+  font-size: var(--text-sm);
   color: var(--color-ink-2);
-  line-height: 1.45;
-  text-transform: lowercase;
+  line-height: 1.5;
   margin: 0;
 }
 
@@ -4949,6 +5034,116 @@ body {
   padding-top: var(--space-2xs);
   border-top: 1px solid var(--color-rule);
   line-height: 1.4;
+}
+
+/* ── Approval review chips (horizontal wrap) ── */
+.plan-floating-chips {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--space-sm) var(--space-md);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  align-content: start;
+}
+
+.plan-floating-chips-head {
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-accent);
+  padding-bottom: var(--space-2xs);
+  margin-bottom: var(--space-2xs);
+  border-bottom: 1px solid oklch(100% 0 0 / 0.06);
+}
+
+.plan-chip {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 6px 12px;
+  background: oklch(100% 0 0 / 0.04);
+  border: 1px solid oklch(100% 0 0 / 0.06);
+  border-radius: 8px;
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  color: var(--color-ink-2);
+  line-height: 1.4;
+  transition: border-color var(--dur-fast) var(--ease-out),
+              background var(--dur-fast) var(--ease-out);
+  cursor: default;
+  max-width: 100%;
+}
+
+.plan-chip-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.plan-chip:hover {
+  border-color: oklch(100% 0 0 / 0.12);
+  background: oklch(100% 0 0 / 0.06);
+}
+
+.plan-chip--has-subs {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 4px;
+}
+
+.plan-chip-subs {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-top: 4px;
+  border-top: 1px solid oklch(100% 0 0 / 0.05);
+}
+
+.plan-chip-sub {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.plan-chip-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.plan-chip-dot--pending {
+  border: 1.5px solid oklch(60% 0 0);
+  background: transparent;
+}
+
+.plan-chip-dot--doing {
+  background: var(--color-accent);
+  box-shadow: 0 0 4px var(--color-glow-2);
+}
+
+.plan-chip-index {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--color-ink-3);
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+}
+
+.plan-chip-desc {
+  color: var(--color-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 /* ── Reduced motion ── */
@@ -4983,6 +5178,9 @@ body {
     transition: none;
   }
   .plan-card {
+    transition: none;
+  }
+  .plan-chip {
     transition: none;
   }
 }

@@ -366,6 +366,7 @@ impl Agent {
             tool_calls: tool_records_snapshot,
             reasoning: final_reasoning,
             segments: segments_snapshot,
+            content_html: String::new(),
         }))
     }
 

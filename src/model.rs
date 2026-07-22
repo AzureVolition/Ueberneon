@@ -56,6 +56,9 @@ pub struct ChatMessage {
     /// 按 LLM 返回顺序的流式片段（用于有序渲染）
     #[serde(default)]
     pub segments: Vec<StreamSegment>,
+    /// 预渲染的 content HTML（加载时计算，避免每次渲染重复解析 markdown）
+    #[serde(skip)]
+    pub content_html: String,
 }
 
 /// 流式输出片段 —— 按 LLM 返回顺序排列，Frontend 依此渲染

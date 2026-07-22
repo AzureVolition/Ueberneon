@@ -106,6 +106,9 @@ fn rebuild_schema(conn: &Connection) -> anyhow::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_conversations_project
             ON conversations(project_id);
 
+        CREATE INDEX IF NOT EXISTS idx_messages_conv_active_ts
+            ON messages(conversation_id, active, timestamp);
+
         CREATE INDEX IF NOT EXISTS idx_messages_conversation
             ON messages(conversation_id, timestamp);
 

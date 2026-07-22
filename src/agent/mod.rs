@@ -503,6 +503,7 @@ impl Agent {
                         tool_calls: Vec::new(),
                         reasoning: String::new(),
                         segments: Vec::new(),
+                        content_html: String::new(),
                     });
                 }
                 LlmRole::Assistant => {
@@ -533,6 +534,7 @@ impl Agent {
                         tool_calls: tcs,
                         reasoning: reasoning_text,
                         segments: segs,
+                        content_html: String::new(),
                     });
                 }
                 _ => {}

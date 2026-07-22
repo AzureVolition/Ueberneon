@@ -1,6 +1,6 @@
 // ── 内置 Provider 预设 ──
 //
-// 参照 Reasonix 的 provider_presets.go，在编译时嵌入常用 LLM 服务商模板。
+// 在编译时嵌入常用 LLM 服务商模板。
 // 每个预设不含 api_key —— 密钥由用户通过设置页面填写，存入 AppConfig JSON。
 
 /// 单个 provider 预设
