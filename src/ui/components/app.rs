@@ -30,58 +30,6 @@ fn load_agent_configs() -> Vec<crate::db::metadata::agent_config::AgentConfigRow
     crate::db::with_db(|conn| crate::db::metadata::agent_config::list_all(conn).unwrap_or_default())
 }
 
-/// 开发用 mock plan — 让计划面板显示假数据便于调试 UI
-fn mock_plan() -> Plan {
-    Plan {
-        goal: "为 racpagent 添加用户认证与权限管理".to_string(),
-        status: PlanStatus::NeedApproval,
-        started_at: Some(chrono::Utc::now() - chrono::Duration::minutes(3)),
-        steps: vec![
-            ActionStep {
-                index: 1,
-                status: StepStatus::Completed,
-                description: "设计用户数据模型（User / Role / Permission）".to_string(),
-                tool_hint: Some("schema".to_string()),
-                children: vec![],
-            },
-            ActionStep {
-                index: 2,
-                status: StepStatus::Completed,
-                description: "实现注册/登录接口（JWT + bcrypt）".to_string(),
-                tool_hint: Some("write".to_string()),
-                children: vec![],
-            },
-            ActionStep {
-                index: 3,
-                status: StepStatus::InProgress,
-                description: "集成前端登录页面与 token 管理".to_string(),
-                tool_hint: Some("write".to_string()),
-                children: vec![],
-            },
-            ActionStep {
-                index: 4,
-                status: StepStatus::Pending,
-                description: "实现 RBAC 权限中间件".to_string(),
-                tool_hint: Some("write".to_string()),
-                children: vec![],
-            },
-            ActionStep {
-                index: 5,
-                status: StepStatus::Pending,
-                description: "编写 API 测试用例与集成测试".to_string(),
-                tool_hint: Some("bash".to_string()),
-                children: vec![],
-            },
-            ActionStep {
-                index: 6,
-                status: StepStatus::Pending,
-                description: "编写迁移指南与 changelog".to_string(),
-                tool_hint: None,
-                children: vec![],
-            },
-        ],
-    }
-}
 
 /// 从 DB 加载指定对话的消息
 fn load_messages_from_db(conv_id: &str) -> Vec<ChatMessage> {
@@ -153,7 +101,6 @@ fn load_messages_from_db(conv_id: &str) -> Vec<ChatMessage> {
                 }
             }
             llm::Role::Tool => {
-                // 从后往前找匹配的 Assistant，回填 tool 结果
                 if let (Some(_tcid), Some(content)) = (&m.tool_call_id, &m.content) {
                     let tool_name = m.tool_name.as_deref();
                     for cm in result.iter_mut().rev() {
@@ -258,20 +205,21 @@ pub fn App() -> Element {
     let streaming_states: Arc<Mutex<HashMap<String, UiMessage>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
+    // 审批提示文本 — PlanPanel 点击"输入修改意见"后设置，InputBar 自动填入
+    let mut approval_hint_text: Signal<Option<String>> = use_signal(|| None);
+
     // 对话快照缓存（切走时暂存，切回时恢复）
-    // 计划看板信号 — 从流式消息中提取 Plan，暂无则用 mock 数据
+    // 计划看板信号 — 从 AgentHandler 实时读取 Plan
     let plan_signal = use_memo(move || {
         let cid = active_conversation_id();
         let _ = runtimes.read().get(&cid).map(|r| r.tick).unwrap_or(0);
-        if let Some(Some(agent_handler)) = runtimes.read().get(&cid).map(|r| r.agent_handler.clone()){
+        if let Some(Some(agent_handler)) = runtimes.read().get(&cid).map(|r| r.agent_handler.clone()) {
             let current_plan = agent_handler.current_plan.clone();
             if let Ok(plan_guard) = current_plan.lock() {
-                if let Some(plan) = plan_guard.clone() {
-                    return Some(plan);
-                }
+                return plan_guard.clone();
             }
-        }    
-        Some(mock_plan())  // ← 开发用假数据，方便调试 UI
+        }
+        None
     });
 
     // ── 选择项目 ──
@@ -425,7 +373,6 @@ pub fn App() -> Element {
         });
         let mgr = AgentManager::get();
         for cid in &conv_ids { mgr.remove(cid); }
-        drop(mgr);
         crate::db::try_with_db(|conn| {
             if let Err(e) = crate::db::metadata::project::delete(conn, &project_id) { tracing::error!(target:"db", error=%e, "delete project"); }
         });
@@ -553,6 +500,63 @@ pub fn App() -> Element {
                             }
                             PlanPanel {
                                 plan: plan_signal.read().clone(),
+                                on_approve: {
+                                    let mut rt = runtimes;
+                                    let cid = active_conversation_id();
+                                    let pid = active_project_id.read().clone().unwrap_or_default();
+                                    let mut am = action_mode;
+                                    let mut is_streaming = is_streaming;
+                                    let mut streaming_project_id = streaming_project_id;
+                                    let ss = streaming_states.clone();
+                                    let err_sig = error_signal;
+                                    let mut agent_mode = agent_mode;
+                                    move |()| {
+                                        // 1. 切换前端 action_mode
+                                        am.set(ActionMode::Regular);
+
+                                        // 2. 执行审批
+                                        let ah = rt.read().get(&cid).and_then(|r| r.agent_handler.clone());
+                                        if let Some(ref h) = ah {
+                                            if let Err(e) = h.approve_plan(&pid, &cid) {
+                                                tracing::error!(target:"ui", error=%e, "approve_plan failed");
+                                                return;
+                                            }
+                                            // 触发热更新，让 plan_signal 重算
+                                            rt.write().entry(cid.clone()).or_default().tick += 1;
+
+                                            // 3. 自动发送执行消息
+                                            let input = "计划已通过审批，请开始执行。".to_string();
+                                            let bridge_cancel = CancellationToken::new();
+                                            rt.write().entry(cid.clone()).or_default().cancel_token = Some(bridge_cancel.clone());
+                                            let rt2 = rt.clone();
+                                            let cid2 = cid.clone();
+                                            let pid2 = pid.clone();
+                                            let ss2 = ss.clone();
+                                            let cur_agent_mode = *agent_mode.read();
+                                            spawn(async move {
+                                                crate::ui::bridge::run_agent_loop(crate::ui::bridge::BridgeContext {
+                                                    user_input: input,
+                                                    action_mode: ActionMode::Regular,
+                                                    agent_mode: cur_agent_mode,
+                                                    runtimes: rt2,
+                                                    is_streaming,
+                                                    streaming_project_id,
+                                                    project_id: pid2,
+                                                    cancel_token: bridge_cancel,
+                                                    conversation_id: cid2,
+                                                    streaming_states: ss2,
+                                                    error_signal: err_sig,
+                                                }).await;
+                                            });
+                                        }
+                                    }
+                                },
+                                on_reject: {
+                                    let mut hint = approval_hint_text;
+                                    move |()| {
+                                        hint.set(Some("请对计划提出修改意见…".to_string()));
+                                    }
+                                },
                             }
                             }
                         InputBar {
@@ -562,6 +566,7 @@ pub fn App() -> Element {
                             agent_configs: agent_configs(),
                             selected_agent_config_id: selected_agent_config_id(),
                             config_disabled: !active_conversation_id.read().is_empty(),
+                            approval_hint_text,
                             on_agent_config_change: {
                                 let mut s_id = selected_agent_config_id;
                                 move |new_id: String| {
@@ -631,7 +636,7 @@ pub fn App() -> Element {
                                     Some(pid.clone()),
                                     ac_id_for_conv,
                                     None,
-                                ).unwrap_or_else(|_| (String::new(), AgentHandler { agent_mode: Arc::new(Mutex::new(AgentMode::Ask)), current_plan: Arc::new(Mutex::new(None)) }));
+                                ).unwrap_or_else(|_| (String::new(), AgentHandler::default()));
                                 runtimes.write().entry(new_cid.clone()).or_default().agent_handler = Some(handler);
                                 let now = chrono::Local::now();
                                 {

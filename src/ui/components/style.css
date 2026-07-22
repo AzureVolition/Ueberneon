@@ -4749,6 +4749,59 @@ body {
   50%      { opacity: 0; }
 }
 
+/* ── Approval buttons ── */
+.plan-floating-approval {
+  display: flex;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border-top: 1px solid var(--color-rule);
+  margin-top: var(--space-xs);
+}
+
+.plan-approve-btn {
+  flex: 1;
+  padding: var(--space-xs) var(--space-md);
+  border-radius: var(--radius-md);
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 150ms var(--ease-out), transform 80ms var(--ease-out);
+  border: 1px solid transparent;
+}
+
+.plan-approve-btn:active {
+  transform: translateY(1px);
+}
+
+.plan-approve-btn--accept {
+  background: var(--color-accent);
+  color: var(--color-accent-ink, #fff);
+}
+
+.plan-approve-btn--accept:hover {
+  filter: brightness(1.1);
+}
+
+.plan-approve-btn--reject {
+  background: transparent;
+  color: var(--color-muted);
+  border-color: var(--color-rule);
+}
+
+.plan-approve-btn--reject:hover {
+  background: var(--color-paper-3);
+  color: var(--color-ink);
+}
+
+/* Canceled reason text */
+.plan-floating-status-reason {
+  font-size: var(--text-xs);
+  color: var(--color-muted);
+  margin-left: var(--space-xs);
+  font-style: italic;
+}
+
 /* ── Card ── */
 .plan-card {
   background: var(--color-paper-2);

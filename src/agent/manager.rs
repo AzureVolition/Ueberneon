@@ -6,11 +6,11 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock, RwLock};
+use std::sync::{OnceLock, RwLock};
 
 use super::hook::HookRegister;
 use super::prompts::{PromptBuilder, PromptContext};
-use super::{ActionMode, Agent, AgentHandler, AgentMode};
+use super::{Agent, AgentHandler};
 use crate::db::metadata::agent_config::AgentConfigRow;
 use crate::tools::Registry;
 use crate::tools::register_builtins;
@@ -141,7 +141,6 @@ impl AgentManager {
             Box::new(provider),
             registry,
             hook_register,
-            ActionMode::Regular,
             project_path,
             project_id,
             conversation_id,

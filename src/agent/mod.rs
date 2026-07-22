@@ -172,6 +172,8 @@ pub struct ToolContext {
     pub main_conversation_id: String,
     /// 项目 ID
     pub project_id: Option<String>,
+    /// 取消令牌，工具可监听以实现提前终止
+    pub cancel_token: Option<tokio_util::sync::CancellationToken>,
 }
 
 // ── BlockedKind ──────────────────────────────────────────────────────────────
@@ -203,9 +205,9 @@ impl std::fmt::Display for BlockedKind {
 // —— agent ————————————————————————————————————————————————————————————————————
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use crate::tools::Registry;
-use crate::model::{ChatMessage, Plan, StreamSegment, ToolCallRecord, ToolCallStatus};
+use crate::model::{ChatMessage, Plan, PlanStatus, StepStatus, StreamSegment, ToolCallRecord, ToolCallStatus};
 use hook::HookRegister;
 use llm::{Message, Provider, Role as LlmRole};
 
@@ -214,16 +216,178 @@ use llm::{Message, Provider, Role as LlmRole};
 pub struct AgentHandler {
     /// 全局门控模式（Arc 共享，供 handler 和内部读取）
     pub agent_mode: Arc<Mutex<AgentMode>>,
+    /// 计划模式（Arc 共享，供前端切换和内部读取）
+    pub action_mode: Arc<RwLock<ActionMode>>,
     /// 当前计划数据（Arc 共享，供 UI 读取）
     pub current_plan: Arc<Mutex<Option<Plan>>>,
 }
 
+pub enum CurrentPlanState {
+    Init,
+    Debate,
+    Exculuding,
+}
+
 impl AgentHandler {
-    /// 从父 handler 继承运行时状态（当前只继承 agent_mode）。
-    /// 子 agent 创建后调用此方法，将父 handler 的 agent_mode 同步过来。
+    /// 从父 handler 继承运行时状态（agent_mode + action_mode）。
+    /// 子 agent 创建后调用此方法，将父 handler 的状态同步过来。
     pub fn inherit_from(&mut self, parent: &AgentHandler) {
         let mode = *parent.agent_mode.lock().unwrap();
         *self.agent_mode.lock().unwrap() = mode;
+        let am = *parent.action_mode.read().unwrap();
+        *self.action_mode.write().unwrap() = am;
+    }
+
+    /// 读取当前 action_mode。
+    pub fn action_mode(&self) -> ActionMode {
+        *self.action_mode.read().unwrap()
+    }
+
+    /// 设置 action_mode（前端/测试使用）。
+    pub fn set_action_mode(&self, mode: ActionMode) {
+        *self.action_mode.write().unwrap() = mode;
+    }
+
+    /// 创建默认的 AgentHandler（用于测试）。
+    pub fn default() -> Self {
+        Self {
+            agent_mode: Arc::new(Mutex::new(AgentMode::default())),
+            action_mode: Arc::new(RwLock::new(ActionMode::default())),
+            current_plan: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    pub fn current_plan_state(&self) -> Option<CurrentPlanState> {
+        let guard = self.current_plan.lock().unwrap().clone();
+        let action_mode_guard = self.action_mode.read().unwrap();
+        if guard.is_none() && *action_mode_guard == ActionMode::Regular {
+            return None;
+        }
+        if guard.is_none() && *action_mode_guard == ActionMode::Plan {
+            return Some(CurrentPlanState::Init);
+        }
+        if PlanStatus::NeedApproval == guard?.status {
+            return Some(CurrentPlanState::Debate);
+        }
+    
+        Some(CurrentPlanState::Exculuding)
+        
+    }
+
+    pub fn prompt_before_user_message(&self) -> Option<&str> {
+        if let Some(action_mode) = self.current_plan_state() {
+            match action_mode {
+                CurrentPlanState::Init => {
+                    Some(prompts::plan::PLAN_CREATE_PREFIX)
+                }
+                CurrentPlanState::Debate => {
+                    Some(prompts::plan::PLAN_MODIFY_PREFIX)
+                }
+                _ => {
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn prompt_pre_loop(&self) -> Option<&str> {
+        None
+    }
+
+    /// 审批通过当前计划：写入 DB（plan + tasks），NeedApproval → InProgress，
+    /// 第一个 Pending step → InProgress，action_mode → Regular。
+    pub fn approve_plan(&self, project_id: &str, conversation_id: &str) -> Result<(), String> {
+        let plan_clone;
+        {
+            let mut guard = self.current_plan.lock().unwrap();
+            let plan = match guard.as_mut() {
+                Some(p) => p,
+                None => return Err("no active plan to approve".to_string()),
+            };
+
+            if plan.status != PlanStatus::NeedApproval {
+                return Err("plan is not in NeedApproval status".to_string());
+            }
+
+            plan.status = PlanStatus::InProgress;
+            plan.started_at = Some(chrono::Utc::now());
+
+            // 第一个 Pending step → InProgress
+            for step in plan.steps.iter_mut() {
+                if step.status == StepStatus::Pending {
+                    step.status = StepStatus::InProgress;
+                    break;
+                }
+            }
+
+            plan_clone = plan.clone();
+
+            // 切换 action_mode
+            *self.action_mode.write().unwrap() = ActionMode::Regular;
+        }
+
+        // ── 写入数据库（此时才真正入库）──
+        crate::db::with_db_result(|conn| {
+            use crate::db::metadata::plan::{self as plan_db, PlanStatus as DbPlanStatus};
+            let plan_id = plan_db::create(
+                conn,
+                project_id,
+                conversation_id,
+                &plan_clone.goal,
+                &plan_clone.description,
+                DbPlanStatus::InProgress,
+            )
+            .map_err(|e| format!("db error: {e}"))?;
+
+            // 记录开始时间
+            plan_db::mark_started(conn, &plan_id)
+                .map_err(|e| format!("db error: {e}"))?;
+
+            // 递归写入 tasks
+            fn persist_step(
+                conn: &rusqlite::Connection,
+                plan_id: &str,
+                project_id: &str,
+                parent_id: Option<i64>,
+                step: &crate::model::ActionStep,
+            ) -> Result<(), String> {
+                use crate::db::metadata::task::{self as task_db, TaskStatus as DbTaskStatus};
+
+                let db_status: DbTaskStatus = step.status.clone().into();
+                let task_id = task_db::create(
+                    conn, plan_id, project_id, parent_id,
+                    step.index as i32, &step.description, db_status,
+                    None,
+                )
+                .map_err(|e| format!("db error: {e}"))?;
+
+                if let Some(children) = &step.children {
+                    for child in children {
+                        persist_step(conn, plan_id, project_id, Some(task_id), child)?;
+                    }
+                }
+                Ok(())
+            }
+
+            for step in &plan_clone.steps {
+                persist_step(conn, &plan_id, project_id, None, step)?;
+            }
+
+            Ok::<_, String>(())
+        })?;
+
+        Ok(())
+    }
+
+    /// 拒绝当前计划：清除内存中的 current_plan（不入库）。
+    pub fn reject_plan(&self) -> Result<(), String> {
+        let guard = self.current_plan.lock().unwrap();
+        if guard.is_none() {
+            return Err("no active plan to reject".to_string());
+        }
+        Ok(())
     }
 }
 
@@ -236,9 +400,7 @@ pub struct Agent {
     pub registry: Registry,
     /// 事件钩子注册表
     pub hook_register: HookRegister,
-    /// 计划模式（常规/计划）
-    pub plan_mode: ActionMode,
-    /// 运行时控制句柄（与 agent_mode 指向同一 Arc）
+    /// 运行时控制句柄（含 action_mode / agent_mode / current_plan）
     pub handler: AgentHandler,
     /// 工具执行的工作目录（即项目路径）
     pub project_path: PathBuf,
@@ -264,7 +426,6 @@ impl Agent {
         provider: Box<dyn Provider>,
         registry: Registry,
         hook_register: HookRegister,
-        plan_mode: ActionMode,
         project_path: PathBuf,
         project_id: Option<String>,
         conversation_id: String,
@@ -274,13 +435,13 @@ impl Agent {
     ) -> Self {
         let handler = AgentHandler {
             agent_mode: Arc::new(Mutex::new(AgentMode::default())),
+            action_mode: Arc::new(RwLock::new(ActionMode::default())),
             current_plan: Arc::new(Mutex::new(None)),
         };        
         Self {
             provider,
             registry,
             hook_register,
-            plan_mode,
             handler,
             project_path,
             project_id,

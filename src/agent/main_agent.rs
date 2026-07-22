@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio_util::sync::CancellationToken;
 
 use super::hook::AgentEvent;
-use super::{ActionMode, ToolContext};
-use crate::model::{ChatMessage, Role as ChatRole, StreamSegment, ToolCallRecord, ToolCallStatus, UiMessage, Plan};
+use super::ToolContext;
+use crate::model::{ChatMessage, Role as ChatRole, StreamSegment, ToolCallRecord, ToolCallStatus, UiMessage};
 use crate::permission::Decision;
 use llm::{Chunk, Message, Request, Role as LlmRole, ToolCall};
 
@@ -34,14 +34,12 @@ impl Agent {
             tool_calls: Arc::new(Mutex::new(Vec::new())),
             version: Arc::new(AtomicU64::new(0)),
             approval_tx: Arc::new(Mutex::new(None)),
-            plan: Arc::new(Mutex::new(None)),
         };
         let streaming = UiMessage::Streaming {
             segments: state.segments.clone(),
             tool_calls: state.tool_calls.clone(),
             version: state.version.clone(),
             approval_tx: state.approval_tx.clone(),
-            plan: state.plan.clone(),
         };
         self.streaming_handle = Some(state);
         streaming
@@ -56,14 +54,13 @@ impl Agent {
         cancel_token: CancellationToken,
     ) -> anyhow::Result<UiMessage> {
 
-        let (segments_arc, tool_calls_arc, version_arc, approval_arc, plan_arc) =
+        let (segments_arc, tool_calls_arc, version_arc, approval_arc) =
             match self.streaming_handle.as_ref(){
                 Some(ss) => (
                     ss.segments.clone(),
                     ss.tool_calls.clone(),
                     ss.version.clone(),
                     ss.approval_tx.clone(),
-                    ss.plan.clone(),
                 ),
                 None => {
                     self.create_streaming();
@@ -75,15 +72,21 @@ impl Agent {
                         ss.tool_calls.clone(),
                         ss.version.clone(),
                         ss.approval_tx.clone(),
-                        ss.plan.clone(),
                     )
                 },
             };
         
         self.hook_register.emit(&AgentEvent::UserPromptSubmit { prompt: user_input.clone() });
 
+        // ── 前缀注入 目前只有 Plan Mode ──
+        let augmented_input = self.handler.prompt_before_user_message();
+        if let Some(augmented_input) = augmented_input {
+            self.push_message(Message { role: LlmRole::System, content: Some(augmented_input.to_string()), timestamp: Some(chrono::Utc::now()), ..Default::default() })?;
+        }
+        // 用户输入
         self.push_message(Message { role: LlmRole::User, content: Some(user_input), timestamp: Some(chrono::Utc::now()), ..Default::default() })?;
 
+        
         let mut _final_output = String::new();
         let mut final_reasoning = String::new();
         let mut cancelled = false;
@@ -212,11 +215,21 @@ impl Agent {
                     }
                     push_tool_marker(&segments_arc, &version_arc);
 
-                    let ctx = ToolContext { call_id: tool_call.id.clone(), plan_mode: self.plan_mode, handler: self.handler.clone(), progress: None, main_conversation_id: self.conversation_id.clone(), project_id: self.project_id.clone() };
+                    let ctx = ToolContext { call_id: tool_call.id.clone(), plan_mode: self.handler.action_mode(), handler: self.handler.clone(), progress: None, main_conversation_id: self.conversation_id.clone(), project_id: self.project_id.clone(), cancel_token: Some(cancel_token.clone()) };
                     let decision = tool.pre_check(&ctx, &args);
                     let is_denied = matches!(decision, Decision::Deny(_));
                     let result = match decision {
-                        Decision::Allow => tool.execute(&ctx, &args).await,
+                        Decision::Allow => {
+                            let exec = tool.execute(&ctx, &args);
+                            tokio::pin!(exec);
+                            tokio::select! {
+                                _ = cancel_token.cancelled() => {
+                                    cancelled = true;
+                                    Err("cancelled by user".into())
+                                }
+                                r = &mut exec => r,
+                            }
+                        }
                         Decision::Ask => {
                             let reason = format!("{} needs approval", tool_name);
                             {
@@ -230,8 +243,17 @@ impl Agent {
 
                             let (atx, arx) = tokio::sync::oneshot::channel();
                             *approval_arc.lock().unwrap() = Some(atx);
-                            match arx.await {
-                                Ok(true) => {
+
+                            let approval = tokio::select! {
+                                _ = cancel_token.cancelled() => {
+                                    cancelled = true;
+                                    None
+                                }
+                                r = arx => r.ok(),
+                            };
+
+                            match approval {
+                                Some(true) => {
                                     // 立即更新状态为 Running，让 UI 及时响应
                                     {
                                         let mut tcs = tool_calls_arc.lock().unwrap();
@@ -243,10 +265,18 @@ impl Agent {
                                     }
                                     *approval_arc.lock().unwrap() = None;
                                     inc_version_atomic(&version_arc);
-                                    tool.execute(&ctx, &args).await
+                                    let exec = tool.execute(&ctx, &args);
+                                    tokio::pin!(exec);
+                                    tokio::select! {
+                                        _ = cancel_token.cancelled() => {
+                                            cancelled = true;
+                                            Err("cancelled by user".into())
+                                        }
+                                        r = &mut exec => r,
+                                    }
                                 }
-                                Ok(false) => Err(format!("denied by user: {reason}")),
-                                Err(_) => Err("approval channel closed".into()),
+                                Some(false) => Err(format!("denied by user: {reason}")),
+                                None => Err("cancelled by user".into()),
                             }
                         }
                         Decision::Deny(msg) => Err(msg),
@@ -281,6 +311,33 @@ impl Agent {
                         ..Default::default()
                     };
                     self.push_message(tool_message)?;
+                }
+            }
+
+            if cancelled { break; }
+
+            // ── stall_count 计数与催促 ──
+            {
+                let mut plan_guard = self.handler.current_plan.lock().unwrap();
+                if let Some(ref mut plan) = *plan_guard {
+                    let completed_this_round = pending_tool_calls.iter().any(|tc| tc.name == "CompleteStep");
+                    if completed_this_round {
+                        plan.stall_count = 0;
+                    } else {
+                        plan.stall_count += 1;
+                        if plan.stall_count >= 3 {
+                            // 注入催促系统消息
+                            let nudge = Message {
+                                role: LlmRole::System,
+                                content: Some(super::prompts::plan::STALL_NUDGE_SUFFIX.to_string()),
+                                timestamp: Some(chrono::Utc::now()),
+                                ..Default::default()
+                            };
+                            // 直接 push 到下一条，让 LLM 看到催促
+                            self.messages.push(nudge);
+                            plan.stall_count = 0; // 重置避免重复催促
+                        }
+                    }
                 }
             }
 

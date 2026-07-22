@@ -225,6 +225,7 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
+        cancel_token: None,
         }
     }
 
@@ -335,7 +336,7 @@ mod tests {
     async fn default_path_is_dot() {
         let tool = test_ls();
         let result = tool.execute(
-            &ToolContext { call_id: "test".into(), plan_mode: ActionMode::Regular, handler: AgentHandler::default(), progress: None, main_conversation_id: String::new(), project_id: None },
+            &ToolContext { call_id: "test".into(), plan_mode: ActionMode::Regular, handler: AgentHandler::default(), progress: None, main_conversation_id: String::new(), project_id: None , cancel_token: None },
             &serde_json::json!({}),
         ).await;
         // 应该成功列出当前目录

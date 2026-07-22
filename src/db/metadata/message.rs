@@ -462,7 +462,9 @@ mod tests {
         };
         let id = create_from_llm(&conn, &cid, &llm_msg).unwrap();
         delete(&conn, id).unwrap();
-        assert!(get(&conn, id).unwrap().is_none());
+        // 软删除：get 仍返回行，但 active 为 Deleted
+        let row = get(&conn, id).unwrap().expect("row should still exist after soft delete");
+        assert_eq!(row.active, MessageStatus::Deleted);
     }
 
     #[test]

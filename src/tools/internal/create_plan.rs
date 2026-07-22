@@ -11,30 +11,77 @@ use serde_json::Value;
 use super::common::checkable_tool::CheckableTool;
 use crate::permission::Decision;
 
+/// 提交最终计划供用户审批。 
+/// 如果步骤过多使用子步骤
 #[derive(ToolMetaImpl)]
-#[tool(schema = r#"{
+#[tool(read_only)]
+#[tool(schema = r##"{
     "type": "object",
-    "required": ["project_id", "conversation_id", "plan"],
+    "required": ["plan"],
     "properties": {
-        "project_id": { "type": "string", "description": "所属项目 ID" },
-        "conversation_id": { "type": "string", "description": "所属对话 ID" },
         "plan": {
             "type": "object",
-            "description": "Plan 结构体（goal + steps，steps 可含 children）"
+            "description": "要创建的计划",
+            "required": ["goal", "steps"],
+            "additionalProperties": false,
+            "properties": {
+                "goal": {
+                    "type": "string",
+                    "description": "计划目标，简明的一句话概括"
+                },
+                "description": {
+                    "type": "string",
+                    "description": "计划的详细描述或背景说明"
+                },
+                "steps": {
+                    "type": "array",
+                    "description": "执行步骤列表（支持嵌套 children）",
+                    "items": {
+                        "type": "object",
+                        "required": ["index", "description"],
+                        "additionalProperties": false,
+                        "properties": {
+                            "index": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 255,
+                                "description": "步骤序号，从 0 开始递增"
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "步骤描述：做什么、预期结果"
+                            },
+                            "children": {
+                                "type": "array",
+                                "description": "子步骤（递归，与父级结构相同）",
+                                "items": { "$ref": "#/properties/plan/properties/steps/items" }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
-}"#)]
+    }"##)]
 pub struct CreatePlan;
 
 fn parse_plan(value: &Value) -> Result<Plan, String> {
-    serde_json::from_value(value.clone()).map_err(|e| format!("invalid plan: {e}"))
+    // 兼容 LLM 可能将 plan 传为 JSON 字符串而非对象的情况
+    let val = match value {
+        Value::String(s) => serde_json::from_str(s)
+            .map_err(|e| format!("invalid plan (string content): {e}"))?,
+        other => other.clone(),
+    };
+    serde_json::from_value(val).map_err(|e| format!("invalid plan: {e}"))
 }
 
 /// 递归重置所有 step 状态为 Pending，并生成临时 id
 fn normalize_step(step: &mut ActionStep) {
     step.status = StepStatus::Pending;
-    for child in &mut step.children {
-        normalize_step(child);
+    if let Some(children) = &mut step.children {
+        for child in children {
+            normalize_step(child);
+        }
     }
 }
 
@@ -49,7 +96,7 @@ fn persist_plan(
     use crate::db::metadata::task::{self as task_db, TaskStatus as DbTaskStatus};
 
     let db_status: DbPlanStatus = plan.status.clone().into();
-    let plan_id = plan_db::create(conn, project_id, conversation_id, &plan.goal, "", db_status)
+    let plan_id = plan_db::create(conn, project_id, conversation_id, &plan.goal, &plan.description, db_status)
         .map_err(|e| format!("db error: {e}"))?;
 
     // 存储顶级 steps
@@ -78,13 +125,15 @@ fn persist_step(
         step.index as i32,
         &step.description,
         db_status,
-        step.tool_hint.as_deref(),
+        None,
     )
     .map_err(|e| format!("db error: {e}"))?;
 
     // 递归存储子 steps
-    for child in &step.children {
-        persist_step(conn, plan_id, project_id, Some(task_id), child)?;
+    if let Some(children) = &step.children {
+        for child in children {
+            persist_step(conn, plan_id, project_id, Some(task_id), child)?;
+        }
     }
 
     Ok(())
@@ -93,14 +142,11 @@ fn persist_step(
 #[async_trait::async_trait]
 impl Tool for CreatePlan {
     async fn execute(&self, ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
-        let project_id = args
-            .get("project_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "missing 'project_id'".to_string())?;
-        let conversation_id = args
-            .get("conversation_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "missing 'conversation_id'".to_string())?;
+        let project_id = ctx
+            .project_id
+            .as_deref()
+            .ok_or_else(|| "missing project_id in context".to_string())?;
+        let conversation_id = &ctx.main_conversation_id;
         let plan_val = args
             .get("plan")
             .ok_or_else(|| "missing 'plan'".to_string())?;
@@ -115,19 +161,13 @@ impl Tool for CreatePlan {
         }
         plan.started_at = None;
 
-        // ── 存入运行时 handler ──
+        // ── 存入运行时 handler（不入库，审批通过后才入库）──
         {
             let mut guard = ctx.handler.current_plan.lock().unwrap();
             *guard = Some(plan.clone());
         }
 
-        // ── 存入数据库 ──
-        crate::db::with_db_result(|conn| {
-            persist_plan(conn, project_id, conversation_id, &plan)
-        })
-        .map_err(|e| format!("db error: {e}"))?;
-
-        Ok(ToolResult::ok("plan created and saved".to_string()))
+        Ok(ToolResult::ok("plan created — waiting for approval".to_string()))
     }
 }
 

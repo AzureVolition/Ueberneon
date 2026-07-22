@@ -8,7 +8,6 @@ pub mod glob;
 pub mod grep;
 pub mod kill_shell;
 pub mod ls;
-pub mod modify_plan;
 pub mod multi_edit;
 pub mod read_file;
 pub mod read_only_bash;

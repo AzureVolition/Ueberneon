@@ -231,6 +231,7 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
+        cancel_token: None,
         }, &args).await;
         assert!(result.error().is_none());
         assert!(result.output().contains("hello"));
@@ -256,6 +257,7 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
+        cancel_token: None,
         }, &args).await;
         assert!(result.error().is_none());
         assert!(result.output().contains("line2"));
@@ -280,6 +282,7 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
+        cancel_token: None,
         }, &args).await;
         assert!(result.error().is_none());
         assert!(result.output().contains("line1"));
@@ -304,6 +307,7 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
+        cancel_token: None,
         }, &args).await;
         assert!(result.error().is_none());
         assert!(!result.output().contains("line1"));
@@ -329,6 +333,7 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
+        cancel_token: None,
         }, &args).await;
         let _ = std::fs::remove_dir_all(&repo_dir);
         assert!(result.is_err());
@@ -345,6 +350,7 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
+        cancel_token: None,
         }, &args).await;
         assert!(result.error().is_some());
     }
@@ -361,6 +367,7 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
+        cancel_token: None,
         }, &args).await;
         assert!(result.error().is_none());
         assert!(result.output().contains("empty"));
@@ -385,6 +392,7 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
+        cancel_token: None,
         }, &args).await;
         assert!(result.error().is_none(), "error: {:?}", result.error());
         assert!(result.output().contains("hello"), "output: {}", result.output());

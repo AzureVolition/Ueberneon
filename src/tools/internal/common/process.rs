@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
+use tokio_util::sync::CancellationToken;
 
 use crate::tools::sandbox::SandboxSpec;
 
@@ -34,11 +35,19 @@ pub struct ProcessRunner {
     pub sandbox: Option<SandboxSpec>,
     /// 自定义环境变量（None = 继承当前进程环境）。
     pub env: Option<HashMap<String, String>>,
+    /// 取消令牌，收到取消信号时终止进程。
+    pub cancel_token: Option<CancellationToken>,
 }
 
 impl ProcessRunner {
     pub fn new(work_dir: PathBuf, timeout: Duration) -> Self {
-        Self { work_dir, timeout, sandbox: None, env: None }
+        Self { work_dir, timeout, sandbox: None, env: None, cancel_token: None }
+    }
+
+    /// 配置取消令牌，收到取消信号时终止进程。
+    pub fn with_cancel_token(mut self, token: Option<CancellationToken>) -> Self {
+        self.cancel_token = token;
+        self
     }
 
     /// 配置沙箱策略。
@@ -111,23 +120,35 @@ impl ProcessRunner {
 
         let pid = child.id().unwrap_or(0);
 
-        let timeout_result = tokio::time::timeout(self.timeout, Self::wait_and_collect(child)).await;
+        // ── 三路 select：正常完成 × 超时 × 取消 ──
+        let timeout_fut = tokio::time::timeout(self.timeout, Self::wait_and_collect(child));
+        tokio::pin!(timeout_fut);
 
-        let output = match timeout_result {
-            Ok(combined) => {
-                Self::kill_process_group(pid);
-                combined
+        let cancel_fut = async {
+            if let Some(ref token) = self.cancel_token {
+                token.cancelled().await;
+            } else {
+                std::future::pending::<()>().await;
             }
-            Err(_elapsed) => {
+        };
+        tokio::pin!(cancel_fut);
+
+        let output = tokio::select! {
+            r = &mut timeout_fut => {
+                Self::kill_process_group(pid);
+                match r {
+                    Ok(combined) => combined,
+                    Err(_elapsed) => ProcessOutput {
+                        combined: format!("bash: command timed out after {}s", self.timeout.as_secs()),
+                        exit_code: -1, timed_out: true, truncated: false,
+                    }
+                }
+            }
+            _ = &mut cancel_fut => {
                 Self::kill_process_group(pid);
                 ProcessOutput {
-                    combined: format!(
-                        "bash: command timed out after {}s",
-                        self.timeout.as_secs()
-                    ),
-                    exit_code: -1,
-                    timed_out: true,
-                    truncated: false,
+                    combined: "bash: command cancelled by user".into(),
+                    exit_code: -1, timed_out: false, truncated: false,
                 }
             }
         };
@@ -174,6 +195,12 @@ impl ProcessRunner {
             timed_out: false,
             truncated: false,
         }
+    }
+
+    #[cfg(unix)]
+    /// 进程是否已取消（检查 cancel_token）。
+    fn is_cancelled(token: &Option<CancellationToken>) -> bool {
+        token.as_ref().map_or(false, |t| t.is_cancelled())
     }
 
     #[cfg(unix)]

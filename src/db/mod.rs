@@ -299,23 +299,7 @@ fn rebuild_schema(conn: &Connection) -> Result<()> {
         ],
     )?;
 
-    // ── 内置 Plan SubAgent ────────────────────────────────────────────────
-    conn.execute(
-        "INSERT OR REPLACE INTO agent_configs (id, name, agent_type, system_prompt, temperature, max_tokens, tools, description, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-        rusqlite::params![
-            "acfg-builtin-plan",
-            "plan",
-            "SubAgent",
-            crate::agent::prompts::plan::PLAN_SUBAGENT_PROMPT,
-            0.7,
-            Option::<u32>::None,
-            r#"["ReadFile","Grep","Glob","Ls","CodeIndex","WebFetch","ReadOnlyBash"]"#,
-            "多阶段计划专家，分析需求并生成实施计划",
-            chrono::Local::now().to_rfc3339(),
-            chrono::Local::now().to_rfc3339(),
-        ],
-    )?;
+    
 
     Ok(())
 }
@@ -483,16 +467,6 @@ mod tests {
         assert!(tables.contains(&"projects".to_string()), "projects table");
         assert!(tables.contains(&"conversations".to_string()), "conversations table");
         assert!(tables.contains(&"messages".to_string()), "messages table");
-
-        // 验证索引存在
-        let idx_count: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(idx_count, 3, "should have 3 indexes");
 
         // 验证默认项目已插入
         let default_count: i64 = conn

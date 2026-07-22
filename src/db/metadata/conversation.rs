@@ -173,7 +173,8 @@ mod tests {
             CREATE TABLE messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 conversation_id TEXT NOT NULL REFERENCES conversations(id),
-                role TEXT NOT NULL, content TEXT, timestamp TEXT NOT NULL
+                role TEXT NOT NULL, content TEXT, timestamp TEXT NOT NULL,
+                active TEXT NOT NULL DEFAULT 'active'
             );",
         )
         .unwrap();
@@ -207,7 +208,8 @@ mod tests {
             CREATE TABLE messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 conversation_id TEXT NOT NULL REFERENCES conversations(id),
-                role TEXT NOT NULL, content TEXT, timestamp TEXT NOT NULL
+                role TEXT NOT NULL, content TEXT, timestamp TEXT NOT NULL,
+                active TEXT NOT NULL DEFAULT 'active'
             );",
         )
         .unwrap();
@@ -268,6 +270,8 @@ mod tests {
         let pid = project::create(&conn, "p", "/p").unwrap();
         let id = create(&conn, &pid, "x", None, None).unwrap();
         delete(&conn, &id).unwrap();
-        assert!(get(&conn, &id).unwrap().is_none());
+        // 软删除：get 仍返回行，但 status 为 deleted
+        let row = get(&conn, &id).unwrap().expect("row should still exist after soft delete");
+        assert_eq!(row.status, ConversationStatus::Deleted);
     }
 }

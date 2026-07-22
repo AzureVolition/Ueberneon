@@ -3,18 +3,24 @@
 // Normally hidden. Click the floating pill to expand into a
 // floating overlay panel showing the 3-column kanban board.
 // Matching the Night Foundry design system (violet + cyan + pink).
+//
+// v2: supports recursive sub-tasks (ActionStep.children).
+//     when plan.status == NeedApproval, shows approve/reject buttons.
+//     on_approve / on_reject callbacks triggered from App component.
 
 use dioxus::prelude::*;
 
 use crate::model::{ActionStep, Plan, PlanStatus, StepStatus};
 
 /// PlanPanel — floating collapsible kanban board for plan mode.
-///
-/// No plan → renders an invisible placeholder (zero-height).
-/// Plan exists + collapsed → floating toggle pill.
-/// Plan exists + expanded → floating overlay panel + backdrop.
 #[component]
-pub fn PlanPanel(plan: Option<Plan>) -> Element {
+pub fn PlanPanel(
+    plan: Option<Plan>,
+    /// 点击"通过审批"时触发
+    on_approve: EventHandler<()>,
+    /// 点击"输入修改意见"时触发
+    on_reject: EventHandler<()>,
+) -> Element {
     let mut is_expanded = use_signal(|| false);
 
     let plan_data = match plan.as_ref() {
@@ -24,11 +30,13 @@ pub fn PlanPanel(plan: Option<Plan>) -> Element {
         }
     };
 
-    let total = plan_data.steps.len() as u32;
-    let completed = plan_data
-        .steps
+    // ── 递归收集所有步骤（含子步骤），返回 (step, depth) ──
+    let all_steps = collect_steps_recursive(&plan_data.steps, 0);
+
+    let total = all_steps.len() as u32;
+    let completed = all_steps
         .iter()
-        .filter(|s| matches!(s.status, StepStatus::Completed))
+        .filter(|(s, _)| matches!(s.status, StepStatus::Completed))
         .count() as u32;
     let progress_pct = if total > 0 {
         (completed as f64 / total as f64 * 100.0) as u32
@@ -36,23 +44,21 @@ pub fn PlanPanel(plan: Option<Plan>) -> Element {
         0
     };
 
-    let todo_steps: Vec<&ActionStep> = plan_data
-        .steps
+    let todo_steps: Vec<&(&ActionStep, u8)> = all_steps
         .iter()
-        .filter(|s| matches!(s.status, StepStatus::Pending))
+        .filter(|(s, _)| matches!(s.status, StepStatus::Pending))
         .collect();
-    let doing_steps: Vec<&ActionStep> = plan_data
-        .steps
+    let doing_steps: Vec<&(&ActionStep, u8)> = all_steps
         .iter()
-        .filter(|s| matches!(s.status, StepStatus::InProgress))
+        .filter(|(s, _)| matches!(s.status, StepStatus::InProgress))
         .collect();
-    let done_steps: Vec<&ActionStep> = plan_data
-        .steps
+    let done_steps: Vec<&(&ActionStep, u8)> = all_steps
         .iter()
-        .filter(|s| matches!(s.status, StepStatus::Completed | StepStatus::Failed))
+        .filter(|(s, _)| matches!(s.status, StepStatus::Completed | StepStatus::Failed))
         .collect();
 
     let doing_count = doing_steps.len();
+    let is_need_approval = matches!(plan_data.status, PlanStatus::NeedApproval);
 
     if !*is_expanded.read() {
         // ── Collapsed: floating toggle pill ──
@@ -71,13 +77,12 @@ pub fn PlanPanel(plan: Option<Plan>) -> Element {
         }
     } else {
         // ── Expanded: floating overlay panel ──
-        let current_step = doing_steps.first().map(|s| s.description.as_str());
+        let current_step = doing_steps.first().map(|(s, _)| s.description.as_str());
 
         let (status_label, status_mod) = match plan_data.status {
             PlanStatus::NeedApproval => ("need approval", "pending"),
             PlanStatus::InProgress => ("in progress", "doing"),
             PlanStatus::Completed => ("completed", "done"),
-            PlanStatus::Canceled => ("canceled", "canceled"),
         };
 
         let elapsed_text = match plan_data.started_at {
@@ -105,7 +110,6 @@ pub fn PlanPanel(plan: Option<Plan>) -> Element {
             div { class: "plan-floating",
                 // ── Header row ──
                 div { class: "plan-floating-header",
-                    // h2 { class: "plan-floating-title", "plan" }
                     span { class: "plan-floating-state plan-floating-state--{status_mod}", "plan {status_label}" }
                     span { class: "plan-floating-sep", "·" }
                     span { class: "plan-floating-elapsed", "{elapsed_text}" }
@@ -141,39 +145,57 @@ pub fn PlanPanel(plan: Option<Plan>) -> Element {
                         div { class: "plan-floating-col-head plan-floating-col-head--done",
                             "done ({done_steps.len()})"
                         }
-                        {done_steps.iter().map(|step| render_card(step))}
+                        {done_steps.iter().map(|(step, depth)| render_card(step, *depth))}
                     }
                     // DOING column
                     div { class: "plan-floating-col",
                         div { class: "plan-floating-col-head plan-floating-col-head--doing",
                             "doing ({doing_steps.len()})"
                         }
-                        {doing_steps.iter().map(|step| render_card(step))}
+                        {doing_steps.iter().map(|(step, depth)| render_card(step, *depth))}
                     }
                     // TODO column
                     div { class: "plan-floating-col",
                         div { class: "plan-floating-col-head plan-floating-col-head--todo",
                             "todo ({todo_steps.len()})"
                         }
-                        {todo_steps.iter().map(|step| render_card(step))}
+                        {todo_steps.iter().map(|(step, depth)| render_card(step, *depth))}
                     }
                 }
 
-                // ── Status bar ──
-                div { class: "plan-floating-status",
-                    if let Some(desc) = current_step {
-                        span { class: "plan-floating-status-arrow", "▸" }
-                        span { class: "plan-floating-status-text", "{desc}" }
-                        span { class: "plan-floating-status-cursor" }
-                    } else if matches!(plan_data.status, PlanStatus::Completed) {
-                        span { class: "plan-floating-status-arrow", "✓" }
-                        span { class: "plan-floating-status-text", "all steps completed." }
-                    } else if matches!(plan_data.status, PlanStatus::Canceled) {
-                        span { class: "plan-floating-status-arrow", "✗" }
-                        span { class: "plan-floating-status-text", "execution failed." }
-                    } else {
-                        span { class: "plan-floating-status-arrow", "○" }
-                        span { class: "plan-floating-status-text", "waiting to start…" }
+                // ── Status bar / Approval buttons ──
+                if is_need_approval {
+                    div { class: "plan-floating-approval",
+                        button {
+                            class: "plan-approve-btn plan-approve-btn--accept",
+                            onclick: move |_| {
+                                on_approve.call(());
+                                is_expanded.set(false);
+                            },
+                            "✓ 通过审批"
+                        }
+                        button {
+                            class: "plan-approve-btn plan-approve-btn--reject",
+                            onclick: move |_| {
+                                on_reject.call(());
+                                is_expanded.set(false);
+                            },
+                            "✎ 输入修改意见"
+                        }
+                    }
+                } else {
+                    div { class: "plan-floating-status",
+                        if let Some(desc) = current_step {
+                            span { class: "plan-floating-status-arrow", "▸" }
+                            span { class: "plan-floating-status-text", "{desc}" }
+                            span { class: "plan-floating-status-cursor" }
+                        } else if matches!(plan_data.status, PlanStatus::Completed) {
+                            span { class: "plan-floating-status-arrow", "✓" }
+                            span { class: "plan-floating-status-text", "all steps completed." }
+                        } else {
+                            span { class: "plan-floating-status-arrow", "○" }
+                            span { class: "plan-floating-status-text", "waiting to start…" }
+                        }
                     }
                 }
             }
@@ -181,8 +203,22 @@ pub fn PlanPanel(plan: Option<Plan>) -> Element {
     }
 }
 
-/// Render a single step card (reused from original).
-fn render_card(step: &ActionStep) -> Element {
+/// 递归收集所有步骤（含子步骤），返回带 depth 的扁平列表。
+fn collect_steps_recursive(steps: &[ActionStep], depth: u8) -> Vec<(&ActionStep, u8)> {
+    let mut result = Vec::new();
+    for step in steps {
+        result.push((step, depth));
+        if let Some(children) = &step.children {
+            if !children.is_empty() {
+                result.extend(collect_steps_recursive(children, depth + 1));
+            }
+        }
+    }
+    result
+}
+
+/// Render a single step card with optional depth indent.
+fn render_card(step: &ActionStep, depth: u8) -> Element {
     let (status_class, dot_class) = match step.status {
         StepStatus::Pending => ("plan-card--pending", "plan-card-dot--pending"),
         StepStatus::InProgress => ("plan-card--doing", "plan-card-dot--doing"),
@@ -192,9 +228,12 @@ fn render_card(step: &ActionStep) -> Element {
     };
 
     let is_done = matches!(step.status, StepStatus::Completed);
+    let indent_px = depth.saturating_mul(16);
 
     rsx! {
-        div { class: "plan-card {status_class}",
+        div {
+            class: "plan-card {status_class}",
+            style: if indent_px > 0 { "margin-left: {indent_px}px; border-left: 1px solid var(--color-rule); padding-left: 8px;" },
             div { class: "plan-card-row",
                 span { class: "plan-card-dot {dot_class}" }
                 span { class: "plan-card-index", "{step.index}" }
@@ -203,9 +242,6 @@ fn render_card(step: &ActionStep) -> Element {
                 }
             }
             p { class: "plan-card-desc", "{step.description}" }
-            if let Some(ref hint) = step.tool_hint {
-                div { class: "plan-card-hint", "tool: {hint}" }
-            }
         }
     }
 }

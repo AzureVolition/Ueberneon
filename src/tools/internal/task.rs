@@ -146,7 +146,7 @@ impl Tool for Task {
             .ok_or_else(|| "子 Agent 未找到".to_string())?;
 
         sub_agent.create_streaming();
-        let cancel_token = CancellationToken::new();
+        let cancel_token = ctx.cancel_token.clone().unwrap_or_else(CancellationToken::new);
 
         let result = sub_agent
             .accept_message(prompt.to_string(), cancel_token)

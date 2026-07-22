@@ -234,6 +234,7 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
+        cancel_token: None,
         }
     }
 

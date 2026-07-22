@@ -132,7 +132,8 @@ impl Tool for Bash {
 
         // 5. 前台模式：通过 ProcessRunner 同步执行（带沙箱 + 安全环境变量）
         let runner = ProcessRunner::new(self.work_dir.clone(), self.timeout)
-            .with_env(env);
+            .with_env(env)
+            .with_cancel_token(_ctx.cancel_token.clone());
 
         // 沙箱：启用时传递给 ProcessRunner
         let runner = if let Some(spec) = &self.sandbox {
@@ -251,6 +252,7 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
+        cancel_token: None,
         };
 
         let result = bash.execute(&ctx, &args).await;
@@ -270,6 +272,7 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
+        cancel_token: None,
         };
 
         let result = bash.execute(&ctx, &args).await;
@@ -287,6 +290,7 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
+        cancel_token: None,
         };
 
         let result = bash.execute(&ctx, &args).await;
@@ -305,6 +309,7 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
+        cancel_token: None,
         };
 
         let result = bash.execute(&ctx, &args).await;
@@ -322,6 +327,7 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
+        cancel_token: None,
         };
 
         let result = bash.execute(&ctx, &args).await;
@@ -341,6 +347,7 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
+        cancel_token: None,
         };
 
         let result = bash.execute(&ctx, &args).await;
@@ -358,6 +365,7 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
+        cancel_token: None,
         };
 
         let result = bash.execute(&ctx, &args).await;

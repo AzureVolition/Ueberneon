@@ -153,25 +153,32 @@ pub fn format_relative_time(dt: &DateTime<Local>) -> String {
 
 // ── Plan / ActionStep types ──────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
 pub struct Plan {
     pub goal: String,
+    pub description: String,
     pub steps: Vec<ActionStep>,
+    #[serde(default)]
     pub status: PlanStatus,
     pub started_at: Option<DateTime<Utc>>,
+    /// 连续未完成步骤的轮次计数（≥3 时注入催促提示）
+    #[serde(default)]
+    pub stall_count: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
 pub struct ActionStep {
     pub index: u8,
+    #[serde(default)]
     pub status: StepStatus,
     pub description: String,
-    pub tool_hint: Option<String>,
-    pub children: Vec<ActionStep>,
+    #[serde(default)]
+    pub children: Option<Vec<ActionStep>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
 pub enum StepStatus {
+    #[default]
     Pending,
     InProgress,
     Completed,
@@ -179,12 +186,12 @@ pub enum StepStatus {
     Failed,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
 pub enum PlanStatus {
+    #[default]
     NeedApproval,
     InProgress,
     Completed,
-    Canceled,
 }
 
 // ── 与 db 层的枚举互转 ──
@@ -198,7 +205,6 @@ impl From<PlanStatus> for DbPlanStatus {
             PlanStatus::NeedApproval => DbPlanStatus::NeedApproval,
             PlanStatus::InProgress => DbPlanStatus::InProgress,
             PlanStatus::Completed => DbPlanStatus::Completed,
-            PlanStatus::Canceled => DbPlanStatus::Canceled,
         }
     }
 }
@@ -209,7 +215,7 @@ impl From<DbPlanStatus> for PlanStatus {
             DbPlanStatus::NeedApproval => PlanStatus::NeedApproval,
             DbPlanStatus::InProgress => PlanStatus::InProgress,
             DbPlanStatus::Completed => PlanStatus::Completed,
-            DbPlanStatus::Canceled => PlanStatus::Canceled,
+            DbPlanStatus::Canceled => PlanStatus::InProgress, // 历史数据兼容：Canceled 视为可重新执行
         }
     }
 }
@@ -254,7 +260,6 @@ pub struct StreamingState {
     pub tool_calls: Arc<Mutex<Vec<ToolCallRecord>>>,
     pub version: Arc<AtomicU64>,
     pub approval_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<bool>>>>,
-    pub plan: Arc<Mutex<Option<Plan>>>,
 }
 
 /// UI 层的消息表示。运行时使用，不持久化。
@@ -269,6 +274,5 @@ pub enum UiMessage {
         tool_calls: Arc<Mutex<Vec<ToolCallRecord>>>,
         version: Arc<AtomicU64>,
         approval_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<bool>>>>,
-        plan: Arc<Mutex<Option<Plan>>>,
     },
 }

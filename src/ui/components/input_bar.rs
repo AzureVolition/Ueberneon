@@ -55,6 +55,9 @@ pub fn InputBar(
     on_agent_mode_change: EventHandler<AgentMode>,
     /// 是否禁用 config 选择（已有固定配置的对话）
     config_disabled: bool,
+    /// 审批提示文本 — PlanPanel 点击"输入修改意见"后设置，
+    /// InputBar 自动填入输入框并聚焦。
+    approval_hint_text: Signal<Option<String>>,
     on_send: EventHandler<String>,
     on_cancel: EventHandler<()>,
 ) -> Element {
@@ -66,6 +69,24 @@ pub fn InputBar(
     let desktop_kb = desktop.clone();
     let desktop_btn = desktop.clone();
     let _error_signal = use_context::<Signal<ErrorSignal>>();
+
+    // 当 approval_hint_text 有值时，自动填入输入框
+    use_effect(move || {
+        let hint_opt = approval_hint_text.read();
+        if let Some(ref hint) = *hint_opt {
+            let val = hint.clone();
+            drop(hint_opt);
+            // 设置 Dioxus signal
+            input.set(val.clone());
+            // 同步设置 DOM（textarea 是 uncontrolled）
+            let js = format!(
+                "var el = document.querySelector('.input-textarea'); if(el) {{ el.value = {}; el.focus(); el.setSelectionRange(el.value.length, el.value.length); }}",
+                serde_json::to_string(&val).unwrap_or_default()
+            );
+            let _ = desktop.webview.evaluate_script(&js);
+            approval_hint_text.set(None);
+        }
+    });
 
     let on_input = move |evt: FormEvent| {
         let val = evt.value();

@@ -62,7 +62,7 @@ pub async fn run_agent_loop(ctx: BridgeContext) {
     let mut agent = crate::agent::manager::AgentManager::get()
         .remove(&conversation_id)
         .expect("agent must be in cache before run_agent_loop");
-    agent.plan_mode = action_mode;
+    agent.handler.set_action_mode(action_mode);
     *agent.handler.agent_mode.lock().unwrap() = agent_mode_val;
 
     // Agent 内部创建流式状态

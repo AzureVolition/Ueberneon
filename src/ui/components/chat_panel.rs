@@ -405,7 +405,7 @@ fn tool_args_summary(tool_name: &str, args: &serde_json::Value) -> String {
     if json.len() <= 60 {
         json
     } else {
-        format!("{}…", &json[..57])
+        format!("{}…", json.chars().take(57).collect::<String>())
     }
 }
 
