@@ -8,9 +8,9 @@ use std::path::PathBuf;
 use std::path::Path;
 use std::time::Duration;
 
-use crate::agent::{Tool, AgentHandler, ToolContext, ToolResult};
+use crate::agent::{Tool, ToolContext, ToolResult};
 #[cfg(test)]
-use crate::agent::{AgentMode, ActionMode, ToolResultExt};
+use crate::agent::{AgentHandler, ActionMode, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
 
@@ -278,9 +278,9 @@ impl CheckableTool for Grep {
 mod tests {
     use super::*;
     use std::io::Write;
-    use std::sync::{Arc, Mutex};
+    
     use std::sync::atomic::{AtomicU64, Ordering};
-    use llm::tool::ToolMeta;
+    
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 

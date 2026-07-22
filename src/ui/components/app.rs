@@ -7,7 +7,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::manager::AgentManager;
 use crate::agent::{ActionMode, AgentHandler, AgentMode};
-use crate::model::{ActionStep, Plan, PlanStatus, StepStatus};
 use crate::ui::components::chat_panel::ChatPanel;
 use crate::ui::components::input_bar::InputBar;
 use crate::ui::components::plan_panel::PlanPanel;
@@ -176,7 +175,7 @@ pub fn App() -> Element {
     let is_streaming = use_signal(|| false);
     let mut streaming_project_id = use_signal(Vec::<String>::new);
     let mut active_tool_calls = use_signal(Vec::<ToolCallRecord>::new);
-    let mut action_mode = use_signal(|| ActionMode::Regular);
+    let action_mode = use_signal(|| ActionMode::Regular);
     let mut agent_mode = use_signal(|| AgentMode::Ask);
 
     // ── Agent config 选择状态 ──
@@ -206,7 +205,7 @@ pub fn App() -> Element {
         Arc::new(Mutex::new(HashMap::new()));
 
     // 审批提示文本 — PlanPanel 点击"输入修改意见"后设置，InputBar 自动填入
-    let mut approval_hint_text: Signal<Option<String>> = use_signal(|| None);
+    let approval_hint_text: Signal<Option<String>> = use_signal(|| None);
 
     // 对话快照缓存（切走时暂存，切回时恢复）
     // 计划看板信号 — 从 AgentHandler 实时读取 Plan
@@ -505,11 +504,11 @@ pub fn App() -> Element {
                                     let cid = active_conversation_id();
                                     let pid = active_project_id.read().clone().unwrap_or_default();
                                     let mut am = action_mode;
-                                    let mut is_streaming = is_streaming;
-                                    let mut streaming_project_id = streaming_project_id;
+                                    let is_streaming = is_streaming;
+                                    let streaming_project_id = streaming_project_id;
                                     let ss = streaming_states.clone();
                                     let err_sig = error_signal;
-                                    let mut agent_mode = agent_mode;
+                                    let agent_mode = agent_mode;
                                     move |()| {
                                         // 1. 切换前端 action_mode
                                         am.set(ActionMode::Regular);

@@ -2,12 +2,12 @@
 //
 // 通过 JobManager 终止后台任务，先 SIGTERM 后 SIGKILL。
 
-use crate::agent::{Tool, AgentHandler, ToolContext, ToolResult};
+use crate::agent::{Tool, ToolContext, ToolResult};
 #[cfg(test)]
-use crate::agent::{AgentMode, ActionMode, ToolResultExt};
+use crate::agent::{AgentHandler, ActionMode, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::tools::jobs::JobManager;
 use crate::tools::internal::common::checkable_tool::CheckableTool;

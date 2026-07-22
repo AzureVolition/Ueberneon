@@ -6,9 +6,9 @@
 use std::path::PathBuf;
 use std::path::Path;
 
-use crate::agent::{Tool, AgentHandler, ToolContext, ToolResult};
+use crate::agent::{Tool, ToolContext, ToolResult};
 #[cfg(test)]
-use crate::agent::{AgentMode, ActionMode, ToolResultExt};
+use crate::agent::{AgentHandler, ActionMode, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
 use regex::Regex;
 use std::sync::LazyLock;
@@ -95,6 +95,7 @@ type SymbolParser = fn(&str, &str, &Regex, &Regex) -> Vec<CodeSymbol>;
 struct LangDef {
     extensions: &'static [&'static str],
     parser: SymbolParser,
+    #[allow(dead_code)]
     kinds: &'static [&'static str],
 }
 
@@ -598,9 +599,9 @@ impl CheckableTool for CodeIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
+    
     use std::sync::atomic::{AtomicU64, Ordering};
-    use llm::tool::ToolMeta;
+    
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 

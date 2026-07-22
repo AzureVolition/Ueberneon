@@ -127,7 +127,7 @@ pub fn delete(conn: &Connection, id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::init_db;
+    
 
     fn test_conn() -> Connection {
         let conn = Connection::open_in_memory().unwrap();

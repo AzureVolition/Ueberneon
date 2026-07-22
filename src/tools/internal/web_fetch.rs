@@ -3,10 +3,9 @@
 // 支持 HTTP/HTTPS，自动将 HTML 转为纯文本。
 // 内置 SSRF 防护：拒绝私有 IP、回环地址和链路本地地址。
 
-use crate::agent::{Tool, AgentHandler, ToolContext, ToolResult};
-use std::sync::{Arc, Mutex};
+use crate::agent::{Tool, ToolContext, ToolResult};
 #[cfg(test)]
-use crate::agent::{AgentMode, ActionMode, ToolResultExt};
+use crate::agent::{AgentHandler, ActionMode, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
 use crate::tools::internal::common::checkable_tool::CheckableTool;
@@ -104,8 +103,8 @@ impl WebFetch {
         let len = bytes.len();
         let mut i = 0;
         let mut in_tag = false;
-        let mut in_script = false;
-        let mut in_style = false;
+        let mut _in_script = false;
+        let mut _in_style = false;
         let mut tag_name = String::new();
 
         while i < len {
@@ -175,9 +174,9 @@ impl WebFetch {
                     let tag_base = tag_lower.split_whitespace().next().unwrap_or("");
 
                     if tag_base == "script" {
-                        in_script = false;
+                        _in_script = false;
                     } else if tag_base == "style" {
-                        in_style = false;
+                        _in_style = false;
                     }
 
                     // 块级元素后加换行

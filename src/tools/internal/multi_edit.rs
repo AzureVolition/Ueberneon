@@ -4,12 +4,12 @@
 // 编辑在内存中顺序应用；仅在所有编辑都成功时才写入磁盘。
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use crate::agent::{ActionMode, Tool, AgentHandler, ToolContext, ToolResult};
+use crate::agent::{ActionMode, Tool, ToolContext, ToolResult};
 use llm::tool::ToolMeta;
 #[cfg(test)]
-use crate::agent::{AgentMode, ToolResultExt};
+use crate::agent::{AgentHandler, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
 use serde::Deserialize;
 use serde_json::Value;
@@ -216,7 +216,7 @@ impl CheckableTool for MultiEdit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use llm::tool::ToolMeta;
+    
 
     static TEST_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 

@@ -417,8 +417,8 @@ fn seed_default_tool_groups(conn: &rusqlite::Connection) -> rusqlite::Result<()>
 }
 
 /// 删除所有表并重新初始化（开发用）
-pub fn drop_all_tables() -> Result<(), Box<dyn std::error::Error>> {
-    with_db(|conn| -> Result<(), Box<dyn std::error::Error>> {
+pub fn drop_all_tables() -> anyhow::Result<() > {
+    with_db(|conn| -> anyhow::Result<()> {
         conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
         let tables: Vec<String> = {
             let mut stmt = conn.prepare(
@@ -431,7 +431,7 @@ pub fn drop_all_tables() -> Result<(), Box<dyn std::error::Error>> {
         for t in &tables {
             conn.execute(&format!("DROP TABLE IF EXISTS \"{}\"", t), [])?;
         }
-        rebuild_schema(conn).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+        rebuild_schema(conn)?;
         Ok(())
     })
 }

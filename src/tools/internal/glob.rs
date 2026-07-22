@@ -2,10 +2,10 @@
 //
 // 支持 ** 递归匹配，结果排序后输出，最多返回 1000 条。
 
-use crate::agent::{Tool, AgentHandler, ToolContext, ToolResult};
+use crate::agent::{Tool, ToolContext, ToolResult};
 use std::path::PathBuf;
 #[cfg(test)]
-use crate::agent::{AgentMode, ActionMode, ToolResultExt};
+use crate::agent::{AgentHandler, ActionMode, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
 use crate::tools::internal::common::checkable_tool::CheckableTool;
@@ -120,9 +120,9 @@ impl CheckableTool for Glob {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
+    
     use std::sync::atomic::{AtomicU64, Ordering};
-    use llm::tool::ToolMeta;
+    
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 

@@ -86,6 +86,7 @@ fn normalize_step(step: &mut ActionStep) {
 }
 
 /// 将 Plan 和 steps 写入数据库，返回 plan_id
+#[allow(dead_code)]
 fn persist_plan(
     conn: &rusqlite::Connection,
     project_id: &str,
@@ -93,7 +94,7 @@ fn persist_plan(
     plan: &Plan,
 ) -> Result<String, String> {
     use crate::db::metadata::plan::{self as plan_db, PlanStatus as DbPlanStatus};
-    use crate::db::metadata::task::{self as task_db, TaskStatus as DbTaskStatus};
+    
 
     let db_status: DbPlanStatus = plan.status.clone().into();
     let plan_id = plan_db::create(conn, project_id, conversation_id, &plan.goal, &plan.description, db_status)
@@ -107,6 +108,7 @@ fn persist_plan(
     Ok(plan_id)
 }
 
+#[allow(dead_code)]
 fn persist_step(
     conn: &rusqlite::Connection,
     plan_id: &str,

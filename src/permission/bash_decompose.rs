@@ -7,11 +7,6 @@
 //   "git status && git push --force" → ["git status", "git push --force"]
 //   前段只读放行，后段触发 ForcePushGuard。
 
-/// 判断一个字节是否为空白字符。
-fn is_whitespace(b: u8) -> bool {
-    matches!(b, b' ' | b'\t' | b'\r')
-}
-
 /// 将复合 bash 命令拆解为单个简单命令的 segments。
 ///
 /// 返回 `None` 表示输入格式错误（如未闭合的引号/括号），应当回到
@@ -30,6 +25,7 @@ pub fn decompose(command: &str) -> Option<Vec<String>> {
     let mut i = 0;
 
     // 解析状态
+    #[allow(dead_code)]
     enum State {
         Normal,
         SingleQuote,    // '...'

@@ -1,8 +1,6 @@
 // ── UI 状态类型 ──
 
 pub use crate::model::*;
-use std::sync::Arc;
-use std::sync::Mutex;
 
 /// 对话运行时数据（per-conv，由 bridge 异步写入，UI 读取）
 #[derive(Clone)]

@@ -99,6 +99,7 @@ impl Check for ForcePushGuard {
 /// 作用于：`write_file` 等带 `content` 参数的文件写入工具。
 /// 检查 args 中的 `content` 字段长度。
 pub struct MaxFileSize {
+    #[allow(dead_code)]
     max_bytes: usize,
 }
 

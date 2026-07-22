@@ -7,10 +7,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::agent::{ActionMode, Tool, AgentHandler, ToolContext, ToolResult};
+use crate::agent::{ActionMode, Tool, ToolContext, ToolResult};
 use llm::tool::ToolMeta;
 #[cfg(test)]
-use crate::agent::{AgentMode, ToolResultExt};
+use crate::agent::{AgentHandler, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
 use crate::permission::{Check, Decision, gate::PermissionChecked};
@@ -192,7 +192,7 @@ impl CheckableTool for EditFile {
 mod tests {
     use super::*;
     use std::io::Write;
-    use llm::tool::ToolMeta;
+    
 
     static TEST_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 

@@ -13,6 +13,7 @@ pub struct SnapshotStore {
     /// 快照映射：path → (turn, original_content)
     snapshots: RwLock<HashMap<String, (usize, String)>>,
     /// 持久化根目录（可选）。
+    #[allow(dead_code)]
     persist_dir: Option<PathBuf>,
 }
 

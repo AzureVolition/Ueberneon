@@ -23,12 +23,6 @@ fn gen_id() -> String {
     format!("acfg-{ts:x}-{pid:x}")
 }
 
-/// Agent 类型选项
-const AGENT_TYPES: &[(&str, &str)] = &[
-    ("InBuilt", "InBuilt — 内置助手"),
-    ("Custom", "Custom — 自定义助手"),
-    ("SubAgent", "SubAgent — 子 Agent"),
-];
 
 #[component]
 pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: String, on_change: EventHandler<()>) -> Element {

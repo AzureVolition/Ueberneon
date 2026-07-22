@@ -5,7 +5,8 @@
 // 前台：ProcessRunner 同步执行；后台：JobManager 异步 spawn，返回 job ID。
 // 支持沙箱隔离（macOS Seatbelt / Linux bubblewrap）和环境变量安全处理。
 
-use crate::agent::{ActionMode, Tool, AgentHandler, ToolContext, ToolResult, ToolResultExt};
+#[cfg_attr(not(test), allow(unused_imports))]
+use crate::agent::{ActionMode, Tool, ToolContext, ToolResult, ToolResultExt};
 use llm::tool::ToolMeta;
 use racpagent_macros::ToolMetaImpl;
 use serde::Deserialize;
@@ -220,8 +221,8 @@ impl Bash {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::AgentMode;
-    use llm::tool::ToolMeta;
+    use crate::agent::AgentHandler;
+    
 
     fn test_job_manager() -> Arc<JobManager> {
         Arc::new(JobManager::new())

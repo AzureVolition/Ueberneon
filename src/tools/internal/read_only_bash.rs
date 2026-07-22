@@ -9,9 +9,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::agent::{Tool, AgentHandler, ToolContext, ToolResult};
-use std::sync::{Arc, Mutex};
 #[cfg(test)]
-use crate::agent::{AgentMode, ActionMode, ToolResultExt};
+use crate::agent::ToolResultExt;
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
 
@@ -168,13 +167,15 @@ impl CheckableTool for ReadOnlyBash {
 
 mod tests {
     use super::*;
-    use crate::agent::{ActionMode, AgentMode};
-    use llm::tool::ToolMeta;
+    use crate::agent::ActionMode;
+    
 
+    #[allow(dead_code)]
     fn test_sandbox() -> Option<SandboxSpec> {
         None
     }
 
+    #[allow(dead_code)]
     fn test_tool() -> ReadOnlyBash {
         ReadOnlyBash::new(
             std::env::current_dir().unwrap(),
@@ -183,6 +184,7 @@ mod tests {
         )
     }
 
+    #[allow(dead_code)]
     fn test_ctx() -> ToolContext {
         ToolContext {
             call_id: "test".into(),

@@ -199,6 +199,7 @@ impl ProcessRunner {
 
     #[cfg(unix)]
     /// 进程是否已取消（检查 cancel_token）。
+    #[allow(dead_code)]
     fn is_cancelled(token: &Option<CancellationToken>) -> bool {
         token.as_ref().map_or(false, |t| t.is_cancelled())
     }

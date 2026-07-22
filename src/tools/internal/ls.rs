@@ -5,9 +5,9 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::agent::{Tool, AgentHandler, ToolContext, ToolResult};
+use crate::agent::{Tool, ToolContext, ToolResult};
 #[cfg(test)]
-use crate::agent::{AgentMode, ActionMode, ToolResultExt};
+use crate::agent::{AgentHandler, ActionMode, ToolResultExt};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
 use crate::tools::internal::common::checkable_tool::CheckableTool;
@@ -141,7 +141,7 @@ fn list_flat(dir: &Path, display: &str) -> Result<ToolResult, String> {
 }
 
 /// 递归：深度优先遍历目录树。
-fn list_recursive(dir: &Path, display: &str) -> Result<ToolResult, String> {
+fn list_recursive(dir: &Path, _display: &str) -> Result<ToolResult, String> {
     let mut walker = walkdir::WalkDir::new(dir)
         .sort_by(|a, b| a.file_name().cmp(b.file_name()))
         .into_iter();
@@ -204,10 +204,10 @@ impl CheckableTool for Ls {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use std::sync::{Arc, Mutex};
+    
+    
     use std::sync::atomic::{AtomicU64, Ordering};
-    use llm::tool::ToolMeta;
+    
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 

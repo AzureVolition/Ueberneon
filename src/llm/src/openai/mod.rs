@@ -273,6 +273,7 @@ struct SseChatResponse {
 
 #[derive(Debug, Deserialize)]
 struct SseChoice {
+    #[allow(dead_code)]
     index: u32,
     delta: SseDelta,
     #[serde(default)]

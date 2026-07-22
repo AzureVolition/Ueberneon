@@ -1,3 +1,5 @@
+#![allow(unpredictable_function_pointer_comparisons)]
+
 pub mod agent;
 pub mod db;
 pub mod model;

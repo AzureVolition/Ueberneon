@@ -1,7 +1,6 @@
-use std::sync::{Arc, Mutex};
 use racpagent::agent::Tool;
 use llm::tool::ToolMeta as _;
-use racpagent::agent::{AgentMode, ActionMode};
+use racpagent::agent::ActionMode;
 use racpagent_macros::ToolMetaImpl;
 
 // ── 只读工具，带完整 schema ──
