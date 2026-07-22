@@ -60,7 +60,7 @@ pub fn init_db() -> anyhow::Result<Connection> {
 }
 
 /// 建表 + 种子数据（接收 &Connection，不持有所有权）
-fn rebuild_schema(conn: &Connection) -> Result<()> {
+fn rebuild_schema(conn: &Connection) -> anyhow::Result<()> {
 
     // 外键约束
     conn.execute_batch("PRAGMA foreign_keys=ON;")?;
