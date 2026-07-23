@@ -82,7 +82,9 @@ impl PromptBuilder {
         if agent_type == "SubAgent" {
             builder = builder
                 .with_var("tool_list", &ctx.tool_list)
-                .with_var("env_info", &ctx.env_info);
+                .with_var("env_info", &ctx.env_info)
+                .with_var("workspace_path", &ctx.workspace_path)
+                .with_var("project_name", &ctx.project_name);
         }
 
         builder

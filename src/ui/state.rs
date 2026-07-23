@@ -1,6 +1,7 @@
 // ── UI 状态类型 ──
 
 pub use crate::model::*;
+use crate::agent::AgentMode;
 
 /// 对话运行时数据（per-conv，由 bridge 异步写入，UI 读取）
 #[derive(Clone)]
@@ -9,6 +10,8 @@ pub struct ConversationRuntime {
     pub tick: u64,
     pub agent_handler: Option<crate::agent::AgentHandler>,
     pub cancel_token: Option<tokio_util::sync::CancellationToken>,
+    pub agent_config_id: Option<String>,
+    pub agent_mode: AgentMode,
 }
 
 impl Default for ConversationRuntime {
@@ -18,6 +21,8 @@ impl Default for ConversationRuntime {
             tick: 0,
             agent_handler: None,
             cancel_token: None,
+            agent_config_id: None,
+            agent_mode: AgentMode::Ask,
         }
     }
 }

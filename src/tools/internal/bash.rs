@@ -6,7 +6,7 @@
 // 支持沙箱隔离（macOS Seatbelt / Linux bubblewrap）和环境变量安全处理。
 
 #[cfg_attr(not(test), allow(unused_imports))]
-use crate::agent::{ActionMode, Tool, ToolContext, ToolResult, ToolResultExt};
+use crate::agent::{ActionMode, AgentMode, Tool, ToolContext, ToolResult, ToolResultExt};
 use llm::tool::ToolMeta;
 use racpagent_macros::ToolMetaImpl;
 use serde::Deserialize;
@@ -153,17 +153,28 @@ impl Tool for Bash {
 #[async_trait::async_trait]
 impl CheckableTool for Bash {
     fn check(&self, ctx: &ToolContext, args: &Value) -> Decision {
-        match self.check_permission(self.name(), args, *ctx.handler.agent_mode.lock().expect("agent_mode lock poisoned")) {
-            Decision::Allow => {}
-            decision => return decision,
+        let agent_mode = *ctx.handler.agent_mode.lock().expect("agent_mode lock poisoned");
+
+        // Unrestrained 模式：放行所有命令
+        if agent_mode == AgentMode::Unrestrained {
+            return Decision::Allow;
         }
-        if let ActionMode::Plan = ctx.plan_mode {
-            let command = args.get("command").and_then(|v| v.as_str()).unwrap_or("");
-            if let Some(reason) = Self::check_plan_mode(command) {
+
+        let command = args.get("command").and_then(|v| v.as_str()).unwrap_or("");
+
+        // 已知只读命令直接放行（不需要审批）
+        if !command.is_empty() && crate::permission::checks::is_read_only_bash(command) {
+            if let Some(reason) = Self::check_plan_mode(command) && ActionMode::Plan == ctx.plan_mode {
                 return Decision::Deny(reason);
             }
+            return Decision::Allow;
         }
-        Decision::Allow
+
+        // 非只读命令：先跑既有检查（force push / danger 等），通过则询问
+        match self.check_permission(self.name(), args, agent_mode) {
+            Decision::Allow => Decision::Ask,
+            other => other,
+        }
     }
 
 }

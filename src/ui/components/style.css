@@ -1878,6 +1878,11 @@ body {
   pointer-events: none;
 }
 
+.agent-config-dropdown .dropdown-trigger {
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
 /* ── Mode toggle pills (Hallmark · Lumen) ── */
 .mode-toggle-row {
   display: flex;
