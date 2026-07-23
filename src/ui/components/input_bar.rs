@@ -64,6 +64,7 @@ pub fn InputBar(
     let mut input = use_signal(String::new);
     let mut idle_pulse = use_signal(|| false);
     let mut pulse_gen = use_signal(|| 0u64);
+    let mut placeholder = use_signal(|| "type your message... (⌘↵ to send)".to_string());
     let running = is_streaming();
     let desktop = use_window();
     let desktop_kb = desktop.clone();
@@ -76,22 +77,26 @@ pub fn InputBar(
         if let Some(ref hint) = *hint_opt {
             let val = hint.clone();
             drop(hint_opt);
-            // 设置 Dioxus signal
-            input.set(val.clone());
-            // 同步设置 DOM（textarea 是 uncontrolled）
-            let js = format!(
-                "var el = document.querySelector('.input-textarea'); if(el) {{ el.value = {}; el.focus(); el.setSelectionRange(el.value.length, el.value.length); }}",
-                serde_json::to_string(&val).unwrap_or_default()
+            // 设置 placeholder（灰色提示文字）
+            placeholder.set(val);
+            // 聚焦输入框
+            let _ = desktop.webview.evaluate_script(
+                "var el = document.querySelector('.input-textarea'); if(el) el.focus();",
             );
-            let _ = desktop.webview.evaluate_script(&js);
             approval_hint_text.set(None);
         }
     });
+
+    const DEFAULT_PLACEHOLDER: &str = "type your message... (⌘↵ to send)";
 
     let on_input = move |evt: FormEvent| {
         let val = evt.value();
         let is_empty = val.trim().is_empty();
         input.set(val);
+        // 用户开始输入时恢复默认 placeholder
+        if placeholder() != DEFAULT_PLACEHOLDER {
+            placeholder.set(DEFAULT_PLACEHOLDER.to_string());
+        }
         idle_pulse.set(false);
         let g = pulse_gen() + 1;
         pulse_gen.set(g);
@@ -200,7 +205,7 @@ pub fn InputBar(
 
                 textarea {
                     class: "input-textarea",
-                    placeholder: "type your message... (⌘↵ to send)",
+                    placeholder: placeholder(),
                     disabled: running,
                     rows: 2,
                     oninput: on_input,

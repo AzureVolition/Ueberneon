@@ -775,6 +775,7 @@ body {
   display: flex;
   flex-direction: row;
   min-height: 0;
+  position: relative;
 }
 
 /* ═══════════════════════════════════════════════
@@ -4374,9 +4375,9 @@ body {
 
 /* ── Floating toggle pill ── */
 .plan-pill {
-  position: fixed;
+  position: absolute;
   z-index: var(--z-toast, 500);
-  bottom: 96px;
+  bottom: 24px;
   right: 24px;
   display: flex;
   align-items: center;

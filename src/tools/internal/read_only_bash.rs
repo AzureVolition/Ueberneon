@@ -19,6 +19,7 @@ use super::common::process::{ProcessOutput, ProcessRunner};
 use super::common::shell::Shell;
 use crate::tools::sandbox::SandboxSpec;
 use crate::tools::internal::common::checkable_tool::CheckableTool;
+use crate::permission::bash_decompose;
 use crate::permission::Decision;
 
 /// read_only_bash —— 只读安全的 shell 命令执行。
@@ -65,24 +66,50 @@ impl ReadOnlyBash {
 
     /// plan mode 下 bash 的允许命令前缀白名单。
     const PLAN_MODE_ALLOWED_PREFIXES: &[&str] = &[
-        "ls", "cat", "head", "tail", "wc", "find", "grep", "git log",
+        "cd", "echo", "ls", "cat", "head", "tail", "wc", "find", "grep", "git log",
         "git diff", "git show", "git status", "git branch",
     ];
 
-    /// 检查命令是否在白名单中。
+    /// 检查命令（可能含 &&、||、|、; 链）是否全部在白名单中。
     fn check_read_only(command: &str) -> Option<String> {
         let cmd = command.trim();
-        let allowed = Self::PLAN_MODE_ALLOWED_PREFIXES
-            .iter()
-            .any(|prefix| cmd.starts_with(prefix));
-        if !allowed {
-            Some(format!(
-                "blocked: read_only_bash: command '{}' is not in the read-only whitelist",
-                cmd
-            ))
-        } else {
-            None
+
+        // 先尝试分割复合命令，使每个 segment 独立匹配白名单
+        let segments = match bash_decompose::decompose(cmd) {
+            Some(segs) => segs,
+            None => {
+                // 分割失败（未闭合引号等），回退到整串前缀匹配
+                let prefix = cmd.split_whitespace().next().unwrap_or(cmd);
+                let allowed = Self::PLAN_MODE_ALLOWED_PREFIXES
+                    .iter()
+                    .any(|p| cmd.starts_with(p));
+                return if allowed {
+                    None
+                } else {
+                    Some(format!(
+                        "blocked: read_only_bash: command starts with '{prefix}' which is not in the read-only whitelist (command: '{cmd}')"
+                    ))
+                };
+            }
+        };
+
+        // 逐段检查白名单
+        for seg in &segments {
+            if seg.is_empty() {
+                continue;
+            }
+            let prefix = seg.split_whitespace().next().unwrap_or(seg);
+            let allowed = Self::PLAN_MODE_ALLOWED_PREFIXES
+                .iter()
+                .any(|p| seg.starts_with(p));
+            if !allowed {
+                return Some(format!(
+                    "blocked: read_only_bash: command starts with '{prefix}' which is not in the read-only whitelist (segment: '{seg}', full command: '{cmd}')"
+                ));
+            }
         }
+
+        None
     }
 
     /// 将 ProcessOutput 转为 ToolResult。
@@ -235,11 +262,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn blocked_echo_command() {
+    async fn allowed_echo_command() {
         let tool = test_tool();
         let args = serde_json::json!({"command": "echo 'hello'"});
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(result.is_err(), "echo should be blocked");
+        assert!(!result.is_err(), "echo should be allowed");
     }
 
     #[tokio::test]
@@ -305,5 +332,76 @@ mod tests {
 
         let wc_result = tool.execute(&ctx, &serde_json::json!({"command": "wc -l Cargo.toml"})).await;
         assert!(!wc_result.is_err(), "wc should be allowed");
+    }
+
+    // ── check_read_only 单元测试（不执行命令） ──
+
+    #[test]
+    fn check_simple_chain_cd_and_cat() {
+        let err = ReadOnlyBash::check_read_only("cd /tmp && cat Cargo.toml");
+        assert!(err.is_none(), "cd && cat should be allowed: {:?}", err);
+    }
+
+    #[test]
+    fn check_chain_cat_grep() {
+        let err = ReadOnlyBash::check_read_only("cat Cargo.toml | grep error");
+        assert!(err.is_none(), "cat | grep should be allowed: {:?}", err);
+    }
+
+    #[test]
+    fn check_chain_all_read_only() {
+        let err = ReadOnlyBash::check_read_only("cd src && ls -la && cat Cargo.toml | head -5");
+        assert!(err.is_none(), "full read-only chain should be allowed: {:?}", err);
+    }
+
+    #[test]
+    fn check_chain_with_write_blocked() {
+        let err = ReadOnlyBash::check_read_only("cd src && touch foo.txt && cat foo.txt");
+        assert!(err.is_some(), "touch should be blocked");
+        assert!(err.as_ref().unwrap().contains("touch"), "error should mention touch: {:?}", err);
+    }
+
+    #[test]
+    fn check_chain_with_echo_allowed() {
+        let err = ReadOnlyBash::check_read_only("cd /tmp && echo 'hi'");
+        assert!(err.is_none(), "echo should now be allowed: {:?}", err);
+    }
+
+    #[test]
+    fn check_fallback_on_unclosed_quote_with_blocked_cmd() {
+        // 未闭合引号让 decompose 返回 None，回退到整串 starts_with
+        // 使用 whitelist 之外的命令名验证回退路径
+        let err = ReadOnlyBash::check_read_only("touch 'unclosed");
+        assert!(err.is_some(), "unclosed quote with blocked cmd should be blocked via fallback");
+    }
+
+    // ── 集成测试：链式命令通过 execute ──
+
+    #[tokio::test]
+    async fn allowed_chain_cd_and_cat_with_echo_fallback() {
+        // cat Cargo.toml in /tmp will fail, but || echo handles it — all read-only
+        let tool = test_tool();
+        let args = serde_json::json!({"command": "cd /tmp && cat Cargo.toml 2>/dev/null || echo 'no file'"});
+        let result = tool.execute(&test_ctx(), &args).await;
+        assert!(!result.is_err(), "chain with echo fallback should be allowed");
+    }
+
+    #[tokio::test]
+    async fn allowed_chain_cd_and_ls() {
+        let tool = test_tool();
+        let args = serde_json::json!({"command": "cd /tmp && ls -la"});
+        let result = tool.execute(&test_ctx(), &args).await;
+        assert!(!result.is_err(), "cd && ls should be allowed");
+    }
+
+    #[tokio::test]
+    async fn blocked_chain_with_touch() {
+        let tool = test_tool();
+        let args = serde_json::json!({"command": "cd src && touch foo.txt"});
+        let result = tool.execute(&test_ctx(), &args).await;
+        assert!(result.is_err(), "chain with touch should be blocked");
+        let err = result.output();
+        assert!(err.contains("touch"), "error should mention touch: {err}");
+        assert!(err.contains("not in the read-only whitelist"), "error should indicate whitelist: {err}");
     }
 }

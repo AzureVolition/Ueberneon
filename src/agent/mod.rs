@@ -4,7 +4,7 @@ pub mod action_plan;
 pub mod manager;
 pub mod prompts;
 use anyhow::Context;
-pub use llm::tool::ToolMeta;
+pub use llm::{tool::ToolMeta, ToolCall};
 
 // ── Tool trait ──────────────────────────────────────────────────────────────
 
@@ -274,6 +274,7 @@ impl AgentHandler {
         
     }
 
+    /// 可以抽象出来的方法,未来可以弄成抽象Handler用以塞入提示词
     pub fn prompt_before_user_message(&self) -> Option<&str> {
         if let Some(action_mode) = self.current_plan_state() {
             match action_mode {
@@ -292,8 +293,18 @@ impl AgentHandler {
         }
     }
 
-    pub fn prompt_pre_loop(&self) -> Option<&str> {
-        None
+    pub fn prompt_pre_loop(&self) -> Option<String> {
+        if let Some(action_mode) = self.current_plan_state() {
+            match action_mode {
+                CurrentPlanState::Exculuding => {
+                    let plan = self.current_plan.lock().expect("current_plan lock poisoned").clone()?;
+                    Some(crate::agent::prompts::plan::execute_prompt(&plan))
+                }
+                _ => None,
+            }
+        } else {
+            None
+        }
     }
 
     /// 审批通过当前计划：写入 DB（plan + tasks），NeedApproval → InProgress，
@@ -418,6 +429,11 @@ pub struct Agent {
     pub max_tokens: Option<u32>,
     /// Agent 类型
     pub agent_type: String,
+    /// 循环数
+    pub round: Option<u32>,
+    /// 挂起的工具调用
+    pub pending_tool_calls: Vec<ToolCall>,
+    
 }
 
 impl Agent {
@@ -451,8 +467,50 @@ impl Agent {
             temperature,
             max_tokens,
             agent_type,
+            round: None,
+            pending_tool_calls: Vec::new(),
         }
     }
+    
+    pub fn start_loop(&mut self) {
+        self.round = Some(0);
+    }
+
+    pub fn round_start(&mut self)  {
+        self.round = match self.round {
+            Some(r) => Some(r + 1),
+            None => panic!("when round start the round is not initialized"),
+        };
+    }
+
+    pub fn round_end(&mut self) {
+        // ── stall_count 计数与催促 ──
+        let mut plan_guard = self.handler.current_plan.lock().expect("current_plan lock poisoned");
+        if let Some(ref mut plan) = *plan_guard {
+            let completed_this_round = self.pending_tool_calls.iter().any(|tc| tc.name == "CompleteStep");
+            if completed_this_round {
+                plan.stall_count = 0;
+            } else {
+                plan.stall_count += 1;
+                if plan.stall_count >= 3 {
+                    // 注入催促系统消息
+                    let nudge = Message {
+                        role: LlmRole::System,
+                        content: Some(prompts::plan::STALL_NUDGE_SUFFIX.to_string()),
+                        timestamp: Some(chrono::Utc::now()),
+                        ..Default::default()
+                    };
+                    // 直接 push 到下一条，让 LLM 看到催促
+                    self.messages.push(nudge);
+                    plan.stall_count = 0; // 重置避免重复催促
+                }
+            }
+        }
+        // 清空本轮工具调用，避免下轮重复执行
+        self.pending_tool_calls.clear();
+    }
+
+    
 
     pub fn push_message(&mut self, msg: Message) -> anyhow::Result<()> {
         if let Ok(guard) = crate::db::get_db().lock() {

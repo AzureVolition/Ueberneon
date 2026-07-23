@@ -12,7 +12,7 @@ use super::hook::AgentEvent;
 use super::ToolContext;
 use crate::model::{ChatMessage, Role as ChatRole, StreamSegment, ToolCallRecord, ToolCallStatus, UiMessage};
 use crate::permission::Decision;
-use llm::{Chunk, Message, Request, Role as LlmRole, ToolCall};
+use llm::{Chunk, Message, Request, Role as LlmRole};
 
 // ── select! 辅助枚举 ────────────────────────────────────────────────────────
 
@@ -29,19 +29,23 @@ impl Agent {
     /// 创建内部流式状态，返回 UiMessage::Streaming 供 UI 显示。
     /// 必须先调用此方法，再调用 accept_message。
     pub fn create_streaming(&mut self) -> UiMessage {
-        let state = crate::model::StreamingState {
-            segments: Arc::new(Mutex::new(Vec::new())),
-            tool_calls: Arc::new(Mutex::new(Vec::new())),
-            version: Arc::new(AtomicU64::new(0)),
-            approval_tx: Arc::new(Mutex::new(None)),
-        };
+        if self.streaming_handle.is_none()  {
+            let state = crate::model::StreamingState {
+                segments: Arc::new(Mutex::new(Vec::new())),
+                tool_calls: Arc::new(Mutex::new(Vec::new())),
+                version: Arc::new(AtomicU64::new(0)),
+                approval_tx: Arc::new(Mutex::new(None)),
+            };
+            self.streaming_handle = Some(state);
+        }        
+
         let streaming = UiMessage::Streaming {
-            segments: state.segments.clone(),
-            tool_calls: state.tool_calls.clone(),
-            version: state.version.clone(),
-            approval_tx: state.approval_tx.clone(),
+            segments: self.streaming_handle.as_ref().unwrap().segments.clone(),
+            tool_calls: self.streaming_handle.as_ref().unwrap().tool_calls.clone(),
+            version: self.streaming_handle.as_ref().unwrap().version.clone(),
+            approval_tx: self.streaming_handle.as_ref().unwrap().approval_tx.clone(),
         };
-        self.streaming_handle = Some(state);
+        
         streaming
     }
 
@@ -55,25 +59,17 @@ impl Agent {
     ) -> anyhow::Result<UiMessage> {
 
         let (segments_arc, tool_calls_arc, version_arc, approval_arc) =
-            match self.streaming_handle.as_ref(){
-                Some(ss) => (
+            {
+                self.create_streaming();
+                let ss = self.streaming_handle.as_ref().unwrap_or_else(|| {
+                    panic!("create_streaming() must be called first")
+                });
+                (
                     ss.segments.clone(),
                     ss.tool_calls.clone(),
                     ss.version.clone(),
                     ss.approval_tx.clone(),
-                ),
-                None => {
-                    self.create_streaming();
-                    let ss = self.streaming_handle.as_ref().unwrap_or_else(|| {
-                        panic!("create_streaming() must be called first")
-                    });
-                    (
-                        ss.segments.clone(),
-                        ss.tool_calls.clone(),
-                        ss.version.clone(),
-                        ss.approval_tx.clone(),
-                    )
-                },
+                )
             };
         
         self.hook_register.emit(&AgentEvent::UserPromptSubmit { prompt: user_input.clone() });
@@ -90,16 +86,22 @@ impl Agent {
         let mut _final_output = String::new();
         let mut final_reasoning = String::new();
         let mut cancelled = false;
+ 
+        
+        if let Some(pre_prompt) = self.handler.prompt_pre_loop() {
+            self.push_message(Message { role: LlmRole::System, content: Some(pre_prompt), timestamp: Some(chrono::Utc::now()), ..Default::default() })?;
+        }
 
-        let mut round = 0u32;
+        self.start_loop();
+        
         loop {
-            round += 1;
+            self.round_start();
             let mut have_tool_calls = false;
 
             // Agent 回合日志
             tracing::debug!(
                 target: "agent",
-                round,
+                round = self.round.ok_or(anyhow::anyhow!("round must be set"))?,
                 messages = self.messages.len(),
                 tools = self.registry.schemas().len(),
                 "agent round"
@@ -126,7 +128,7 @@ impl Agent {
 
             let mut output = String::new();
             let mut reasoning = String::new();
-            let mut pending_tool_calls: Vec<ToolCall> = Vec::new();
+            
 
             loop {
                 let result = tokio::select! {
@@ -147,7 +149,7 @@ impl Agent {
                     }
                     StreamOrCancel::Chunk(Some(Ok(Chunk::ToolCallComplete(tc)))) => {
                         have_tool_calls = true;
-                        pending_tool_calls.push(tc.clone());
+                        self.pending_tool_calls.push(tc.clone());
                     }
                     StreamOrCancel::Chunk(Some(Ok(_))) => {} // Start/Delta/Usage
                     StreamOrCancel::Chunk(Some(Err(e))) => {
@@ -164,12 +166,12 @@ impl Agent {
                 let reasoning_empty = reasoning.is_empty();
                 _final_output = output.clone();
                 final_reasoning.push_str(&reasoning);
-                if !output_empty || !pending_tool_calls.is_empty() {
+                if !output_empty || !self.pending_tool_calls.is_empty() {
                     let msg = Message {
                         role: LlmRole::Assistant,
                         content: if output_empty { None } else { Some(output.clone()) },
                         reasoning_content: if reasoning_empty { None } else { Some(reasoning.clone()) },
-                        tool_calls: if pending_tool_calls.is_empty() { Vec::new() } else { pending_tool_calls.clone() },
+                        tool_calls: if self.pending_tool_calls.is_empty() { Vec::new() } else { self.pending_tool_calls.clone() },
                         timestamp: Some(chrono::Utc::now()),
                         ..Default::default()
                     };
@@ -188,14 +190,15 @@ impl Agent {
                     timestamp: Some(chrono::Utc::now()),
                     ..Default::default()
                 };
-                if !pending_tool_calls.is_empty() {
-                    msg.tool_calls = pending_tool_calls.clone();
+                if !self.pending_tool_calls.is_empty() {
+                    msg.tool_calls = self.pending_tool_calls.clone();
                 }
                 self.push_message(msg)?;
             }
 
             // 执行工具调用
-            for tool_call in &pending_tool_calls {
+            for i in 0..self.pending_tool_calls.len() {
+                let tool_call = &self.pending_tool_calls[i];
                 let tool_name = tool_call.name.clone();
                 self.hook_register.emit(&AgentEvent::PreToolUse {
                     tool_name: tool_name.clone(),
@@ -313,37 +316,15 @@ impl Agent {
                     self.push_message(tool_message)?;
                 }
             }
-
+                
             if cancelled { break; }
-
-            // ── stall_count 计数与催促 ──
-            {
-                let mut plan_guard = self.handler.current_plan.lock().expect("current_plan lock poisoned");
-                if let Some(ref mut plan) = *plan_guard {
-                    let completed_this_round = pending_tool_calls.iter().any(|tc| tc.name == "CompleteStep");
-                    if completed_this_round {
-                        plan.stall_count = 0;
-                    } else {
-                        plan.stall_count += 1;
-                        if plan.stall_count >= 3 {
-                            // 注入催促系统消息
-                            let nudge = Message {
-                                role: LlmRole::System,
-                                content: Some(super::prompts::plan::STALL_NUDGE_SUFFIX.to_string()),
-                                timestamp: Some(chrono::Utc::now()),
-                                ..Default::default()
-                            };
-                            // 直接 push 到下一条，让 LLM 看到催促
-                            self.messages.push(nudge);
-                            plan.stall_count = 0; // 重置避免重复催促
-                        }
-                    }
-                }
-            }
-
+            
             _final_output = output;
             final_reasoning.push_str(&reasoning);
             if !have_tool_calls { break; }
+            
+            self.round_end();
+            
         }
 
         // ── 更新对话时间 ──
