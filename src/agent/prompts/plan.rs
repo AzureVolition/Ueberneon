@@ -1,6 +1,3 @@
- // ── 主 Agent Plan Mode 前缀注入常量 ──
-
-/// Plan Mode + 无 current_plan：要求制作新计划
 pub const PLAN_CREATE_PREFIX: &str = r#"
 
 ---
@@ -34,6 +31,12 @@ Goal: Write the final plan.
 - Keep it concise but detailed enough to execute.
 - Include paths of critical files to be modified.
 - Include a verification section describing how to test changes end-to-end.
+- When calling **CreatePlan**, pass a `plan` object with:
+  - `goal`: 计划目标
+  - `description`: 详细描述（可选）
+  - `children`: 嵌套数组。有阶段分组时 children 是阶段列表，每个阶段有 children（子任务）；纯任务模式 children 直接是任务列表
+  - 同级 idx 从 1 开始连续
+  - 最多 2 层
 
 ### Phase 5: Notify User for Approval
 Call **CreatePlan** to submit the final plan, then inform the user the plan is ready for review in the UI plan panel.
@@ -41,32 +44,100 @@ Do NOT call ExitPlanMode — approval is handled by the user through the UI pane
 Do not execute any actions until the user has approved the plan.
 "#;
 
-/// Plan Mode + 有 current_plan：要求修改现有计划
 pub const PLAN_MODIFY_PREFIX: &str = r#"[Plan mode — planning workflow]
-你当前处于**计划模式**，只能执行只读操作。已有一个现有计划，你的任务是：
-1. 审查当前计划并根据用户反馈进行调整
-2. 修改完成后调用 **CreatePlan** 工具提交更新后的计划
+你当前处于**计划模式**，只能进行只读探索和计划修改。
 
-**不要执行任何写操作或代码修改。**"#;
+已有一个现有计划等待用户通过 UI 面板审批。在你的视角中：
+- 计划的状态仍然是 **等待审批**（NeedApproval）
+- **不得自行开始执行计划中的任何任务**
+- **不得调用 Bash、ReadFile 等执行工具**——你不是在执行，而是在规划
+- 你的唯一任务是：审查计划、按用户反馈修改计划、调用 **CreatePlan** 提交更新
 
-/// Execute Mode + 有 current_plan：显示步骤进度
+**用户通过 UI 点击"通过审批"之前，禁止执行任何非只读工具。**"#;
+
+/// Execute Mode 显示 — 从 completion_queue 重建树并渲染
 pub fn execute_prompt(plan: &crate::model::Plan) -> String {
-    let mut steps_display = String::new();
-    for step in &plan.steps {
-        let icon = match step.status {
-            crate::model::StepStatus::Completed => "✅",
-            crate::model::StepStatus::InProgress => "🔄",
-            crate::model::StepStatus::Pending => "⏳",
-            crate::model::StepStatus::Bolcked => "🚫",
-            crate::model::StepStatus::Failed => "❌",
-        };
-        steps_display.push_str(&format!("  {} step {} - {}\n", icon, step.index, step.description));
+    use crate::model::{StepStatus, QueueItemStatus};
+
+    // 从队列收集所有实体
+    let all_entities: Vec<&crate::model::Entity> = plan.completion_queue.iter()
+        .flat_map(|qi| qi.batch.iter())
+        .collect();
+
+    // 按 parent_idx 分组建树
+    let roots: Vec<&&crate::model::Entity> = all_entities.iter()
+        .filter(|e| e.parent_idx.is_none())
+        .collect();
+    let children_of = |pid: u8| -> Vec<&&crate::model::Entity> {
+        let mut kids: Vec<&&crate::model::Entity> = all_entities.iter()
+            .filter(|e| e.parent_idx == Some(pid))
+            .collect();
+        kids.sort_by_key(|e| e.idx);
+        kids
+    };
+
+    let mut display = String::new();
+
+    // 当前 Current 的 QueueItem
+    let current_entity = plan.completion_queue.iter()
+        .find(|qi| qi.status == QueueItemStatus::Current)
+        .and_then(|qi| qi.batch.first());
+
+    let current_line = match current_entity {
+        Some(e) => format!("当前任务: task {} - {}", e.idx, e.description),
+        None => "当前任务: 无（所有任务已完成或尚未开始）".to_string(),
+    };
+
+    let next_pending = plan.completion_queue.iter()
+        .find(|qi| qi.status == QueueItemStatus::Pending)
+        .and_then(|qi| qi.batch.first());
+    let current_idx = current_entity.map(|e| e.idx)
+        .or_else(|| next_pending.map(|e| e.idx))
+        .unwrap_or(0);
+
+    // 显示树
+    for root in &roots {
+        let kids = children_of(root.idx);
+        let all_done = kids.iter().all(|k| k.step_status == StepStatus::Completed);
+        let root_icon = if all_done && !kids.is_empty() { "✅" } else { "📋" };
+        display.push_str(&format!("{} {} - {}\n", root_icon, root.idx, root.description));
+
+        for child in &kids {
+            let icon = match child.step_status {
+                StepStatus::Completed => "  ✅",
+                StepStatus::InProgress => "  🔄",
+                StepStatus::Pending => "  ⏳",
+                StepStatus::Bolcked => "  🚫",
+                StepStatus::Failed => "  ❌",
+            };
+            display.push_str(&format!("{} task {} - {}\n", icon, child.idx, child.description));
+        }
     }
 
-    let current = plan.steps.iter().find(|s| s.status == crate::model::StepStatus::InProgress);
-    let current_line = match current {
-        Some(s) => format!("当前步骤: step {} - {}", s.index, s.description),
-        None => "当前步骤: 无（所有步骤已完成或尚未开始）".to_string(),
+    // 如果 roots 为空（纯任务模式），直接显示所有实体
+    if roots.is_empty() {
+        let mut sorted: Vec<&&crate::model::Entity> = all_entities.iter().collect();
+        sorted.sort_by_key(|e| e.idx);
+        for entity in &sorted {
+            let icon = match entity.step_status {
+                StepStatus::Completed => "✅",
+                StepStatus::InProgress => "🔄",
+                StepStatus::Pending => "⏳",
+                StepStatus::Bolcked => "🚫",
+                StepStatus::Failed => "❌",
+            };
+            display.push_str(&format!("{} task {} - {}\n", icon, entity.idx, entity.description));
+        }
+    }
+
+    let help_line = if let Some(e) = current_entity {
+        let parent_hint = e.parent_idx.map(|p| format!(", parent_idx={}", p)).unwrap_or_default();
+        format!(
+            "- 专注于完成当前任务 task {}（{}），完成后调用 **CompleteStep(idx={}{})**",
+            e.idx, e.description, e.idx, parent_hint
+        )
+    } else {
+        format!("- 完成后调用 **CompleteStep(idx={})**", current_idx)
     };
 
     format!(
@@ -76,22 +147,20 @@ pub fn execute_prompt(plan: &crate::model::Plan) -> String {
 {current_line}
 
 进度:
-{steps}
-
+{display}
 你处于**执行模式**。请按计划逐步实施：
-- 专注于完成当前步骤，完成后调用 **CompleteStep(step_index={current_idx})**
-- 所有步骤完成后计划将自动标记为 Completed
+{help_line}
+- 所有任务完成后计划将自动标记为 Completed
 - 保持改动聚焦，不要偏离计划"#,
         goal = plan.goal,
         current_line = current_line,
-        steps = steps_display,
-        current_idx = current.map(|s| s.index).unwrap_or(0),
+        display = display,
+        help_line = help_line,
     )
 }
 
-/// stall_count >= 3 时追加的催促提示
 pub const STALL_NUDGE_SUFFIX: &str = r#"
 ⚠️ 你已经连续多轮没有推进计划了。请立即采取行动：
 - 如果正在分析，请加速并输出结果
 - 如果遇到困难，请说明问题并调整计划
-- 尽快完成当前步骤并调用 CompleteStep"#;
+- 尽快完成当前任务并调用 CompleteStep"#;

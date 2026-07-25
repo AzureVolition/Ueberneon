@@ -1,218 +1,147 @@
-// complete_step 工具 —— 标记计划步骤完成。
+// complete_step 工具 —— 标记任务完成。
 //
-// LLM 在执行模式（有 current_plan）下完成一个步骤后调用，
-// 更新 handler.current_plan 中对应 step 状态 + 同步数据库 tasks 表。
-// 同时清零 plan.stall_count。
+// 由 completion_queue 驱动执行，每次取队列头部当前批次完成。
+
 
 use crate::agent::{ToolContext, Tool, ToolResult};
-use crate::model::StepStatus;
+use crate::model::{QueueItemStatus, StepStatus};
 use racpagent_macros::ToolMetaImpl;
 use serde_json::Value;
 
 use super::common::checkable_tool::CheckableTool;
 use crate::permission::Decision;
+use crate::db::metadata::task::TaskStatus as DbTaskStatus;
 
-/// 标记计划中的一个步骤为已完成。在 Execute Mode 下完成一个步骤后调用，
-/// 会自动推进到下一个 Pending 步骤。所有步骤完成后计划标记为 Completed。
+/// 标记计划中的一个任务为已完成。
 #[derive(ToolMetaImpl)]
 #[tool(schema = r#"{
     "type": "object",
-    "required": ["step_index"],
+    "required": ["idx"],
     "properties": {
-        "step_index": {
+        "parent_idx": {
             "type": "integer",
-            "description": "要标记为完成的步骤序号（从 1 开始，对应 Plan 中 step.index）"
+            "minimum": 0,
+            "maximum": 255,
+            "description": "阶段 idx。有阶段分组时传入，纯任务模式不传"
+        },
+        "idx": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 255,
+            "description": "任务序号（同级从 1 开始）"
         }
     }
 }"#)]
 pub struct CompleteStep;
 
-/// mark_step_completed 的返回结果
-enum MarkResult {
-    /// 标记成功
-    Completed,
-    /// 未找到匹配的 step
-    NotFound,
-    /// 前面有未完成的步骤，返回它们的 index 列表
-    BlockedBy(Vec<u8>),
-}
-
-/// 递归在 steps 树中查找并标记 step。
-///
-/// 标记前检查：同级中所有 index 小于 target_index 的步骤必须已完成，
-/// 防止跳过未完成步骤直接完成后面的步骤。
-fn mark_step_completed(steps: &mut [crate::model::ActionStep], target_index: u8) -> MarkResult {
-    // Phase 1: 不可变查找 — 确认目标存在 + 检查前置步骤
-    let mut target_found = false;
-    let mut pending: Vec<u8> = Vec::new();
-    for step in steps.iter() {
-        if step.index == target_index {
-            target_found = true;
-            pending = steps
-                .iter()
-                .filter(|s| s.index < target_index && s.status != StepStatus::Completed)
-                .map(|s| s.index)
-                .collect();
-            break;
-        }
+/// 更新 DB 中一批实体的状态为 Completed
+fn update_batch_in_db(conn: &rusqlite::Connection, batch: &[crate::model::Entity]) -> Result<usize, String> {
+    let db_ids: Vec<i64> = batch.iter().filter_map(|e| e.db_id).collect();
+    if db_ids.is_empty() {
+        return Ok(0);
     }
-
-    if target_found {
-        if !pending.is_empty() {
-            return MarkResult::BlockedBy(pending);
-        }
-        // Phase 2: 可变标记
-        for step in steps.iter_mut() {
-            if step.index == target_index {
-                step.status = StepStatus::Completed;
-                return MarkResult::Completed;
-            }
-        }
+    let placeholders: Vec<String> = (0..db_ids.len()).map(|i| format!("?{}", i + 2)).collect();
+    let sql = format!("UPDATE tasks SET status = ?1 WHERE id IN ({})", placeholders.join(","));
+    let mut stmt = conn.prepare(&sql).map_err(|e| format!("db error: {e}"))?;
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    params.push(Box::new(DbTaskStatus::Completed.as_str().to_string()));
+    for &id in &db_ids {
+        params.push(Box::new(id));
     }
-
-    // 递归进入子步骤
-    for step in steps.iter_mut() {
-        if let Some(ref mut children) = step.children {
-            match mark_step_completed(children, target_index) {
-                MarkResult::NotFound => continue,
-                other => return other,
-            }
-        }
-    }
-
-    MarkResult::NotFound
+    let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    stmt.execute(refs.as_slice()).map_err(|e| format!("db error: {e}"))
 }
 
-/// 更新数据库中对应 task 的状态（通用）
-fn update_task_status_in_db_to(
-    conn: &rusqlite::Connection,
-    plan_id: &str,
-    step_index: u8,
-    status: &str,
-) -> Result<bool, String> {
-    let affected = conn
-        .execute(
-            "UPDATE tasks SET status = ?1 WHERE plan_id = ?2 AND idx = ?3",
-            rusqlite::params![status, plan_id, step_index as i32],
-        )
-        .map_err(|e| format!("db error: {e}"))?;
-    Ok(affected > 0)
-}
-
-/// 更新数据库中对应 task 的状态为 completed
-fn update_task_status_in_db(
-    conn: &rusqlite::Connection,
-    plan_id: &str,
-    step_index: u8,
-) -> Result<bool, String> {
-    use crate::db::metadata::task::TaskStatus as DbTaskStatus;
-    update_task_status_in_db_to(conn, plan_id, step_index, DbTaskStatus::Completed.as_str())
-}
-
-/// 在同级 steps 中找第一个 Pending 的步骤设为 InProgress，返回 (index, description)
-fn advance_to_next(steps: &mut [crate::model::ActionStep]) -> Option<(u8, String)> {
-    for step in steps.iter_mut() {
-        if step.status == StepStatus::Pending {
-            step.status = StepStatus::InProgress;
-            return Some((step.index, step.description.clone()));
-        }
-    }
-    None
-}
-
-/// 从 current_plan 获取 plan_id（从 DB 根据 conversation_id 查最新 plan）
-fn get_current_plan_id(conn: &rusqlite::Connection, conversation_id: &str) -> Result<Option<String>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id FROM plans WHERE conversation_id = ?1 ORDER BY created_at DESC LIMIT 1",
-        )
-        .map_err(|e| format!("db error: {e}"))?;
-    let id: Option<String> = stmt
-        .query_row(rusqlite::params![conversation_id], |row| row.get(0))
-        .ok();
-    Ok(id)
+/// 更新 DB 中单个实体的状态为 InProgress
+fn set_in_progress_in_db(conn: &rusqlite::Connection, db_id: i64) -> Result<usize, String> {
+    conn.execute(
+        "UPDATE tasks SET status = ?1 WHERE id = ?2",
+        rusqlite::params![DbTaskStatus::InProgress.as_str(), db_id],
+    ).map_err(|e| format!("db error: {e}"))
 }
 
 #[async_trait::async_trait]
 impl Tool for CompleteStep {
     async fn execute(&self, ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
-        let step_index = args
-            .get("step_index")
+        let parent_idx = args.get("parent_idx").and_then(|v| v.as_u64()).map(|v| v as u8);
+        let idx = args.get("idx")
             .and_then(|v| v.as_u64())
-            .ok_or_else(|| "missing 'step_index'".to_string())? as u8;
+            .ok_or_else(|| "missing 'idx'".to_string())? as u8;
 
-        // ── 更新内存中的 current_plan ──
-        let all_done: bool;
-        let next_step: Option<(u8, String)>;
+        let mut msg_parts: Vec<String> = Vec::new();
         {
             let mut guard = ctx.handler.current_plan.lock().expect("current_plan lock poisoned");
             let plan = match guard.as_mut() {
                 Some(p) => p,
-                None => return Err("no active plan to complete step".to_string()),
+                None => return Err("no active plan in progress".to_string()),
             };
 
-            match mark_step_completed(&mut plan.steps, step_index) {
-                MarkResult::Completed => {}
-                MarkResult::NotFound => {
-                    return Err(format!("step with index {} not found in current plan", step_index));
-                }
-                MarkResult::BlockedBy(pending) => {
-                    return Err(format!(
-                        "cannot complete step {} — prerequisite steps {:?} are still pending. Complete them first.",
-                        step_index, pending
-                    ));
-                }
+            // 找到队列中第一个 Current 的 QueueItem
+            let current_pos = plan.completion_queue.iter().position(|qi| qi.status == QueueItemStatus::Current)
+                .ok_or_else(|| "no current task in queue".to_string())?;
+
+            let current_item = &plan.completion_queue[current_pos];
+            let head = current_item.batch.first().ok_or_else(|| "current batch is empty".to_string())?;
+
+            // 检查 (parent_idx, idx) 是否匹配队列头部
+            if head.parent_idx != parent_idx || head.idx != idx {
+                return Err(format!(
+                    "expected task (parent_idx={:?}, idx={}), got (parent_idx={:?}, idx={})",
+                    head.parent_idx, head.idx, parent_idx, idx
+                ));
             }
 
-            // 清零 stall_count
-            plan.stall_count = 0;
-
-            // 检查是否所有步骤都完成
-            all_done = plan.steps.iter().all(|s| s.status == StepStatus::Completed);
-            if all_done {
-                plan.status = crate::model::PlanStatus::Completed;
-            }
-
-            // ── 自动推进下一步为 InProgress ──
-            next_step = advance_to_next(&mut plan.steps);
-            if next_step.is_none() {
-                plan.status = crate::model::PlanStatus::Completed;
-                *guard = None;
-            }
-        } // guard drop
-
-        // ── 更新数据库 ──
-        crate::db::with_db_result(|conn| {
-            let pid = get_current_plan_id(conn, &ctx.main_conversation_id)?;
-            if let Some(ref pid) = pid {
-                update_task_status_in_db(conn, pid, step_index)?;
-                // 所有步骤完成，同步更新 plan 状态
-                if all_done {
-                    crate::db::metadata::plan::mark_completed(conn, pid)
-                        .map_err(|e| format!("db error: {e}"))?;
+            // 完成当前批次：标记所有实体为 Completed
+            {
+                let item = &mut plan.completion_queue[current_pos];
+                for entity in &mut item.batch {
+                    entity.step_status = StepStatus::Completed;
                 }
-                // 同步新推进的步骤到 DB
-                if let Some((next_idx, _)) = next_step {
-                    update_task_status_in_db_to(conn, pid, next_idx, "in_progress")?;
-                }
+                item.status = QueueItemStatus::Completed;
             }
-            Ok::<_, String>(())
-        })
-        .map_err(|e| format!("db error: {e}"))?;
 
-        // ── 构造返回消息 ──
-        let msg = match next_step {
-            Some((idx, ref desc)) => format!("step {} completed. Next: step {} - {}", step_index, idx, desc),
-            None => {
-                if all_done {
-                    
-                    format!("step {} completed. All steps done — plan is now Completed.", step_index)
-                } else {
-                    format!("step {} completed.", step_index)
+            // 更新 DB
+            crate::db::with_db_result(|conn| {
+                let completed = &plan.completion_queue[current_pos];
+                update_batch_in_db(conn, &completed.batch)?;
+                Ok::<_, String>(())
+            }).map_err(|e| format!("db error: {e}"))?;
+
+            // 记录完成描述
+            let descs: Vec<String> = plan.completion_queue[current_pos].batch.iter()
+                .map(|e| format!("{} - {}", if let Some(pid) = e.parent_idx { format!("{}.{}", pid, e.idx) } else { e.idx.to_string() }, e.description))
+                .collect();
+            msg_parts.push(format!("completed: {}", descs.join(", ")));
+
+            // 推进到下一个 Pending 队列项
+            let next_pos = plan.completion_queue.iter().position(|qi| qi.status == QueueItemStatus::Pending);
+            match next_pos {
+                Some(pos) => {
+                    let item = &mut plan.completion_queue[pos];
+                    item.status = QueueItemStatus::Current;
+                    if let Some(first) = item.batch.first_mut() {
+                        first.step_status = StepStatus::InProgress;
+                        // 更新 DB
+                        if let Some(db_id) = first.db_id {
+                            let _ = crate::db::with_db_result(|conn| {
+                                set_in_progress_in_db(conn, db_id)
+                            });
+                        }
+                        msg_parts.push(format!("next: task {} - {}", first.idx, first.description));
+                    }
+                }
+                None => {
+                    plan.status = crate::model::PlanStatus::Completed;
+                    msg_parts.push("All tasks done — plan is now Completed.".to_string());
+                    *guard = None;
                 }
             }
-        };
-        Ok(ToolResult::ok(msg))
+        }
+
+        // 通知 UI 刷新计划面板
+        ctx.handler.plan_version.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+        Ok(ToolResult::ok(msg_parts.join(" ")))
     }
 }
 

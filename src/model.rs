@@ -154,29 +154,122 @@ pub fn format_relative_time(dt: &DateTime<Local>) -> String {
     }
 }
 
-// ── Plan / ActionStep types ──────────────────────────────────────────────────
+// ── Plan / PlanNode types ────────────────────────────────────────────────────
+
+/// 树节点（创建阶段暂存用，approve 后转为队列）
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+pub struct PlanNode {
+    pub idx: u8,
+    pub description: String,
+    #[serde(default)]
+    pub children: Vec<PlanNode>,
+    #[serde(default)]
+    pub status: StepStatus,
+}
+
+impl PlanNode {
+    /// 将树（节点列表）转为 completion_queue（无 DB，纯内存操作）
+    pub fn build_queue(nodes: &[PlanNode], parent_idx: Option<u8>) -> Vec<QueueItem> {
+        let mut queue = Vec::new();
+        let mut sorted = nodes.to_vec();
+        sorted.sort_by_key(|n| n.idx);
+
+        for node in &sorted {
+            if node.children.is_empty() {
+                queue.push(QueueItem {
+                    status: QueueItemStatus::Pending,
+                    batch: vec![Entity {
+                        db_id: None,
+                        idx: node.idx,
+                        parent_idx,
+                        description: node.description.clone(),
+                        step_status: StepStatus::Pending,
+                    }],
+                });
+            } else {
+                let mut children_queue = Self::build_queue(&node.children, Some(node.idx));
+                queue.append(&mut children_queue);
+                if let Some(last) = queue.last_mut() {
+                    last.batch.push(Entity {
+                        db_id: None,
+                        idx: node.idx,
+                        parent_idx: None,
+                        description: node.description.clone(),
+                        step_status: StepStatus::Pending,
+                    });
+                }
+            }
+        }
+        queue
+    }
+
+    /// 将树递归展平为实体列表（审批阶段渲染用，不经过 DB）
+    pub fn to_entities(nodes: &[PlanNode], parent_idx: Option<u8>) -> Vec<Entity> {
+        let mut result = Vec::new();
+        let mut sorted = nodes.to_vec();
+        sorted.sort_by_key(|n| n.idx);
+        for node in &sorted {
+            let pid = if node.children.is_empty() { parent_idx } else { None };
+            result.push(Entity {
+                db_id: None,
+                idx: node.idx,
+                parent_idx: pid,
+                description: node.description.clone(),
+                step_status: StepStatus::Pending,
+            });
+            if !node.children.is_empty() {
+                result.append(&mut Self::to_entities(&node.children, Some(node.idx)));
+            }
+        }
+        result
+    }
+}
+
+/// 队列中的一条完成实体
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+pub struct Entity {
+    pub db_id: Option<i64>,
+    pub idx: u8,
+    pub parent_idx: Option<u8>,
+    pub description: String,
+    #[serde(default)]
+    pub step_status: StepStatus,
+}
+
+/// 队列项状态
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
+pub enum QueueItemStatus {
+    #[default]
+    Pending,
+    Current,
+    Completed,
+}
+
+/// 队列项：一次 CompleteStep 涉及的批次
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+pub struct QueueItem {
+    #[serde(default)]
+    pub status: QueueItemStatus,
+    pub batch: Vec<Entity>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
 pub struct Plan {
+    pub db_plan_id: Option<String>,
     pub goal: String,
+    #[serde(default)]
     pub description: String,
-    pub steps: Vec<ActionStep>,
+    #[serde(default)]
+    pub completion_queue: Vec<QueueItem>,
     #[serde(default)]
     pub status: PlanStatus,
     pub started_at: Option<DateTime<Utc>>,
     /// 连续未完成步骤的轮次计数（≥3 时注入催促提示）
     #[serde(default)]
     pub stall_count: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
-pub struct ActionStep {
-    pub index: u8,
-    #[serde(default)]
-    pub status: StepStatus,
-    pub description: String,
-    #[serde(default)]
-    pub children: Option<Vec<ActionStep>>,
+    /// 创建阶段暂存的树结构，approve 后转为队列并清空
+    #[serde(skip_serializing)]
+    pub children: Vec<PlanNode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
@@ -278,4 +371,207 @@ pub enum UiMessage {
         version: Arc<AtomicU64>,
         approval_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<bool>>>>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn flatten_tree(nodes: &[PlanNode], parent_idx: Option<u8>) -> Vec<(Option<u8>, u8, String)> {
+        let mut result = Vec::new();
+        let mut sorted = nodes.to_vec();
+        sorted.sort_by_key(|n| n.idx);
+        for node in &sorted {
+            let pid = if node.children.is_empty() { parent_idx } else { None };
+            result.push((pid, node.idx, node.description.clone()));
+            if !node.children.is_empty() {
+                result.append(&mut flatten_tree(&node.children, Some(node.idx)));
+            }
+        }
+        result.sort_by_key(|(pid, idx, _)| (*pid, *idx));
+        result
+    }
+
+    fn entities_sorted(queue: &[QueueItem]) -> Vec<(Option<u8>, u8, String)> {
+        let mut items: Vec<(Option<u8>, u8, String)> = queue.iter()
+            .flat_map(|qi| qi.batch.iter())
+            .map(|e| (e.parent_idx, e.idx, e.description.clone()))
+            .collect();
+        items.sort_by_key(|(pid, idx, _)| (*pid, *idx));
+        items
+    }
+
+    #[test]
+    fn test_tree_queue_roundtrip_with_phases() {
+        let tree = vec![
+            PlanNode {
+                idx: 1, description: "Phase 1".into(),
+                children: vec![
+                    PlanNode { idx: 1, description: "Task 1.1".into(), ..Default::default() },
+                    PlanNode { idx: 2, description: "Task 1.2".into(), ..Default::default() },
+                ],
+                ..Default::default()
+            },
+            PlanNode {
+                idx: 2, description: "Phase 2".into(),
+                children: vec![
+                    PlanNode { idx: 1, description: "Task 2.1".into(), ..Default::default() },
+                ],
+                ..Default::default()
+            },
+        ];
+        let original = flatten_tree(&tree, None);
+        let queue = PlanNode::build_queue(&tree, None);
+        let from_queue = entities_sorted(&queue);
+        assert_eq!(original.len(), from_queue.len());
+        for (exp, got) in original.iter().zip(from_queue.iter()) {
+            assert_eq!(exp, got);
+        }
+    }
+
+    #[test]
+    fn test_tree_queue_roundtrip_pure_tasks() {
+        let tree = vec![
+            PlanNode { idx: 1, description: "Task A".into(), ..Default::default() },
+            PlanNode { idx: 2, description: "Task B".into(), ..Default::default() },
+            PlanNode { idx: 3, description: "Task C".into(), ..Default::default() },
+        ];
+        let original = flatten_tree(&tree, None);
+        let queue = PlanNode::build_queue(&tree, None);
+        let from_queue = entities_sorted(&queue);
+        assert_eq!(original.len(), from_queue.len());
+        for (exp, got) in original.iter().zip(from_queue.iter()) {
+            assert_eq!(exp, got);
+        }
+    }
+
+    #[test]
+    fn test_queue_phase_appended_to_last_child() {
+        let tree = vec![
+            PlanNode {
+                idx: 1, description: "Phase".into(),
+                children: vec![
+                    PlanNode { idx: 1, description: "Task 1".into(), ..Default::default() },
+                    PlanNode { idx: 2, description: "Task 2".into(), ..Default::default() },
+                ],
+                ..Default::default()
+            },
+        ];
+        let queue = PlanNode::build_queue(&tree, None);
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queue[0].batch.len(), 1);
+        assert_eq!(queue[0].batch[0].parent_idx, Some(1));
+        assert_eq!(queue[1].batch.len(), 2);
+        assert_eq!(queue[1].batch[1].parent_idx, None);
+        assert_eq!(queue[1].batch[1].idx, 1);
+        assert_eq!(queue[1].batch[1].description, "Phase");
+    }
+
+    #[test]
+    fn test_parse_json_children_not_skipped() {
+        // 模拟 LLM 传入的 JSON，验证 children 被正确解析而非被 serde(skip) 丢弃
+        let json = serde_json::json!({
+            "goal": "test",
+            "description": "desc",
+            "children": [
+                {"idx": 1, "description": "Phase 1", "children": [
+                    {"idx": 1, "description": "Task 1"}
+                ]}
+            ]
+        });
+        let plan: Plan = serde_json::from_value(json).expect("should parse");
+        assert_eq!(plan.children.len(), 1, "should have 1 phase");
+        assert_eq!(plan.children[0].idx, 1);
+        assert_eq!(plan.children[0].children.len(), 1, "phase should have 1 task");
+        assert_eq!(plan.children[0].children[0].idx, 1);
+        assert_eq!(plan.children[0].children[0].description, "Task 1");
+    }
+
+    #[test]
+    fn test_parse_json_pure_tasks() {
+        // 纯任务模式
+        let json = serde_json::json!({
+            "goal": "test",
+            "children": [
+                {"idx": 1, "description": "Task A"},
+                {"idx": 2, "description": "Task B"}
+            ]
+        });
+        let plan: Plan = serde_json::from_value(json).expect("should parse");
+        assert_eq!(plan.children.len(), 2);
+        assert_eq!(plan.children[0].description, "Task A");
+        assert_eq!(plan.children[1].description, "Task B");
+    }
+
+    #[test]
+    fn test_to_entities_equals_queue_entities() {
+        // 验证：审批阶段用 to_entities 和 approve 后用队列展平，结果一致
+        let tree = vec![
+            PlanNode {
+                idx: 1, description: "Phase 1".into(),
+                children: vec![
+                    PlanNode { idx: 1, description: "Task 1.1".into(), ..Default::default() },
+                    PlanNode { idx: 2, description: "Task 1.2".into(), ..Default::default() },
+                ],
+                ..Default::default()
+            },
+            PlanNode {
+                idx: 2, description: "Phase 2".into(),
+                children: vec![
+                    PlanNode { idx: 1, description: "Task 2.1".into(), ..Default::default() },
+                ],
+                ..Default::default()
+            },
+        ];
+
+        // 审批阶段：to_entities
+        let from_tree = PlanNode::to_entities(&tree, None);
+
+        // approve 后：build_queue → 展平
+        let queue = PlanNode::build_queue(&tree, None);
+        let from_queue: Vec<Entity> = queue.iter()
+            .flat_map(|qi| qi.batch.iter())
+            .cloned()
+            .collect();
+
+        // 分别按 (parent_idx, idx) 排序后比较
+        let mut sorted_tree = from_tree;
+        sorted_tree.sort_by_key(|e| (e.parent_idx, e.idx));
+
+        let mut sorted_queue = from_queue;
+        sorted_queue.sort_by_key(|e| (e.parent_idx, e.idx));
+
+        assert_eq!(sorted_tree.len(), sorted_queue.len(),
+            "entity count: tree={} queue={}", sorted_tree.len(), sorted_queue.len());
+        for (i, (t, q)) in sorted_tree.iter().zip(sorted_queue.iter()).enumerate() {
+            assert_eq!(t.parent_idx, q.parent_idx, "row {i}: parent_idx");
+            assert_eq!(t.idx, q.idx, "row {i}: idx");
+            assert_eq!(t.description, q.description, "row {i}: description");
+        }
+    }
+
+    #[test]
+    fn test_to_entities_pure_tasks() {
+        let tree = vec![
+            PlanNode { idx: 1, description: "Task A".into(), ..Default::default() },
+            PlanNode { idx: 2, description: "Task B".into(), ..Default::default() },
+        ];
+
+        let from_tree = PlanNode::to_entities(&tree, None);
+        let queue = PlanNode::build_queue(&tree, None);
+        let from_queue: Vec<Entity> = queue.iter()
+            .flat_map(|qi| qi.batch.iter())
+            .cloned()
+            .collect();
+
+        let mut sorted_tree = from_tree;
+        sorted_tree.sort_by_key(|e| (e.parent_idx, e.idx));
+        let mut sorted_queue = from_queue;
+        sorted_queue.sort_by_key(|e| (e.parent_idx, e.idx));
+
+        assert_eq!(sorted_tree.len(), sorted_queue.len());
+        for (t, q) in sorted_tree.iter().zip(sorted_queue.iter()) {
+            assert_eq!(t, q);
+        }
+    }
 }

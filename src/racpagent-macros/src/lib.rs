@@ -107,6 +107,7 @@ fn get_tool_schema(attrs: &[syn::Attribute]) -> Option<String> {
 
 /// 从 `#[doc = "..."]` 属性中提取第一行文档注释。
 fn extract_doc(attrs: &[syn::Attribute]) -> String {
+    let mut lines = Vec::new();
     for attr in attrs {
         if attr.path().is_ident("doc") {
             if let syn::Meta::NameValue(nv) = &attr.meta {
@@ -115,14 +116,14 @@ fn extract_doc(attrs: &[syn::Attribute]) -> String {
                         let text = s.value();
                         let trimmed = text.trim();
                         if !trimmed.is_empty() {
-                            return trimmed.to_string();
+                            lines.push(trimmed.to_string());
                         }
                     }
                 }
             }
         }
     }
-    String::new()
+    lines.join("\n")
 }
 
 #[cfg(test)]
@@ -143,13 +144,13 @@ mod tests {
     }
 
     #[test]
-    fn extract_doc_first_non_empty() {
+    fn extract_doc_multiple_lines() {
         let attrs: Vec<syn::Attribute> = vec![
             parse_quote!(#[doc = ""]),
             parse_quote!(#[doc = "first real line"]),
             parse_quote!(#[doc = "second line"]),
         ];
-        assert_eq!(extract_doc(&attrs), "first real line");
+        assert_eq!(extract_doc(&attrs), "first real line\nsecond line");
     }
 
     #[test]

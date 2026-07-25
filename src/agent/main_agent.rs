@@ -199,6 +199,7 @@ impl Agent {
             // 执行工具调用
             for i in 0..self.pending_tool_calls.len() {
                 let tool_call = &self.pending_tool_calls[i];
+                if cancelled { break; }
                 let tool_name = tool_call.name.clone();
                 self.hook_register.emit(&AgentEvent::PreToolUse {
                     tool_name: tool_name.clone(),
@@ -279,7 +280,10 @@ impl Agent {
                                     }
                                 }
                                 Some(false) => Err(format!("denied by user: {reason}")),
-                                None => Err("cancelled by user".into()),
+                                None => {
+                                    cancelled = true;
+                                    Err("cancelled by user".into())
+                                }
                             }
                         }
                         Decision::Deny(msg) => Err(msg),
@@ -321,9 +325,18 @@ impl Agent {
             
             _final_output = output;
             final_reasoning.push_str(&reasoning);
-            if !have_tool_calls { break; }
-            
+
             self.round_end();
+            
+            if !have_tool_calls { 
+                if let Some(reason) = self.handler.can_finish() {
+                    self.push_message(Message { role: LlmRole::System, content: Some(reason), timestamp: Some(chrono::Utc::now()), ..Default::default() })?;
+                    continue;
+                }
+                break; 
+            }
+            
+            
             
         }
 

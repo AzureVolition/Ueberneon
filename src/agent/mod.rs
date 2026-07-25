@@ -220,6 +220,8 @@ pub struct AgentHandler {
     pub action_mode: Arc<RwLock<ActionMode>>,
     /// 当前计划数据（Arc 共享，供 UI 读取）
     pub current_plan: Arc<Mutex<Option<Plan>>>,
+    /// 计划版本号（CompleteStep 成功后递增，UI 依赖此值刷新）
+    pub plan_version: Arc<std::sync::atomic::AtomicU64>,
 }
 
 pub enum CurrentPlanState {
@@ -254,6 +256,7 @@ impl AgentHandler {
             agent_mode: Arc::new(Mutex::new(AgentMode::default())),
             action_mode: Arc::new(RwLock::new(ActionMode::default())),
             current_plan: Arc::new(Mutex::new(None)),
+            plan_version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
@@ -307,8 +310,17 @@ impl AgentHandler {
         }
     }
 
-    /// 审批通过当前计划：写入 DB（plan + tasks），NeedApproval → InProgress，
-    /// 第一个 Pending step → InProgress，action_mode → Regular。
+    pub fn can_finish(&self) -> Option<String> {
+        if let Some(plan) = self.current_plan.lock().expect("current_plan lock poisoned").as_ref() && plan.status == PlanStatus::InProgress {
+            Some("current plan is not finished".to_string())
+        }else {
+            None
+        }
+        
+    }
+
+    /// 审批通过当前计划：写入 DB（plan + tasks），构建 completion_queue，
+    /// 第一个 Pending batch → Current，action_mode → Regular。
     pub fn approve_plan(&self, project_id: &str, conversation_id: &str) -> Result<(), String> {
         let plan_clone;
         {
@@ -325,69 +337,56 @@ impl AgentHandler {
             plan.status = PlanStatus::InProgress;
             plan.started_at = Some(chrono::Utc::now());
 
-            // 第一个 Pending step → InProgress
-            for step in plan.steps.iter_mut() {
-                if step.status == StepStatus::Pending {
-                    step.status = StepStatus::InProgress;
-                    break;
-                }
-            }
-
             plan_clone = plan.clone();
 
             // 切换 action_mode
             *self.action_mode.write().expect("action_mode lock poisoned") = ActionMode::Regular;
         }
 
-        // ── 写入数据库（此时才真正入库）──
-        crate::db::with_db_result(|conn| {
-            use crate::db::metadata::plan::{self as plan_db, PlanStatus as DbPlanStatus};
-            let plan_id = plan_db::create(
-                conn,
-                project_id,
-                conversation_id,
-                &plan_clone.goal,
-                &plan_clone.description,
+        // ── 写入数据库 ──
+        use crate::model::QueueItemStatus;
+        use crate::db::metadata::plan::{self as plan_db, PlanStatus as DbPlanStatus};
+
+        let plan_id = crate::db::with_db_result(|conn| {
+            let pid = plan_db::create(
+                conn, project_id, conversation_id,
+                &plan_clone.goal, &plan_clone.description,
                 DbPlanStatus::InProgress,
-            )
-            .map_err(|e| format!("db error: {e}"))?;
+            ).map_err(|e| format!("db error: {e}"))?;
 
-            // 记录开始时间
-            plan_db::mark_started(conn, &plan_id)
+            plan_db::mark_started(conn, &pid)
                 .map_err(|e| format!("db error: {e}"))?;
 
-            // 递归写入 tasks
-            fn persist_step(
-                conn: &rusqlite::Connection,
-                plan_id: &str,
-                project_id: &str,
-                parent_id: Option<i64>,
-                step: &crate::model::ActionStep,
-            ) -> Result<(), String> {
-                use crate::db::metadata::task::{self as task_db, TaskStatus as DbTaskStatus};
-
-                let db_status: DbTaskStatus = step.status.clone().into();
-                let task_id = task_db::create(
-                    conn, plan_id, project_id, parent_id,
-                    step.index as i32, &step.description, db_status,
-                    None,
-                )
+            // 递归展平树写入 DB，同时构建队列
+            let mut queue: Vec<crate::model::QueueItem> = Vec::new();
+            flatten_and_write(&plan_clone.children, conn, &pid, project_id, None, None, &mut queue, 0)
                 .map_err(|e| format!("db error: {e}"))?;
 
-                if let Some(children) = &step.children {
-                    for child in children {
-                        persist_step(conn, plan_id, project_id, Some(task_id), child)?;
-                    }
-                }
-                Ok(())
-            }
+            // 把队列写回 plan（通过 map，后面会 clone 出去）
+            // 这里不能直接修改 plan，因为 conn 的闭包中不能持有 guard
+            // 返回 queue 和 pid，后面再写回
+            Ok::<_, String>((pid, queue))
+        }).map_err(|e| format!("db error: {e}"))?;
 
-            for step in &plan_clone.steps {
-                persist_step(conn, &plan_id, project_id, None, step)?;
-            }
+        let (plan_id, mut queue) = plan_id;
 
-            Ok::<_, String>(())
-        })?;
+        // 设置第一个队列项为 Current
+        if let Some(first) = queue.first_mut() {
+            first.status = QueueItemStatus::Current;
+            if let Some(entity) = first.batch.first_mut() {
+                entity.step_status = StepStatus::InProgress;
+            }
+        }
+
+        // 把数据库 plan_id 和队列写回内存中的 plan
+        {
+            let mut guard = self.current_plan.lock().expect("current_plan lock poisoned");
+            if let Some(ref mut p) = guard.as_mut() {
+                p.db_plan_id = Some(plan_id);
+                p.completion_queue = queue;
+                p.children.clear(); // 树已转为队列，清空暂存
+            }
+        }
 
         Ok(())
     }
@@ -400,6 +399,71 @@ impl AgentHandler {
         }
         Ok(())
     }
+}
+
+/// 递归展平 PlanNode 树写入 tasks 表，同时构建 completion_queue
+fn flatten_and_write(
+    nodes: &[crate::model::PlanNode],
+    conn: &rusqlite::Connection,
+    plan_id: &str,
+    project_id: &str,
+    parent_db_id: Option<i64>,
+    parent_node_idx: Option<u8>,
+    queue: &mut Vec<crate::model::QueueItem>,
+    depth: u8,
+) -> Result<(), String> {
+    use crate::db::metadata::task::{self as task_db, TaskStatus as DbTaskStatus};
+    use crate::model::{Entity, QueueItem, QueueItemStatus, StepStatus};
+
+    let mut sorted = nodes.to_vec();
+    sorted.sort_by_key(|n| n.idx);
+
+    for node in &sorted {
+        // 写入当前节点到 DB
+        let store_idx: i32 = if depth == 0 && !node.children.is_empty() {
+            -1 // phase 节点存 -1
+        } else {
+            node.idx as i32
+        };
+        let task_id = task_db::create(
+            conn, plan_id, project_id, parent_db_id,
+            store_idx, &node.description, DbTaskStatus::Pending, None,
+        ).map_err(|e| format!("{}", e))?;
+
+        if node.children.is_empty() {
+            // 叶子节点 → 创建队列批次
+            let entity = Entity {
+                db_id: Some(task_id),
+                idx: node.idx,
+                parent_idx: parent_node_idx,
+                description: node.description.clone(),
+                step_status: StepStatus::Pending,
+            };
+            queue.push(QueueItem {
+                status: QueueItemStatus::Pending,
+                batch: vec![entity],
+            });
+        } else {
+            // 非叶子节点 → 递归子节点
+            flatten_and_write(
+                &node.children, conn, plan_id, project_id,
+                Some(task_id), Some(node.idx), queue, depth + 1,
+            )?;
+
+            // 最后一个子节点的 batch 追加父节点
+            if let Some(last_qi) = queue.last_mut() {
+                last_qi.batch.push(Entity {
+                    db_id: Some(task_id),
+                    idx: node.idx,
+                    parent_idx: None,
+                    description: node.description.clone(),
+                    step_status: StepStatus::Pending,
+                });
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Agent —— 拥有 provider 和 registry，通过 mpsc channel 输出流式事件。
@@ -453,6 +517,7 @@ impl Agent {
             agent_mode: Arc::new(Mutex::new(AgentMode::default())),
             action_mode: Arc::new(RwLock::new(ActionMode::default())),
             current_plan: Arc::new(Mutex::new(None)),
+            plan_version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };        
         Self {
             provider,
@@ -600,4 +665,12 @@ impl Agent {
         }
         result
     }
+}
+
+
+pub struct LoopContext {
+    
+    pub conversation_id: String,
+    /// 挂起的工具调用
+    pub pending_tool_calls: Vec<ToolCall>,
 }

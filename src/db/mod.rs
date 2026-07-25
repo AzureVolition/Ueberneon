@@ -281,6 +281,7 @@ fn rebuild_schema(conn: &Connection) -> anyhow::Result<()> {
     seed_default_tool_groups(&conn)?;
 
     // ── 内置 Explore SubAgent ─────────────────────────────────────────────
+    
     // 幂等插入 explore 子 agent（只读文件搜索专家）
     // provider 信息由用户在 Sub Agents 页面中配置
     conn.execute(

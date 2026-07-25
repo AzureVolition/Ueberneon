@@ -231,7 +231,7 @@ pub fn App() -> Element {
 
     // ── Agent config 选择状态 ──
     let agent_configs: Signal<Vec<crate::db::metadata::agent_config::AgentConfigRow>> =
-        use_signal(|| load_agent_configs());
+        use_signal(|| load_agent_configs().into_iter().filter(|c| c.agent_type != "SubAgent").collect());
     let selected_agent_config_id = use_signal(|| {
         let default_id = crate::settings::get().general.default_agent_config_id;
         if !default_id.is_empty() {
@@ -590,7 +590,7 @@ pub fn App() -> Element {
                                         tab: tab.clone(),
                                         on_change: {
                                             let mut ac = agent_configs;
-                                            move |_| { ac.set(load_agent_configs()); }
+                                            move |_| { ac.set(load_agent_configs().into_iter().filter(|c| c.agent_type != "SubAgent").collect()); }
                                         },
                                     }
                                 }
@@ -601,7 +601,7 @@ pub fn App() -> Element {
                                         tab: tab.clone(),
                                         on_change: {
                                             let mut ac = agent_configs;
-                                            move |_| { ac.set(load_agent_configs()); }
+                                            move |_| { ac.set(load_agent_configs().into_iter().filter(|c| c.agent_type != "SubAgent").collect()); }
                                         },
                                     }
                                 }
@@ -653,7 +653,20 @@ pub fn App() -> Element {
                                             // 触发热更新，让 plan_signal 重算
                                             rt.write().entry(cid.clone()).or_default().tick += 1;
 
-                                            // 3. 自动发送执行消息
+                                            // 3. 将用户消息写入对话列表（前端可见）
+                                            let user_msg = crate::model::UiMessage::Static(crate::model::ChatMessage {
+                                                role: crate::model::Role::User,
+                                                content: "计划已通过审批，请开始执行。".to_string(),
+                                                timestamp: chrono::Local::now(),
+                                                tool_calls: Vec::new(),
+                                                reasoning: String::new(),
+                                                segments: Vec::new(),
+                                                content_html: String::new(),
+                                            });
+                                            rt.write().entry(cid.clone()).or_default().messages.push(user_msg);
+                                            rt.write().entry(cid.clone()).or_default().tick += 1;
+
+                                            // 4. 自动发送执行消息
                                             let input = "计划已通过审批，请开始执行。".to_string();
                                             let bridge_cancel = CancellationToken::new();
                                             rt.write().entry(cid.clone()).or_default().cancel_token = Some(bridge_cancel.clone());
@@ -708,9 +721,11 @@ pub fn App() -> Element {
                             config_disabled: !active_conversation_id.read().is_empty(),
                             approval_hint_text,
                             on_agent_config_change: {
+                                let mut sel_id = selected_agent_config_id;
                                 let mut rt_sig = runtimes;
                                 let cid_sig = active_conversation_id;
                                 move |new_id: String| {
+                                    sel_id.set(new_id.clone());
                                     let cid = cid_sig();
                                     let mut rts = rt_sig.write();
                                     if let Some(rt) = rts.get_mut(&cid) {

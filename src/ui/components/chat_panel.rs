@@ -415,6 +415,7 @@ fn tool_args_summary(tool_name: &str, args: &serde_json::Value) -> String {
         "glob" | "code_index" => &["pattern"],
         "web_fetch" => &["url"],
         "ls" => &["path"],
+        "Task" => &["subagent_name"],
         _ => &["path", "command", "pattern", "url", "name"],
     };
     for key in keys {

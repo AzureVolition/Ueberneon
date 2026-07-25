@@ -317,11 +317,12 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
                         div { class: "settings-field",
                             label { class: "settings-field-label", "system prompt" }
                             textarea {
+                                key: "{editing_id().unwrap_or_default()}",
                                 class: "settings-input",
                                 style: "min-height: 120px; resize: vertical; font-family: var(--font-mono, monospace); font-size: 12px;",
                                 placeholder: "You are a helpful assistant...",
-                                value: "{edit_system_prompt}",
                                 oninput: move |evt| edit_system_prompt.set(evt.value()),
+                                "{edit_system_prompt}"
                             }
                         }
                         div { class: "settings-field",

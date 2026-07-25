@@ -6,7 +6,7 @@
 // Gate 包装 Policy 和可选的 Approver，是 Agent 在 execute 前调用的入口。
 
 use crate::agent::AgentMode;
-use crate::permission::{Decision, Check, bash_decompose, extract_subject, extract_subjects};
+use crate::permission::{Decision, Check, bash_decompose, extract_subjects};
 
 // ── Policy ───────────────────────────────────────────────────────────────────
 
@@ -229,28 +229,16 @@ impl Gate {
     /// - `Ok(())` — 允许执行
     /// - `Err(BlockedReason)` — 被拒绝或需审批
     pub fn check(&self, tool: &str, args: &serde_json::Value, read_only: bool) -> Result<(), BlockedReason> {
-        // bash 工具：如果命令本身是只读的，覆盖 read_only 标记
-        let effective_read_only = if tool == "bash" && !read_only {
-            let subject = extract_subject(args);
-            if !subject.is_empty() && super::checks::is_read_only_bash(&subject) {
-                true
-            } else {
-                read_only
-            }
-        } else {
-            read_only
-        };
-
         let subjects = extract_subjects(args);
         let decision = if subjects.len() > 1 {
-            self.policy.evaluate_subjects(tool, &subjects, effective_read_only)
+            self.policy.evaluate_subjects(tool, &subjects, read_only)
         } else {
             let subject = subjects.first().map(|s| s.as_str()).unwrap_or("");
             // bash 复合命令：per-segment 评估
             if tool == "bash" && !subject.is_empty() {
-                self.policy.evaluate_compound(tool, subject, effective_read_only)
+                self.policy.evaluate_compound(tool, subject, read_only)
             } else {
-                self.policy.evaluate(tool, subject, effective_read_only)
+                self.policy.evaluate(tool, subject, read_only)
             }
         };
 
@@ -281,28 +269,16 @@ impl Gate {
 
     /// 异步版本的 check——当有 Approver 时使用。
     pub async fn check_async(&self, tool: &str, args: &serde_json::Value, read_only: bool) -> Result<(), BlockedReason> {
-        // bash 工具：如果命令本身是只读的，覆盖 read_only 标记
-        let effective_read_only = if tool == "bash" && !read_only {
-            let subject = extract_subject(args);
-            if !subject.is_empty() && super::checks::is_read_only_bash(&subject) {
-                true
-            } else {
-                read_only
-            }
-        } else {
-            read_only
-        };
-
         let subjects = extract_subjects(args);
         let decision = if subjects.len() > 1 {
-            self.policy.evaluate_subjects(tool, &subjects, effective_read_only)
+            self.policy.evaluate_subjects(tool, &subjects, read_only)
         } else {
             let subject = subjects.first().map(|s| s.as_str()).unwrap_or("");
             // bash 复合命令：per-segment 评估
             if tool == "bash" && !subject.is_empty() {
-                self.policy.evaluate_compound(tool, subject, effective_read_only)
+                self.policy.evaluate_compound(tool, subject, read_only)
             } else {
-                self.policy.evaluate(tool, subject, effective_read_only)
+                self.policy.evaluate(tool, subject, read_only)
             }
         };
 
@@ -596,12 +572,13 @@ mod tests {
     }
 
     #[test]
-    fn gate_bash_readonly_auto_detected() {
+    fn gate_bash_not_auto_detected_readonly() {
         let p = Policy::new(Decision::Deny("denied".into()), vec![]);
         let g = Gate::new(p);
-        // echo 被识别为只读 → 即使 writer_fallback=Deny，也应该 Allow
+        // 不再自动识别只读命令，echo 和 rm 一样走 writer_fallback
         let args = serde_json::json!({"command": "echo hello"});
-        assert!(g.check("bash", &args, false).is_ok());
+        let result = g.check("bash", &args, false);
+        assert!(result.is_err());
     }
 
     #[test]

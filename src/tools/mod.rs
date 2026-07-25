@@ -71,7 +71,6 @@ pub fn register_builtins(registry: &Registry, base_dir: &std::path::Path) {
         vec![
             Box::new(crate::permission::checks::ForcePushGuard) as Box<dyn Check>,
             Box::new(crate::permission::checks::DangerousPatternDetector) as Box<dyn Check>,
-            Box::new(crate::permission::checks::ReadOnlyBashClassifier) as Box<dyn Check>,
         ]
     };
 

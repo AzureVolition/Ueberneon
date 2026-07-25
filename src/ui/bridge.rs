@@ -65,6 +65,9 @@ pub async fn run_agent_loop(ctx: BridgeContext) {
     agent.handler.set_action_mode(action_mode);
     *agent.handler.agent_mode.lock().expect("agent_mode lock poisoned") = agent_mode_val;
 
+    // 克隆 plan_version Arc，供轮询 loop 监控 CompleteStep 更新
+    let plan_version = agent.handler.plan_version.clone();
+
     // Agent 内部创建流式状态
     let streaming = agent.create_streaming();
     runtimes.write().entry(conversation_id.clone()).or_default().messages.push(streaming.clone());
@@ -82,6 +85,7 @@ pub async fn run_agent_loop(ctx: BridgeContext) {
 
     // 主循环：轮询 version 更新 tick_signal，检查 Agent 是否完成
     let mut last_v = 0u64;
+    let mut last_pv = 0u64;
     loop {
         tokio::time::sleep(Duration::from_millis(80)).await;
 
@@ -99,6 +103,13 @@ pub async fn run_agent_loop(ctx: BridgeContext) {
         if v != last_v {
             last_v = v;
             runtimes.write().entry(conversation_id.clone()).or_default().tick = v;
+        }
+
+        // 监控 plan_version：CompleteStep 成功后触发 UI 刷新
+        let pv = plan_version.load(Ordering::Relaxed);
+        if pv != last_pv {
+            last_pv = pv;
+            runtimes.write().entry(conversation_id.clone()).or_default().tick = pv;
         }
 
         if let Some((ag, result)) = result_cell.lock().expect("result_cell lock poisoned").take() {
