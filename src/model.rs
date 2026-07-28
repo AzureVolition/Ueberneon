@@ -290,6 +290,23 @@ pub enum PlanStatus {
     Completed,
 }
 
+// ── Token 用量记录 ───────────────────────────────────────────────────────────
+
+/// 默认上下文窗口上限（token 数）
+pub const DEFAULT_CONTEXT_WINDOW: u32 = 1_000_000;
+
+/// 单次 LLM 交互的 token 用量，由 stream 末尾的 Usage chunk 填充。
+/// 通过 From<llm::Usage> 从 provider 层转换。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TokenUsageRecord {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub reasoning_tokens: u32,
+    pub total_tokens: u32,
+    pub cache_hit_tokens: u32,
+    pub cache_miss_tokens: u32,
+}
+
 // ── 与 db 层的枚举互转 ──
 
 use crate::db::metadata::plan::PlanStatus as DbPlanStatus;

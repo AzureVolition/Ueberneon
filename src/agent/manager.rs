@@ -26,6 +26,7 @@ pub struct AgentConfig {
     pub system_prompt: String,
     pub temperature: f64,
     pub max_tokens: Option<u32>,
+    pub context_window: u32,       // 上下文窗口上限
     pub agent_type: String,
     pub enabled_tools: Vec<String>,
 }
@@ -48,6 +49,7 @@ impl AgentConfig {
             system_prompt: row.system_prompt.clone(),
             temperature: row.temperature,
             max_tokens: row.max_tokens,
+            context_window: row.context_window.unwrap_or(crate::model::DEFAULT_CONTEXT_WINDOW),
             agent_type: row.agent_type.clone(),
             enabled_tools: serde_json::from_str(&row.tools).unwrap_or_default(),
         })
@@ -146,6 +148,7 @@ impl AgentManager {
             conversation_id,
             cfg.temperature,
             cfg.max_tokens,
+            cfg.context_window,
             cfg.agent_type.clone(),
         );
         // 优先使用传入的 system_prompt，否则使用 DB 配置中的
@@ -289,6 +292,7 @@ impl AgentManager {
                     system_prompt: row.system_prompt,
                     temperature: row.temperature,
                     max_tokens: row.max_tokens,
+                    context_window: row.context_window.unwrap_or(crate::model::DEFAULT_CONTEXT_WINDOW),
                     agent_type: row.agent_type,
                     enabled_tools: serde_json::from_str(&row.tools).unwrap_or_default(),
                 });

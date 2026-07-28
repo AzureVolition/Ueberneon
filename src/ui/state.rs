@@ -12,6 +12,14 @@ pub struct ConversationRuntime {
     pub cancel_token: Option<tokio_util::sync::CancellationToken>,
     pub agent_config_id: Option<String>,
     pub agent_mode: AgentMode,
+    /// 累计 token 用量（每次 LLM 交互后累加）
+    pub accumulated_usage: crate::model::TokenUsageRecord,
+    /// 最近一次 LLM 交互的 token 用量（不回看板展示，预留）
+    pub last_loop_usage: Option<crate::model::TokenUsageRecord>,
+    /// LLM 请求次数
+    pub request_count: u64,
+    /// 上下文窗口上限（来自 agent config）
+    pub context_window: u32,
 }
 
 impl Default for ConversationRuntime {
@@ -23,6 +31,10 @@ impl Default for ConversationRuntime {
             cancel_token: None,
             agent_config_id: None,
             agent_mode: AgentMode::Ask,
+            accumulated_usage: crate::model::TokenUsageRecord::default(),
+            last_loop_usage: None,
+            request_count: 0,
+            context_window: crate::model::DEFAULT_CONTEXT_WINDOW,
         }
     }
 }

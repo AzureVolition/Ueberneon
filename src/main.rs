@@ -1,7 +1,12 @@
 mod ui_launch {
     use racpagent::ui::components::app::App;
     pub fn run() {
-        dioxus::launch(App);
+        dioxus::LaunchBuilder::new()
+            .with_cfg(dioxus::desktop::Config::new()
+                .with_window(dioxus::desktop::WindowBuilder::new()
+                    .with_title("RacpAgent")
+                    .with_focused(true)))
+            .launch(App);
     }
 }
 

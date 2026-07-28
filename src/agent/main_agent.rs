@@ -12,7 +12,7 @@ use super::hook::AgentEvent;
 use super::ToolContext;
 use crate::model::{ChatMessage, Role as ChatRole, StreamSegment, ToolCallRecord, ToolCallStatus, UiMessage};
 use crate::permission::Decision;
-use llm::{Chunk, Message, Request, Role as LlmRole};
+use llm::{Chunk, Message, Request, Role as LlmRole, Usage};
 
 // ── select! 辅助枚举 ────────────────────────────────────────────────────────
 
@@ -93,7 +93,9 @@ impl Agent {
         }
 
         self.start_loop();
-        
+
+
+        // ReAct Loop
         loop {
             self.round_start();
             let mut have_tool_calls = false;
@@ -111,7 +113,7 @@ impl Agent {
                 messages: self.messages.clone(),
                 tools: self.registry.schemas(),
                 temperature: self.temperature,
-                max_tokens: 65536,
+                max_tokens: self.max_tokens.unwrap_or(65536),
             };
 
             let stream = match self.provider.stream(&req).await {
@@ -128,8 +130,9 @@ impl Agent {
 
             let mut output = String::new();
             let mut reasoning = String::new();
+            let mut last_usage: Option<llm::Usage> = None;
             
-
+            // stream loop
             loop {
                 let result = tokio::select! {
                     _ = cancel_token.cancelled() => StreamOrCancel::Cancelled,
@@ -151,7 +154,22 @@ impl Agent {
                         have_tool_calls = true;
                         self.pending_tool_calls.push(tc.clone());
                     }
-                    StreamOrCancel::Chunk(Some(Ok(_))) => {} // Start/Delta/Usage
+                    StreamOrCancel::Chunk(Some(Ok(Chunk::Usage(usage)))) => {
+                        if let Some(ref last) = last_usage {
+                            last_usage = Some(Usage {
+                                prompt_tokens: last.prompt_tokens + usage.prompt_tokens,
+                                completion_tokens: last.completion_tokens + usage.completion_tokens,
+                                reasoning_tokens: last.reasoning_tokens + usage.reasoning_tokens,
+                                total_tokens: last.total_tokens + usage.total_tokens,
+                                cache_hit_tokens: last.cache_hit_tokens + usage.cache_hit_tokens,
+                                cache_miss_tokens: last.cache_miss_tokens + usage.cache_miss_tokens,
+                                finish_reason: format!("{}\n{}", last.finish_reason, usage.finish_reason),
+                            });
+                        } else {
+                            last_usage = Some(usage);
+                        }
+                    }
+                    StreamOrCancel::Chunk(Some(Ok(_))) => {} // Start/Delta
                     StreamOrCancel::Chunk(Some(Err(e))) => {
                         let msg = format!("Stream error: {e}");
                         output.push_str(&msg);
@@ -160,7 +178,34 @@ impl Agent {
                     }
                 }
             }
-
+            // stream loop end
+            
+            // 持久化 token 用量
+            if let Some(ref usage) = last_usage {
+                let usaget_record = crate::model::TokenUsageRecord {
+                    prompt_tokens: usage.prompt_tokens,
+                    completion_tokens: usage.completion_tokens,
+                    reasoning_tokens: usage.reasoning_tokens,
+                    total_tokens: usage.total_tokens,
+                    cache_hit_tokens: usage.cache_hit_tokens,
+                    cache_miss_tokens: usage.cache_miss_tokens,
+                };
+                match crate::db::get_db().lock() {
+                    Ok(guard) => {
+                        if let Err(e) = crate::db::metadata::conversation::accumulate_usage(
+                            &guard, &self.conversation_id,
+                            &usaget_record,
+                        ) {
+                            tracing::warn!(target: "dashboard", error = %e, "accumulate_usage failed (cancelled)");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(target: "dashboard", error = %e, "db lock failed for accumulate_usage (cancelled)");
+                    }
+                }
+                self.last_usage = Some(usaget_record);
+            }
+        
             if cancelled {
                 let output_empty = output.is_empty();
                 let reasoning_empty = reasoning.is_empty();
@@ -176,6 +221,7 @@ impl Agent {
                         ..Default::default()
                     };
                     self.push_message(msg)?;
+                   
                 }
                 break;
             }
@@ -194,6 +240,7 @@ impl Agent {
                     msg.tool_calls = self.pending_tool_calls.clone();
                 }
                 self.push_message(msg)?;
+                
             }
 
             // 执行工具调用
@@ -339,7 +386,8 @@ impl Agent {
             
             
         }
-
+        // ReAct Loop End
+        
         // ── 更新对话时间 ──
         crate::db::try_with_db(|conn| {
             if let Err(e) = self.touch_conversation(conn) { tracing::error!(target:"db", error=%e, "touch conversation"); }

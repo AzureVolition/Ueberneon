@@ -85,7 +85,15 @@ fn rebuild_schema(conn: &Connection) -> anyhow::Result<()> {
             updated_at  TEXT NOT NULL,
             created_at  TEXT NOT NULL,
             agent_config_id TEXT REFERENCES agent_configs(id),
-            status      TEXT NOT NULL DEFAULT 'active'
+            status      TEXT NOT NULL DEFAULT 'active',
+            total_prompt_tokens    INTEGER NOT NULL DEFAULT 0,
+            total_completion_tokens INTEGER NOT NULL DEFAULT 0,
+            total_reasoning_tokens  INTEGER NOT NULL DEFAULT 0,
+            total_tokens            INTEGER NOT NULL DEFAULT 0,
+            request_count           INTEGER NOT NULL DEFAULT 0,
+            cache_hit_tokens        INTEGER NOT NULL DEFAULT 0,
+            cache_miss_tokens       INTEGER NOT NULL DEFAULT 0,
+            last_usage_at           TEXT
         );
 
         CREATE TABLE IF NOT EXISTS messages (
@@ -119,7 +127,7 @@ fn rebuild_schema(conn: &Connection) -> anyhow::Result<()> {
             base_url        TEXT NOT NULL,
             models_url      TEXT DEFAULT '',
             balance_url     TEXT DEFAULT '',
-            context_window  INTEGER NOT NULL DEFAULT 131072,
+            context_window  INTEGER,
             is_preset       INTEGER NOT NULL DEFAULT 0
         );
 
@@ -149,6 +157,7 @@ fn rebuild_schema(conn: &Connection) -> anyhow::Result<()> {
             system_prompt       TEXT NOT NULL DEFAULT '',
             temperature         REAL NOT NULL DEFAULT 0.7,
             max_tokens          INTEGER,
+            context_window      INTEGER,
             tools               TEXT NOT NULL DEFAULT '[]',
             description         TEXT NOT NULL DEFAULT '',
             created_at          TEXT NOT NULL,
@@ -241,6 +250,19 @@ fn rebuild_schema(conn: &Connection) -> anyhow::Result<()> {
 
     // migration: add description column for existing databases (ignore error if exists)
     let _ = conn.execute("ALTER TABLE agent_configs ADD COLUMN description TEXT NOT NULL DEFAULT ''", []);
+
+    // migration: token usage tracking columns for conversations
+    let _ = conn.execute("ALTER TABLE conversations ADD COLUMN total_prompt_tokens INTEGER NOT NULL DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE conversations ADD COLUMN total_completion_tokens INTEGER NOT NULL DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE conversations ADD COLUMN total_reasoning_tokens INTEGER NOT NULL DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE conversations ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE conversations ADD COLUMN request_count INTEGER NOT NULL DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE conversations ADD COLUMN cache_hit_tokens INTEGER NOT NULL DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE conversations ADD COLUMN cache_miss_tokens INTEGER NOT NULL DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE conversations ADD COLUMN last_usage_at TEXT", []);
+
+    // migration: context_window for agent_configs
+    let _ = conn.execute("ALTER TABLE agent_configs ADD COLUMN context_window INTEGER", []);
 
     // ── 默认项目 ──────────────────────────────────────────────────────────
     // 确保 "racpagent" 默认项目始终存在

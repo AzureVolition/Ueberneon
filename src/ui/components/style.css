@@ -5191,3 +5191,401 @@ body {
   }
 }
 
+/* ═══════════════════════════════════════════════
+   Dashboard Panel — 右侧滑出 token 用量看板
+   ═══════════════════════════════════════════════ */
+
+/* ── 触发按钮 — 内联 pill，放在 InputBar 同行 ── */
+.dash-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border: 1px solid var(--color-rule-2);
+  border-radius: var(--radius-pill);
+  background: var(--color-paper-2);
+  color: var(--color-ink-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-micro);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+
+.dash-trigger:hover {
+  color: var(--color-accent);
+  background: var(--color-paper-3);
+  border-color: var(--color-accent);
+  box-shadow: 0 0 12px var(--color-glow-2);
+}
+
+.dash-trigger--active {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+  background: oklch(18% 0.014 265);
+  box-shadow: 0 0 16px var(--color-glow);
+}
+
+.dash-trigger__label {
+  line-height: 1;
+}
+
+/* ── 遮罩层 — 点击外部关闭 ── */
+.dash-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--z-modal) - 1);
+  background: transparent;
+  cursor: default;
+}
+
+/* ── 滑出面板 ── */
+.dash-panel {
+  position: fixed;
+  right: 0;
+  top: 0;
+  height: 100dvh;
+  width: 360px;
+  max-width: 92vw;
+  z-index: var(--z-modal);
+  background: var(--color-paper-2);
+  border-left: 1px solid var(--color-rule-2);
+  display: flex;
+  flex-direction: column;
+  transform: translateX(100%);
+  transition: transform var(--dur-slow) var(--ease-soft);
+  box-shadow: -8px 0 32px oklch(13% 0.014 265 / 0.6);
+}
+
+.dash-panel--open {
+  transform: translateX(0);
+}
+
+/* ── 面板头部 ── */
+.dash-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-md) var(--space-lg);
+  border-bottom: 1px solid var(--color-rule);
+  flex-shrink: 0;
+}
+
+.dash-panel__title {
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--color-ink);
+  letter-spacing: var(--tracking-micro);
+  text-transform: uppercase;
+}
+
+.dash-panel__close {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-ink-3);
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+}
+
+.dash-panel__close:hover {
+  color: var(--color-ink);
+  background: var(--color-paper-3);
+}
+
+/* ── 滚动区域 ── */
+.dash-panel__scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-rule) transparent;
+}
+
+/* ── 卡片 ── */
+.dash-card {
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-lg);
+  background: var(--color-paper-3);
+  overflow: hidden;
+}
+
+.dash-card--single {
+  flex: 1;
+}
+
+.dash-card__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--color-rule);
+}
+
+.dash-card__label {
+  font-family: var(--font-body);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--color-ink-3);
+  letter-spacing: var(--tracking-micro);
+  text-transform: uppercase;
+}
+
+.dash-card__sub {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-ink-4);
+}
+
+.dash-card__body {
+  padding: var(--space-md);
+}
+
+/* ── 空状态 ── */
+.dash-empty {
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  color: var(--color-ink-3);
+  padding: var(--space-lg) 0;
+  text-align: center;
+}
+
+/* ── 数值指标 ── */
+.dash-metrics {
+  display: flex;
+  gap: var(--space-md);
+  overflow-x: auto;
+  flex-wrap: nowrap;
+  scroll-snap-type: x mandatory;
+}
+
+.dash-metric {
+  flex: 0 0 auto;
+  min-width: 100px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2xs);
+  padding: var(--space-sm);
+  border-radius: var(--radius-md);
+  background: var(--color-paper);
+}
+
+.dash-metric__value {
+  font-family: var(--font-mono);
+  font-size: var(--text-lg);
+  font-weight: 600;
+  color: var(--color-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.dash-metric__value--accent {
+  color: var(--color-accent-2);
+}
+
+.dash-metric__label {
+  font-family: var(--font-body);
+  font-size: var(--text-xs);
+  color: var(--color-ink-3);
+  letter-spacing: var(--tracking-micro);
+  text-transform: uppercase;
+}
+
+/* ── 条形图行 ── */
+.dash-bar-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding-block: var(--space-2xs);
+}
+
+.dash-bar-row__label {
+  flex: 0 0 auto;
+  width: 120px;
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  color: var(--color-ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dash-bar-row__track {
+  flex: 1;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--color-paper);
+  overflow: hidden;
+}
+
+.dash-bar-row__fill {
+  height: 100%;
+  border-radius: var(--radius-pill);
+  background: var(--color-accent);
+  transition: width var(--dur-slow) var(--ease-soft);
+}
+
+.dash-bar-row__value {
+  flex: 0 0 auto;
+  width: 56px;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-ink-3);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Token 分解组 ── */
+.dash-breakdown-group {
+  margin-bottom: var(--space-md);
+}
+
+.dash-breakdown-group__label {
+  font-family: var(--font-body);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--color-ink-2);
+  letter-spacing: var(--tracking-micro);
+  text-transform: uppercase;
+  padding-bottom: var(--space-xs);
+  border-bottom: 1px solid var(--color-rule);
+  margin-bottom: var(--space-xs);
+}
+
+/* ── 分解行 ── */
+.dash-breakdown-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding-block: 3px;
+}
+
+.dash-breakdown-row__label {
+  width: 72px;
+  flex-shrink: 0;
+  font-family: var(--font-body);
+  font-size: var(--text-xs);
+  color: var(--color-ink-3);
+}
+
+.dash-breakdown-row__track {
+  flex: 1;
+  height: 5px;
+  border-radius: var(--radius-pill);
+  background: var(--color-paper);
+  overflow: hidden;
+}
+
+.dash-breakdown-row__fill {
+  height: 100%;
+  border-radius: var(--radius-pill);
+  transition: width var(--dur-slow) var(--ease-soft);
+}
+
+.dash-bar--prompt {
+  background: var(--color-accent);
+}
+
+.dash-bar--completion {
+  background: var(--color-accent-2);
+}
+
+.dash-bar--reasoning {
+  background: var(--color-accent-3);
+}
+
+.dash-breakdown-row__pct {
+  width: 32px;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-ink-3);
+  text-align: right;
+}
+
+.dash-breakdown-row__val {
+  width: 48px;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-ink-3);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 总计行 ── */
+.dash-total-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--color-rule);
+  margin-top: var(--space-sm);
+}
+
+.dash-total-row__label {
+  font-family: var(--font-body);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--color-ink-2);
+  letter-spacing: var(--tracking-micro);
+}
+
+.dash-total-row__value {
+  font-family: var(--font-mono);
+  font-size: var(--text-lg);
+  font-weight: 600;
+  color: var(--color-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 上下文窗口进度条 ── */
+.dash-window-track {
+  width: 100%;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--color-paper);
+  overflow: hidden;
+  margin-bottom: var(--space-xs);
+}
+
+.dash-window-fill {
+  height: 100%;
+  border-radius: var(--radius-pill);
+  background: var(--color-accent);
+  transition: width var(--dur-slow) var(--ease-soft);
+}
+
+.dash-window-pct {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-ink-3);
+  text-align: right;
+}
+
+/* ── reduced motion ── */
+@media (prefers-reduced-motion: reduce) {
+  .dash-panel {
+    transition: none;
+  }
+  .dash-bar-row__fill,
+  .dash-breakdown-row__fill {
+    transition: none;
+  }
+}

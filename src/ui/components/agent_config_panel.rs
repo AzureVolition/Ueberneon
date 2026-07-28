@@ -59,6 +59,7 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
     let mut edit_system_prompt = use_signal(String::new);
     let mut edit_temperature = use_signal(|| 0.7f64);
     let mut edit_max_tokens = use_signal(|| String::new());
+    let mut edit_context_window = use_signal(|| String::new());
     let mut edit_tools: Signal<std::collections::HashSet<String>> = use_signal(std::collections::HashSet::new);
     let mut edit_groups: Signal<std::collections::HashSet<String>> = use_signal(std::collections::HashSet::new);
     let mut show_group_selector = use_signal(|| false);
@@ -120,6 +121,7 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
                 edit_system_prompt.set(c.system_prompt.clone());
                 edit_temperature.set(c.temperature);
                 edit_max_tokens.set(c.max_tokens.map(|v| v.to_string()).unwrap_or_default());
+                edit_context_window.set(c.context_window.map(|v| v.to_string()).unwrap_or_default());
                 // 解析 tools JSON
                 let tools_set: std::collections::HashSet<String> =
                     serde_json::from_str(&c.tools).unwrap_or_default();
@@ -137,6 +139,7 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
                 edit_system_prompt.set(String::new());
                 edit_temperature.set(0.7);
                 edit_max_tokens.set(String::new());
+                edit_context_window.set(String::new());
                 edit_tools.set(std::collections::HashSet::new());
                 edit_groups.set(std::collections::HashSet::new());
             }
@@ -160,6 +163,10 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
             let temperature = *edit_temperature.read();
             let max_tokens = {
                 let v = edit_max_tokens.read().trim().to_string();
+                if v.is_empty() { None } else { v.parse::<u32>().ok() }
+            };
+            let context_window = {
+                let v = edit_context_window.read().trim().to_string();
                 if v.is_empty() { None } else { v.parse::<u32>().ok() }
             };
             let tools = {
@@ -206,6 +213,7 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
                 system_prompt,
                 temperature,
                 max_tokens,
+                context_window,
                 tools,
                 description: String::new(),
                 created_at: if is_new { now.clone() } else { String::new() },
@@ -353,6 +361,17 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
                                 value: "{edit_max_tokens}",
                                 oninput: move |evt| edit_max_tokens.set(evt.value()),
                             }
+                        }
+                        div { class: "settings-field",
+                            label { class: "settings-field-label", "context window limit" }
+                            input {
+                                class: "settings-input",
+                                r#type: "number",
+                                placeholder: "{crate::model::DEFAULT_CONTEXT_WINDOW}",
+                                value: "{edit_context_window}",
+                                oninput: move |evt| edit_context_window.set(evt.value()),
+                            }
+                            div { class: "settings-hint", "context window token limit ({crate::model::DEFAULT_CONTEXT_WINDOW} default)" }
                         }
                         div { class: "settings-field",
                             label { class: "settings-field-label", "tool groups" }

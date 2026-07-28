@@ -11,6 +11,7 @@ use crate::agent::manager::AgentManager;
 use crate::agent::{ActionMode, AgentHandler, AgentMode};
 use crate::settings;
 use crate::ui::components::chat_panel::ChatPanel;
+use crate::ui::components::dashboard_panel::DashboardPanel;
 use crate::ui::components::input_bar::InputBar;
 use crate::ui::components::plan_panel::PlanPanel;
 use crate::ui::components::settings_panel::SettingsPanel;
@@ -184,12 +185,28 @@ fn ensure_conv_loaded(
         }
         msgs.push(streaming.clone());
     }
+    // 从 DB 恢复该对话的累计 token 用量
+    let (db_usage, db_requests, db_context_window) = crate::db::with_db(|conn| {
+        let usage = crate::db::metadata::conversation::get_usage(conn, conv_id)
+            .unwrap_or_default();
+        let reqs = crate::db::metadata::conversation::get_request_count(conn, conv_id)
+            .unwrap_or(0);
+        let cw = agent_config_id.as_ref()
+            .and_then(|acid| crate::db::metadata::agent_config::get(conn, acid).ok().flatten())
+            .and_then(|ac| ac.context_window)
+            .unwrap_or(crate::model::DEFAULT_CONTEXT_WINDOW);
+        (usage, reqs, cw)
+    });
+
     runtimes.write().insert(
         conv_id.to_string(),
         ConversationRuntime {
             messages: msgs,
             agent_config_id,
             agent_mode,
+            accumulated_usage: db_usage,
+            request_count: db_requests,
+            context_window: db_context_window,
             ..Default::default()
         },
     );
@@ -287,7 +304,10 @@ pub fn App() -> Element {
             // 从 DB 加载对话列表到 signal
             let convs = crate::db::with_db(|conn| {
                 crate::db::metadata::conversation::list_by_project(conn, &project_id)
-                    .unwrap_or_default()
+                    .unwrap_or_else(|e| {
+                        tracing::error!(target: "db", error = %e, project_id = %project_id, "list_by_project failed in on_select_project");
+                        Vec::new()
+                    })
             });
             let first_conv_id = convs.first().map(|c| c.id.clone());
             let mut projs = projects.write();
@@ -476,7 +496,10 @@ pub fn App() -> Element {
         // 获取项目下的对话 ID 列表（先释放 DB 锁再操作 AgentManager）
         let conv_ids: Vec<String> = crate::db::with_db(|conn| {
             crate::db::metadata::conversation::list_by_project(conn, &project_id)
-                .unwrap_or_default()
+                .unwrap_or_else(|e| {
+                    tracing::error!(target: "db", error = %e, project_id = %project_id, "list_by_project failed in delete_project");
+                    Vec::new()
+                })
                 .into_iter()
                 .map(|c| c.id)
                 .collect()
@@ -709,10 +732,8 @@ pub fn App() -> Element {
                             selected_agent_config_id: {
                                 let cid = active_conversation_id();
                                 if cid.is_empty() {
-                                    // 新对话：用全局 signal（初始来自 settings，后续由 on_agent_config_change 维护）
                                     selected_agent_config_id()
                                 } else {
-                                    // 已有对话：从 ruxntime 读
                                     runtimes.read().get(&cid)
                                         .and_then(|rt| rt.agent_config_id.clone())
                                         .unwrap_or_default()
@@ -849,7 +870,11 @@ pub fn App() -> Element {
                             });
                             // 刷新 signal（标题、轮数、last_activity_at 同步）
                             let convs = crate::db::with_db(|conn| {
-                                crate::db::metadata::conversation::list_by_project(conn, &pid).unwrap_or_default()
+                                crate::db::metadata::conversation::list_by_project(conn, &pid)
+                                    .unwrap_or_else(|e| {
+                                        tracing::error!(target: "db", error = %e, project_id = %pid, "list_by_project failed in refresh");
+                                        Vec::new()
+                                    })
                             });
                             let mut p = projs.write();
                                 if let Some(proj) = p.iter_mut().find(|pr| pr.id == pid) {
@@ -887,6 +912,32 @@ pub fn App() -> Element {
                         }
                     },
                 }  // ← InputBar
+                DashboardPanel {
+                    usage: {
+                        let cid = active_conversation_id();
+                        runtimes.read().get(&cid)
+                            .map(|r| r.accumulated_usage.clone())
+                            .unwrap_or_default()
+                    },
+                    request_count: {
+                        let cid = active_conversation_id();
+                        runtimes.read().get(&cid)
+                            .map(|r| r.request_count)
+                            .unwrap_or(0)
+                    },
+                    context_window: {
+                        let cid = active_conversation_id();
+                        runtimes.read().get(&cid)
+                            .map(|r| r.context_window)
+                            .unwrap_or(1000000)
+                    },
+                    last_prompt_tokens: {
+                        let cid = active_conversation_id();
+                        runtimes.read().get(&cid)
+                            .and_then(|r| r.last_loop_usage.as_ref())
+                            .map(|u| u.prompt_tokens)
+                    },
+                }
             }  // ← rsx!
             }  // ← _ => arm
             }  // ← match

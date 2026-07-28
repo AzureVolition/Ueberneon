@@ -68,9 +68,27 @@ pub async fn run_agent_loop(ctx: BridgeContext) {
     // 克隆 plan_version Arc，供轮询 loop 监控 CompleteStep 更新
     let plan_version = agent.handler.plan_version.clone();
 
+    // 从 DB 恢复累计 token 用量（切换回已有对话时恢复之前的数据）
+    let db_usage = crate::db::with_db(|conn| {
+        crate::db::metadata::conversation::get_usage(conn, &conversation_id)
+            .unwrap_or_default()
+    });
+    let db_requests = crate::db::with_db(|conn| {
+        crate::db::metadata::conversation::get_request_count(conn, &conversation_id)
+            .unwrap_or(0)
+    });
+
     // Agent 内部创建流式状态
     let streaming = agent.create_streaming();
-    runtimes.write().entry(conversation_id.clone()).or_default().messages.push(streaming.clone());
+    {
+        let mut rts = runtimes.write();
+        let rt = rts.entry(conversation_id.clone()).or_insert_with(|| crate::ui::state::ConversationRuntime {
+            accumulated_usage: db_usage,
+            request_count: db_requests,
+            ..Default::default()
+        });
+        rt.messages.push(streaming.clone());
+    }
     streaming_states.lock().expect("streaming_states lock poisoned").insert(conversation_id.clone(), streaming.clone());
 
 
@@ -141,6 +159,22 @@ pub async fn run_agent_loop(ctx: BridgeContext) {
                         ErrorSeverity::Warning,
                         ErrorSource::Agent,
                     ).with_detail(format!("{:#}", e)));
+                }
+            }
+
+            // 累加本次 token 用量到 conversation runtime，
+            // 同时保存单次 loop 数据（暂不展示，预留）
+            if let Some(ref usage) = ag.last_usage {
+                let mut all = runtimes.write();
+                if let Some(rt) = all.get_mut(&conversation_id) {
+                    rt.accumulated_usage.prompt_tokens += usage.prompt_tokens;
+                    rt.accumulated_usage.completion_tokens += usage.completion_tokens;
+                    rt.accumulated_usage.reasoning_tokens += usage.reasoning_tokens;
+                    rt.accumulated_usage.total_tokens += usage.total_tokens;
+                    rt.accumulated_usage.cache_hit_tokens += usage.cache_hit_tokens;
+                    rt.accumulated_usage.cache_miss_tokens += usage.cache_miss_tokens;
+                    rt.request_count += 1;
+                    rt.last_loop_usage = Some(usage.clone());
                 }
             }
 

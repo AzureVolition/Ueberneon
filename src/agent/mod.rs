@@ -491,12 +491,16 @@ pub struct Agent {
     pub temperature: f64,
     /// 最大 token 数
     pub max_tokens: Option<u32>,
+    /// 上下文窗口上限
+    pub context_window: u32,
     /// Agent 类型
     pub agent_type: String,
     /// 循环数
     pub round: Option<u32>,
     /// 挂起的工具调用
     pub pending_tool_calls: Vec<ToolCall>,
+    /// 最近一次 LLM 交互的 token 用量（accept_message 结束后填充）
+    pub last_usage: Option<crate::model::TokenUsageRecord>,
     
 }
 
@@ -511,6 +515,7 @@ impl Agent {
         conversation_id: String,
         temperature: f64,
         max_tokens: Option<u32>,
+        context_window: u32,
         agent_type: String,
     ) -> Self {
         let handler = AgentHandler {
@@ -531,9 +536,11 @@ impl Agent {
             streaming_handle: None,
             temperature,
             max_tokens,
+            context_window,
             agent_type,
             round: None,
             pending_tool_calls: Vec::new(),
+            last_usage: None,
         }
     }
     

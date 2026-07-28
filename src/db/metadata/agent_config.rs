@@ -16,6 +16,7 @@ pub struct AgentConfigRow {
     pub system_prompt: String,
     pub temperature: f64,
     pub max_tokens: Option<u32>,
+    pub context_window: Option<u32>, // 上下文窗口上限（NULL = 使用默认值）
     pub tools: String,            // JSON 数组: ["Bash","ReadFile",...]  空数组 = 全部
     pub description: String,      // 子 Agent 描述，供主 Agent 了解能力
     pub created_at: String,
@@ -43,12 +44,12 @@ impl std::fmt::Display for AgentType {
 pub fn insert(conn: &Connection, row: &AgentConfigRow) -> Result<()> {
     conn.execute(
         "INSERT INTO agent_configs (id, name, agent_type, provider_instance_id, model,
-         base_url, api_key, system_prompt, temperature, max_tokens, tools, description, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+         base_url, api_key, system_prompt, temperature, max_tokens, context_window, tools, description, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         params![
             row.id, row.name, row.agent_type, row.provider_instance_id, row.model,
-            row.base_url, row.api_key, row.system_prompt, row.temperature, row.max_tokens, row.tools,
-            row.description, row.created_at, row.updated_at,
+            row.base_url, row.api_key, row.system_prompt, row.temperature, row.max_tokens, row.context_window,
+            row.tools, row.description, row.created_at, row.updated_at,
         ],
     )?;
     Ok(())
@@ -58,12 +59,12 @@ pub fn insert(conn: &Connection, row: &AgentConfigRow) -> Result<()> {
 pub fn update(conn: &Connection, row: &AgentConfigRow) -> Result<()> {
     conn.execute(
         "UPDATE agent_configs SET name=?1, agent_type=?2, provider_instance_id=?3, model=?4,
-         base_url=?5, api_key=?6, system_prompt=?7, temperature=?8, max_tokens=?9, tools=?10, description=?11, updated_at=?12
-         WHERE id=?13",
+         base_url=?5, api_key=?6, system_prompt=?7, temperature=?8, max_tokens=?9, context_window=?10, tools=?11, description=?12, updated_at=?13
+         WHERE id=?14",
         params![
             row.name, row.agent_type, row.provider_instance_id, row.model,
-            row.base_url, row.api_key, row.system_prompt, row.temperature, row.max_tokens, row.tools,
-            row.description, row.updated_at, row.id,
+            row.base_url, row.api_key, row.system_prompt, row.temperature, row.max_tokens, row.context_window,
+            row.tools, row.description, row.updated_at, row.id,
         ],
     )?;
     Ok(())
@@ -79,7 +80,7 @@ pub fn delete(conn: &Connection, id: &str) -> Result<()> {
 pub fn get(conn: &Connection, id: &str) -> Result<Option<AgentConfigRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, agent_type, provider_instance_id, model,
-         base_url, api_key, system_prompt, temperature, max_tokens, tools, description, created_at, updated_at
+         base_url, api_key, system_prompt, temperature, max_tokens, context_window, tools, description, created_at, updated_at
          FROM agent_configs WHERE id = ?1"
     )?;
     let mut rows = stmt.query_map(params![id], |row| {
@@ -94,10 +95,11 @@ pub fn get(conn: &Connection, id: &str) -> Result<Option<AgentConfigRow>> {
             system_prompt: row.get(7)?,
             temperature: row.get(8)?,
             max_tokens: row.get(9)?,
-            tools: row.get(10)?,
-            description: row.get(11)?,
-            created_at: row.get(12)?,
-            updated_at: row.get(13)?,
+            context_window: row.get(10)?,
+            tools: row.get(11)?,
+            description: row.get(12)?,
+            created_at: row.get(13)?,
+            updated_at: row.get(14)?,
         })
     })?;
     match rows.next() {
@@ -110,7 +112,7 @@ pub fn get(conn: &Connection, id: &str) -> Result<Option<AgentConfigRow>> {
 pub fn list_all(conn: &Connection) -> Result<Vec<AgentConfigRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, agent_type, provider_instance_id, model,
-         base_url, api_key, system_prompt, temperature, max_tokens, tools, description, created_at, updated_at
+         base_url, api_key, system_prompt, temperature, max_tokens, context_window, tools, description, created_at, updated_at
          FROM agent_configs ORDER BY updated_at DESC"
     )?;
     let rows = stmt.query_map([], |row| {
@@ -125,10 +127,11 @@ pub fn list_all(conn: &Connection) -> Result<Vec<AgentConfigRow>> {
             system_prompt: row.get(7)?,
             temperature: row.get(8)?,
             max_tokens: row.get(9)?,
-            tools: row.get(10)?,
-            description: row.get(11)?,
-            created_at: row.get(12)?,
-            updated_at: row.get(13)?,
+            context_window: row.get(10)?,
+            tools: row.get(11)?,
+            description: row.get(12)?,
+            created_at: row.get(13)?,
+            updated_at: row.get(14)?,
         })
     })?;
     rows.collect()
@@ -138,7 +141,7 @@ pub fn list_all(conn: &Connection) -> Result<Vec<AgentConfigRow>> {
 pub fn get_by_name(conn: &Connection, name: &str) -> Result<Option<AgentConfigRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, agent_type, provider_instance_id, model,
-         base_url, api_key, system_prompt, temperature, max_tokens, tools, description, created_at, updated_at
+         base_url, api_key, system_prompt, temperature, max_tokens, context_window, tools, description, created_at, updated_at
          FROM agent_configs WHERE name = ?1"
     )?;
     let mut rows = stmt.query_map(params![name], |row| {
@@ -153,10 +156,11 @@ pub fn get_by_name(conn: &Connection, name: &str) -> Result<Option<AgentConfigRo
             system_prompt: row.get(7)?,
             temperature: row.get(8)?,
             max_tokens: row.get(9)?,
-            tools: row.get(10)?,
-            description: row.get(11)?,
-            created_at: row.get(12)?,
-            updated_at: row.get(13)?,
+            context_window: row.get(10)?,
+            tools: row.get(11)?,
+            description: row.get(12)?,
+            created_at: row.get(13)?,
+            updated_at: row.get(14)?,
         })
     })?;
     match rows.next() {
@@ -169,7 +173,7 @@ pub fn get_by_name(conn: &Connection, name: &str) -> Result<Option<AgentConfigRo
 pub fn list_by_type(conn: &Connection, agent_type: &str) -> Result<Vec<AgentConfigRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, agent_type, provider_instance_id, model,
-         base_url, api_key, system_prompt, temperature, max_tokens, tools, description, created_at, updated_at
+         base_url, api_key, system_prompt, temperature, max_tokens, context_window, tools, description, created_at, updated_at
          FROM agent_configs WHERE agent_type = ?1 ORDER BY updated_at DESC"
     )?;
     let rows = stmt.query_map(params![agent_type], |row| {
@@ -184,10 +188,11 @@ pub fn list_by_type(conn: &Connection, agent_type: &str) -> Result<Vec<AgentConf
             system_prompt: row.get(7)?,
             temperature: row.get(8)?,
             max_tokens: row.get(9)?,
-            tools: row.get(10)?,
-            description: row.get(11)?,
-            created_at: row.get(12)?,
-            updated_at: row.get(13)?,
+            context_window: row.get(10)?,
+            tools: row.get(11)?,
+            description: row.get(12)?,
+            created_at: row.get(13)?,
+            updated_at: row.get(14)?,
         })
     })?;
     rows.collect()
