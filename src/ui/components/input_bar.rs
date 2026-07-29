@@ -64,7 +64,13 @@ pub fn InputBar(
     let mut input = use_signal(String::new);
     let mut idle_pulse = use_signal(|| false);
     let mut pulse_gen = use_signal(|| 0u64);
-    let mut placeholder = use_signal(|| "type your message... (⌘↵ to send)".to_string());
+    let mut placeholder = use_signal(|| {
+        if selected_agent_config_id.is_empty() {
+            "select an agent config to send...".to_string()
+        } else {
+            "type your message... (⌘↵ to send)".to_string()
+        }
+    });
     let running = is_streaming();
     let desktop = use_window();
     let desktop_kb = desktop.clone();
@@ -128,6 +134,7 @@ pub fn InputBar(
     };
 
     let no_agent_configs = agent_configs.is_empty();
+    let no_config_selected = selected_agent_config_id.is_empty();
 
     rsx! {
         div {
@@ -216,7 +223,7 @@ pub fn InputBar(
                             && !evt.is_composing()
                         {
                             let text = input.read().trim().to_string();
-                            if !text.is_empty() && !is_streaming() {
+                            if !text.is_empty() && !is_streaming() && !no_config_selected {
                                 on_send.call(text);
                                 input.set(String::new());
                                 idle_pulse.set(false);
@@ -239,14 +246,17 @@ pub fn InputBar(
                     }
                 } else {
                     button {
-                        class: if idle_pulse() && !input.read().is_empty() {
+                        class: if no_config_selected {
+                            "btn btn-send is-disabled"
+                        } else if idle_pulse() && !input.read().is_empty() {
                             "btn btn-send btn-send-pulse"
                         } else {
                             "btn btn-send"
                         },
+                        disabled: no_config_selected,
                         onclick: move |_| {
                             let text = input.read().trim().to_string();
-                            if !text.is_empty() && !is_streaming() {
+                            if !text.is_empty() && !is_streaming() && !no_config_selected {
                                 on_send.call(text);
                                 input.set(String::new());
                                 idle_pulse.set(false);
