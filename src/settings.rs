@@ -1,6 +1,6 @@
 // ── 应用设置 —— JSON 文件持久化 ──
 //
-// 存储路径：~/.racpagent/settings.json
+// 存储路径：~/.ueberneon/settings.json
 // 通用设置（General）+ 外观设置（Appearance）
 
 use serde::{Deserialize, Serialize};
@@ -63,7 +63,7 @@ impl Default for AppSettings {
 
 fn settings_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(home).join(".racpagent").join("settings.json")
+    PathBuf::from(home).join(".ueberneon").join("settings.json")
 }
 
 // ── 全局单例 ──

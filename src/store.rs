@@ -1,6 +1,6 @@
 // ── 数据持久化层 ──
 //
-// 所有项目数据存储在 ~/.racpagent/ 目录下：
+// 所有项目数据存储在 ~/.ueberneon/ 目录下：
 //   projects.json        ← 完整项目列表（含对话）
 //
 // 应用启动时自动加载，数据变更时自动写盘。
@@ -11,10 +11,10 @@ use anyhow::{Context, Result};
 
 use crate::model::Project;
 
-/// 获取数据根目录 `~/.racpagent/`
+/// 获取数据根目录 `~/.ueberneon/`
 fn data_dir() -> PathBuf {
     let home = home_dir();
-    PathBuf::from(home).join(".racpagent")
+    PathBuf::from(home).join(".ueberneon")
 }
 
 /// 确保数据目录存在

@@ -12,13 +12,13 @@ use ueberneon_macros::ToolMetaImpl;
 pub struct ReadFile {}
 
 #[::async_trait::async_trait]
-impl racpagent::agent::Tool for ReadFile {
+impl ueberneon::agent::Tool for ReadFile {
     async fn execute(
         &self,
-        _ctx: &racpagent::agent::ToolContext,
+        _ctx: &ueberneon::agent::ToolContext,
         _args: &serde_json::Value,
-    ) -> Result<racpagent::agent::ToolResult, String> {
-        Ok(racpagent::agent::ToolResult::ok("executed"))
+    ) -> Result<ueberneon::agent::ToolResult, String> {
+        Ok(ueberneon::agent::ToolResult::ok("executed"))
     }
 }
 
@@ -77,10 +77,10 @@ fn no_schema_attr_defaults_to_empty_object() {
 #[tokio::test]
 async fn execute_returns_ok() {
     let tool = ReadFile {};
-    let ctx = racpagent::agent::ToolContext {
+    let ctx = ueberneon::agent::ToolContext {
         call_id: "test".into(),
         plan_mode: ActionMode::Regular,
-        handler: racpagent::agent::AgentHandler::default(),
+        handler: ueberneon::agent::AgentHandler::default(),
         progress: None,
         main_conversation_id: "".into(),
         project_id: None,

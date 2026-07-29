@@ -193,7 +193,7 @@ pub fn Sidebar(
                     rsx! {
                         div {
                             class: "sidebar-header",
-                            h3 { "racp agent" }
+                            h3 { "ueber neon" }
                             div {
                                 class: "sidebar-header-row",
                                 span { class: "sidebar-label", "PROJECTS" }

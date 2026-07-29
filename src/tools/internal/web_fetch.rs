@@ -23,7 +23,7 @@ pub struct WebFetch {
 
 const WEB_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const WEB_FETCH_MAX_READ: u64 = 1_048_576; // 1 MiB
-const USER_AGENT: &str = "racpagent-web-fetch/1.0";
+const USER_AGENT: &str = "ueberneon-web-fetch/1.0";
 
 impl WebFetch {
     pub fn new() -> Self {

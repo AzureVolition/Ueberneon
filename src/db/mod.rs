@@ -1,7 +1,7 @@
 // ── 数据库层 ──
 //
 // 使用 SQLite (rusqlite) 管理 projects / conversations / messages。
-// 数据库文件存储在 ~/.racpagent/data.db
+// 数据库文件存储在 ~/.ueberneon/data.db
 //
 // 当前阶段：仅引入 + 建表，store.rs 仍使用 JSON 文件。
 // 后续可将 store.rs 替换为基于该模块的 CRUD 实现。
@@ -16,17 +16,17 @@ use anyhow::Context;
 use rusqlite::Connection;
 
 /// 默认项目的固定 id（与 store.rs 迁移至此）
-pub const DEFAULT_PROJECT_ID: &str = "racpagent-default";
+pub const DEFAULT_PROJECT_ID: &str = "ueberneon-default";
 
-/// 数据库文件路径：~/.racpagent/data.db
+/// 数据库文件路径：~/.ueberneon/data.db
 fn db_path() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    std::path::PathBuf::from(home).join(".racpagent").join("data.db")
+    std::path::PathBuf::from(home).join(".ueberneon").join("data.db")
 }
 
 /// 初始化数据库。
 ///
-/// - 确保 ~/.racpagent/ 目录存在
+/// - 确保 ~/.ueberneon/ 目录存在
 /// - 打开/创建 data.db
 /// - 启用 WAL 模式
 /// - 执行 CREATE TABLE IF NOT EXISTS + CREATE INDEX IF NOT EXISTS
@@ -265,13 +265,13 @@ fn rebuild_schema(conn: &Connection) -> anyhow::Result<()> {
     let _ = conn.execute("ALTER TABLE agent_configs ADD COLUMN context_window INTEGER", []);
 
     // ── 默认项目 ──────────────────────────────────────────────────────────
-    // 确保 "racpagent" 默认项目始终存在
+    // 确保 "ueberneon" 默认项目始终存在
     conn.execute(
         "INSERT OR IGNORE INTO projects (id, name, path, created_at)
          VALUES (?1, ?2, ?3, ?4)",
         rusqlite::params![
             DEFAULT_PROJECT_ID,
-            "racpagent",
+            "ueberneon",
             db_path().parent().context("db_path has no parent directory")?.to_string_lossy().to_string(),
             chrono::Local::now().to_rfc3339(),
         ],
@@ -469,7 +469,7 @@ mod tests {
     #[test]
     fn test_init_db_creates_file() {
         // 使用临时目录测试
-        let tmp = std::env::temp_dir().join(format!("racpagent-db-test-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("ueberneon-db-test-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
 
         // 临时覆盖 HOME 环境变量
@@ -477,7 +477,7 @@ mod tests {
         unsafe { std::env::set_var("HOME", tmp.to_str().unwrap()); }
 
         let conn = init_db().expect("init_db should succeed");
-        let db_file = tmp.join(".racpagent").join("data.db");
+        let db_file = tmp.join(".ueberneon").join("data.db");
         assert!(db_file.exists(), "database file should exist");
 
         // 验证表存在

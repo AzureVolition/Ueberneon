@@ -1,10 +1,10 @@
 mod ui_launch {
-    use racpagent::ui::components::app::App;
+    use ueberneon::ui::components::app::App;
     pub fn run() {
         dioxus::LaunchBuilder::new()
             .with_cfg(dioxus::desktop::Config::new()
                 .with_window(dioxus::desktop::WindowBuilder::new()
-                    .with_title("RacpAgent")
+                    .with_title("UeberNeon")
                     .with_focused(true)))
             .launch(App);
     }
@@ -35,14 +35,14 @@ fn _print_tools_inventory() {
     use std::io::Write;
     let mut stderr = std::io::stderr();
     let _ = writeln!(stderr, "=== Internal Tools Inventory ===");
-    for meta in inventory::iter::<racpagent::tools::InternalToolMeta> {
+    for meta in inventory::iter::<ueberneon::tools::InternalToolMeta> {
         let _ = writeln!(stderr, "  {:15} | ro={:5} | {:10} | {}",
             meta.name, meta.read_only,
             meta.schema,
             meta.description,
         );
     }
-    let total = inventory::iter::<racpagent::tools::InternalToolMeta>.into_iter().count();
+    let total = inventory::iter::<ueberneon::tools::InternalToolMeta>.into_iter().count();
     let _ = writeln!(stderr, "Total: {} tools", total);
     let _ = stderr.flush();
 }

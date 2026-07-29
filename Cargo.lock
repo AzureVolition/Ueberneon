@@ -4352,45 +4352,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
 
 [[package]]
-name = "racpagent"
-version = "0.1.0"
-dependencies = [
- "ambassador",
- "anyhow",
- "async-openai",
- "async-stream",
- "async-trait",
- "backon",
- "base64",
- "chrono",
- "dioxus",
- "dotenvy",
- "encoding_rs",
- "futures",
- "glob",
- "ignore",
- "inventory",
- "libc",
- "llm",
- "pulldown-cmark",
- "regex",
- "reqwest 0.12.28",
- "rfd 0.15.4",
- "rusqlite",
- "schemars",
- "serde",
- "serde_json",
- "similar",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "ueberneon-macros",
- "url",
- "walkdir",
-]
-
-[[package]]
 name = "rand"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6056,6 +6017,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "ueberneon"
+version = "0.1.0"
+dependencies = [
+ "ambassador",
+ "anyhow",
+ "async-openai",
+ "async-stream",
+ "async-trait",
+ "backon",
+ "base64",
+ "chrono",
+ "dioxus",
+ "dotenvy",
+ "encoding_rs",
+ "futures",
+ "glob",
+ "ignore",
+ "inventory",
+ "libc",
+ "llm",
+ "pulldown-cmark",
+ "regex",
+ "reqwest 0.12.28",
+ "rfd 0.15.4",
+ "rusqlite",
+ "schemars",
+ "serde",
+ "serde_json",
+ "similar",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "ueberneon-macros",
+ "url",
+ "walkdir",
+]
+
+[[package]]
 name = "ueberneon-macros"
 version = "0.1.0"
 dependencies = [
@@ -6064,10 +6064,10 @@ dependencies = [
  "llm",
  "proc-macro2",
  "quote",
- "racpagent",
  "serde_json",
  "syn 2.0.118",
  "tokio",
+ "ueberneon",
 ]
 
 [[package]]
