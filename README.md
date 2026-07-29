@@ -3,7 +3,7 @@
 一个基于 **ReAct** 循环的 AI 编程 Agent 桌面应用——在本地 IDE 中运行，可以自主完成文件编辑、代码搜索、Shell 执行、任务规划等开发工作。
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Rust-2024_edition-oklch(72%25_0.20_200)?style=flat-square&logo=rust" alt="Rust">
+  <img src="https://img.shields.io/badge/Rust-2024_edition-000000?style=flat-square&logo=rust" alt="Rust">
   <img src="https://img.shields.io/badge/Dioxus-0.7-blueviolet?style=flat-square" alt="Dioxus">
   <img src="https://img.shields.io/badge/LLM-OpenAI_API-00a67e?style=flat-square" alt="OpenAI">
   <img src="https://img.shields.io/badge/license-MIT-inherit?style=flat-square" alt="License">
