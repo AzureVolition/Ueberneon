@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace]
-members = ["", "src/llm", "src/racpagent-macros"]
+members = ["", "src/llm", "src/ueberneon-macros"]
 
 [dependencies]
 ambassador = "0.5.1"
@@ -34,7 +34,7 @@ walkdir = "2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 url = "2"
 llm = { path = "src/llm" }
-racpagent-macros = { path = "src/racpagent-macros" }
+ueberneon-macros = { path = "src/ueberneon-macros" }
 dioxus = { version = "0.7", features = ["desktop"] }
 pulldown-cmark = "0.12"
 rfd = "0.15"

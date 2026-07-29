@@ -10,7 +10,7 @@ use std::sync::Arc;
 use crate::agent::{Tool, ToolContext, ToolResult};
 #[cfg(test)]
 use crate::agent::{AgentHandler, ActionMode, ToolResultExt};
-use racpagent_macros::ToolMetaImpl;
+use ueberneon_macros::ToolMetaImpl;
 use serde_json::Value;
 
 use super::common::encoding;

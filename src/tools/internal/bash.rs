@@ -8,7 +8,7 @@
 #[cfg_attr(not(test), allow(unused_imports))]
 use crate::agent::{ActionMode, AgentMode, Tool, ToolContext, ToolResult, ToolResultExt};
 use llm::tool::ToolMeta;
-use racpagent_macros::ToolMetaImpl;
+use ueberneon_macros::ToolMetaImpl;
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::PathBuf;

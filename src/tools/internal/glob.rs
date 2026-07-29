@@ -6,7 +6,7 @@ use crate::agent::{Tool, ToolContext, ToolResult};
 use std::path::PathBuf;
 #[cfg(test)]
 use crate::agent::{AgentHandler, ActionMode, ToolResultExt};
-use racpagent_macros::ToolMetaImpl;
+use ueberneon_macros::ToolMetaImpl;
 use serde_json::Value;
 use crate::tools::internal::common::checkable_tool::CheckableTool;
 use crate::permission::Decision;

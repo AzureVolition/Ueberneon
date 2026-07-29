@@ -11,7 +11,7 @@ use crate::agent::{ActionMode, Tool, ToolContext, ToolResult};
 use llm::tool::ToolMeta;
 #[cfg(test)]
 use crate::agent::{AgentHandler, ToolResultExt};
-use racpagent_macros::ToolMetaImpl;
+use ueberneon_macros::ToolMetaImpl;
 use serde_json::Value;
 use crate::permission::{Check, Decision, gate::PermissionChecked};
 use crate::tools::internal::common::checkable_tool::CheckableTool;

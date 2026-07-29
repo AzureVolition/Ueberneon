@@ -1,7 +1,7 @@
-use racpagent::agent::Tool;
+use ueberneon::agent::Tool;
 use llm::tool::ToolMeta as _;
-use racpagent::agent::ActionMode;
-use racpagent_macros::ToolMetaImpl;
+use ueberneon::agent::ActionMode;
+use ueberneon_macros::ToolMetaImpl;
 
 // ── 只读工具，带完整 schema ──
 

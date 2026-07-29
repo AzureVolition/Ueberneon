@@ -4373,7 +4373,6 @@ dependencies = [
  "libc",
  "llm",
  "pulldown-cmark",
- "racpagent-macros",
  "regex",
  "reqwest 0.12.28",
  "rfd 0.15.4",
@@ -4386,23 +4385,9 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "ueberneon-macros",
  "url",
  "walkdir",
-]
-
-[[package]]
-name = "racpagent-macros"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "inventory",
- "llm",
- "proc-macro2",
- "quote",
- "racpagent",
- "serde_json",
- "syn 2.0.118",
- "tokio",
 ]
 
 [[package]]
@@ -6068,6 +6053,21 @@ dependencies = [
  "memoffset",
  "tempfile",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "ueberneon-macros"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "inventory",
+ "llm",
+ "proc-macro2",
+ "quote",
+ "racpagent",
+ "serde_json",
+ "syn 2.0.118",
+ "tokio",
 ]
 
 [[package]]

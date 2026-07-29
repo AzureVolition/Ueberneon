@@ -9,7 +9,7 @@ use std::path::Path;
 use crate::agent::{Tool, ToolContext, ToolResult};
 #[cfg(test)]
 use crate::agent::{AgentHandler, ActionMode, ToolResultExt};
-use racpagent_macros::ToolMetaImpl;
+use ueberneon_macros::ToolMetaImpl;
 use regex::Regex;
 use std::sync::LazyLock;
 use serde_json::Value;
