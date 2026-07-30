@@ -762,9 +762,13 @@ pub fn SettingsPanel(tab: SettingsTab, on_change: EventHandler<()>) -> Element {
                                 Dropdown {
                                     value: current_agent_id(),
                                     options: default_agent_opts,
-                                    onchange: move |val: String| {
-                                        current_agent_id.set(val.clone());
-                                        settings::update(|s| s.general.default_agent_config_id = val);
+                                    onchange: {
+                                        let oc = on_change;
+                                        move |val: String| {
+                                            current_agent_id.set(val.clone());
+                                            settings::update(|s| s.general.default_agent_config_id = val);
+                                            oc.call(());
+                                        }
                                     },
                                 }
                             }
@@ -773,9 +777,13 @@ pub fn SettingsPanel(tab: SettingsTab, on_change: EventHandler<()>) -> Element {
                                 Dropdown {
                                     value: current_action_mode(),
                                     options: action_mode_opts,
-                                    onchange: move |val: String| {
-                                        current_action_mode.set(val.clone());
-                                        settings::update(|s| s.general.default_action_mode = val);
+                                    onchange: {
+                                        let oc = on_change;
+                                        move |val: String| {
+                                            current_action_mode.set(val.clone());
+                                            settings::update(|s| s.general.default_action_mode = val);
+                                            oc.call(());
+                                        }
                                     },
                                 }
                             }
@@ -784,9 +792,13 @@ pub fn SettingsPanel(tab: SettingsTab, on_change: EventHandler<()>) -> Element {
                                 Dropdown {
                                     value: current_agent_mode(),
                                     options: agent_mode_opts,
-                                    onchange: move |val: String| {
-                                        current_agent_mode.set(val.clone());
-                                        settings::update(|s| s.general.default_agent_mode = val);
+                                    onchange: {
+                                        let oc = on_change;
+                                        move |val: String| {
+                                            current_agent_mode.set(val.clone());
+                                            settings::update(|s| s.general.default_agent_mode = val);
+                                            oc.call(());
+                                        }
                                     },
                                 }
                             }

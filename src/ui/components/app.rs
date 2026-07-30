@@ -249,7 +249,7 @@ pub fn App() -> Element {
     // ── Agent config 选择状态 ──
     let agent_configs: Signal<Vec<crate::db::metadata::agent_config::AgentConfigRow>> =
         use_signal(|| load_agent_configs().into_iter().filter(|c| c.agent_type != "SubAgent").collect());
-    let selected_agent_config_id = use_signal(|| {
+    let mut selected_agent_config_id = use_signal(|| {
         let default_id = crate::settings::get().general.default_agent_config_id;
         if !default_id.is_empty() {
             let exists = crate::db::with_db(|conn| {
@@ -416,6 +416,22 @@ pub fn App() -> Element {
                 .parse::<AgentMode>()
                 .unwrap_or_default(),
         );
+        // 同步默认 agent config id（跟 agent_mode 一样从 settings 重新读取，
+        // 避免用户在 settings 面板修改后不重启就不生效）
+        {
+            let default_ac_id = crate::settings::get().general.default_agent_config_id.clone();
+            if !default_ac_id.is_empty() {
+                let exists = crate::db::with_db(|conn| {
+                    crate::db::metadata::agent_config::get(conn, &default_ac_id)
+                        .ok()
+                        .flatten()
+                        .is_some()
+                });
+                selected_agent_config_id.set(if exists { default_ac_id } else { String::new() });
+            } else {
+                selected_agent_config_id.set(String::new());
+            }
+        }
         runtimes.write().insert(
             active_conversation_id(),
             ConversationRuntime {
@@ -613,7 +629,21 @@ pub fn App() -> Element {
                                         tab: tab.clone(),
                                         on_change: {
                                             let mut ac = agent_configs;
-                                            move |_| { ac.set(load_agent_configs().into_iter().filter(|c| c.agent_type != "SubAgent").collect()); }
+                                            let mut sel_id = selected_agent_config_id;
+                                            move |_| {
+                                                ac.set(load_agent_configs().into_iter().filter(|c| c.agent_type != "SubAgent").collect());
+                                                // 同步默认 agent config id，确保 settings 修改后 UI 立即反映
+                                                let default_id = crate::settings::get().general.default_agent_config_id.clone();
+                                                if !default_id.is_empty() {
+                                                    let exists = crate::db::with_db(|conn| {
+                                                        crate::db::metadata::agent_config::get(conn, &default_id)
+                                                            .ok()
+                                                            .flatten()
+                                                            .is_some()
+                                                    });
+                                                    sel_id.set(if exists { default_id } else { String::new() });
+                                                }
+                                            }
                                         },
                                     }
                                 }
@@ -624,7 +654,20 @@ pub fn App() -> Element {
                                         tab: tab.clone(),
                                         on_change: {
                                             let mut ac = agent_configs;
-                                            move |_| { ac.set(load_agent_configs().into_iter().filter(|c| c.agent_type != "SubAgent").collect()); }
+                                            let mut sel_id = selected_agent_config_id;
+                                            move |_| {
+                                                ac.set(load_agent_configs().into_iter().filter(|c| c.agent_type != "SubAgent").collect());
+                                                let default_id = crate::settings::get().general.default_agent_config_id.clone();
+                                                if !default_id.is_empty() {
+                                                    let exists = crate::db::with_db(|conn| {
+                                                        crate::db::metadata::agent_config::get(conn, &default_id)
+                                                            .ok()
+                                                            .flatten()
+                                                            .is_some()
+                                                    });
+                                                    sel_id.set(if exists { default_id } else { String::new() });
+                                                }
+                                            }
                                         },
                                     }
                                 }

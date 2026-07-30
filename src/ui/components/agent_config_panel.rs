@@ -371,7 +371,7 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
                                 value: "{edit_context_window}",
                                 oninput: move |evt| edit_context_window.set(evt.value()),
                             }
-                            div { class: "settings-hint", "context window token limit ({crate::model::DEFAULT_CONTEXT_WINDOW} default)" }
+                            // div { class: "settings-hint", "{crate::model::DEFAULT_CONTEXT_WINDOW} default)" }
                         }
                         div { class: "settings-field",
                             label { class: "settings-field-label", "tool groups" }
