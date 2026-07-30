@@ -23,7 +23,9 @@ use crate::tools::diff::{self, Kind as DiffKind};
 use crate::permission::{Check, Decision, gate::PermissionChecked};
 
 /// multi_edit — 对单个文件进行原子性批量替换。
-///
+/// 
+/// 接收 path + edits 数组，每个 edit 包含 old_string、new_string 和可选 replace_all。
+/// 编辑在内存中顺序应用；仅在所有编辑都成功时才写入磁盘。
 /// `work_dir` 是工作目录的共享引用 —— 所有文件路径必须在此目录之下。
 #[derive(ToolMetaImpl)]
 #[tool(schema = r#"{"type":"object","properties":{"path":{"type":"string","description":"File path"},"edits":{"type":"array","minItems":1,"items":{"type":"object","properties":{"old_string":{"type":"string","description":"Text to find"},"new_string":{"type":"string","description":"Replacement text"},"replace_all":{"type":"boolean","description":"Replace all occurrences instead of just the first"}},"required":["old_string","new_string"]},"description":"Ordered list of edits to apply"}},"required":["path","edits"]}"#)]
