@@ -65,6 +65,7 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
     let mut show_group_selector = use_signal(|| false);
     let mut deleting = use_signal(|| Option::<String>::None);
     let mut viewing_prompt = use_signal(|| Option::<(String, String)>::None);
+    let mut edit_error = use_signal(|| Option::<String>::None);
 
     // ── 加载工具组列表 ──
     let all_groups: Vec<ToolGroupRow> = crate::db::with_db(|conn| {
@@ -112,6 +113,7 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
     // ── 开始编辑 ──
     let mut start_edit = {
         move |cfg: Option<&AgentConfigRow>| {
+            edit_error.set(None);
             show_editor.set(true);
             if let Some(c) = cfg {
                 editing_id.set(Some(c.id.clone()));
@@ -151,14 +153,19 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
 
     // ── 保存 ──
     let mut do_save = {
+        let mut err_sig = edit_error;
         move |_| {
             let now = chrono::Local::now().to_rfc3339();
             let _id = editing_id.read().clone().unwrap_or_else(gen_id);
             let name = edit_name.read().trim().to_string();
             if name.is_empty() { return; }
-            //let agent_type = edit_agent_type.read().clone();
+            let model = edit_model.read().trim().to_string();
+            if model.is_empty() {
+                err_sig.set(Some("model is required".into()));
+                return;
+            }
+            err_sig.set(None);
             let provider_inst = edit_provider_inst.read().clone();
-            let model = edit_model.read().clone();
             let system_prompt = edit_system_prompt.read().clone();
             let temperature = *edit_temperature.read();
             let max_tokens = {
@@ -257,7 +264,7 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
             if show_editor() && (!readonly || is_provider_only) {
                 div {
                     class: "settings-modal-backdrop",
-                    onclick: move |_| { show_editor.set(false); editing_id.set(None); edit_name.set(String::new()); },
+                    onclick: move |_| { show_editor.set(false); editing_id.set(None); edit_name.set(String::new()); edit_error.set(None); },
                     div {
                         class: "settings-modal-panel",
                         onclick: move |evt| evt.stop_propagation(),
@@ -267,7 +274,7 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
                             }
                             button {
                                 class: "settings-modal-close",
-                                onclick: move |_| { show_editor.set(false); editing_id.set(None); edit_name.set(String::new()); },
+                                onclick: move |_| { show_editor.set(false); editing_id.set(None); edit_name.set(String::new()); edit_error.set(None); },
                                 "✕"
                             }
                         }
@@ -401,6 +408,11 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
                             }
                         }
                     }
+                    div { class: "form-feedback",
+                        if let Some(ref err) = edit_error() {
+                            div { class: "form-error", "{err}" }
+                        }
+                    }
                     div { class: "provider-custom-form-actions",
                         button {
                             class: "btn btn-cancel",
@@ -408,6 +420,7 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
                                 show_editor.set(false);
                                 editing_id.set(None);
                                 edit_name.set(String::new());
+                                edit_error.set(None);
                             },
                             "cancel"
                         }
