@@ -735,10 +735,12 @@ pub fn SettingsPanel(tab: SettingsTab, on_change: EventHandler<()>) -> Element {
                         Vec::new()
                     };
                     for cfg in &all_agent_configs {
-                        default_agent_opts.push(DropdownOption {
-                            value: cfg.id.clone(),
-                            label: cfg.name.clone(),
-                        });
+                        if cfg.agent_type != "SubAgent" {
+                            default_agent_opts.push(DropdownOption {
+                                value: cfg.id.clone(),
+                                label: cfg.name.clone(),
+                            });
+                        }
                     }
                     let action_mode_opts = vec![
                         DropdownOption { value: "regular".into(), label: "regular — all tools available".into() },
