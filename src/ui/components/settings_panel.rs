@@ -55,7 +55,7 @@ pub fn SettingsPanel(tab: SettingsTab, on_change: EventHandler<()>) -> Element {
     let mut instances: Signal<Vec<ProviderInstanceRow>> = use_signal(|| {
         crate::db::with_db(|conn| provider_instance::list_all(conn).unwrap_or_default())
     });
-    let mut providers_cache: Signal<Vec<ProviderRow>> = use_signal(|| {
+    let providers_cache: Signal<Vec<ProviderRow>> = use_signal(|| {
         crate::db::with_db(|conn| provider::list_all(conn).unwrap_or_default())
     });
     let mut models_cache: Signal<std::collections::HashMap<String, Vec<String>>> =
@@ -85,6 +85,7 @@ pub fn SettingsPanel(tab: SettingsTab, on_change: EventHandler<()>) -> Element {
     let mut add_provider_id = use_signal(String::new);
     let mut add_alias = use_signal(String::new);
     let mut add_key = use_signal(String::new);
+    let mut add_instance_error = use_signal(|| Option::<String>::None);
 
     // 自定义 provider 字段
     let mut custom_id = use_signal(String::new);
@@ -187,6 +188,11 @@ pub fn SettingsPanel(tab: SettingsTab, on_change: EventHandler<()>) -> Element {
 
     // ── 添加实例（预设）──
     let mut do_add_preset = {
+        let mut err_sig = add_instance_error;
+        let mut instances_sig = instances;
+        let mut refresh_sig = refreshing;
+        let mut models_sig = models_cache;
+        let oc = on_change;
         move |preset: &&'static ProviderPreset| {
             let now = chrono::Local::now().to_rfc3339();
             let alias = if add_alias.read().trim().is_empty() {
@@ -195,33 +201,93 @@ pub fn SettingsPanel(tab: SettingsTab, on_change: EventHandler<()>) -> Element {
                 add_alias.read().trim().to_string()
             };
             let raw_key = add_key.read().trim().to_string();
-            let encoded = encode_key(&raw_key);
-            let row = ProviderInstanceRow {
-                id: gen_id(),
-                provider_id: preset.id.to_string(),
-                alias,
-                api_key: encoded,
-                sort_order: 0,
-                created_at: now,
-            };
-            crate::db::with_db(|conn| {
-                if let Err(e) = provider_instance::insert(conn, &row) { tracing::error!(target:"db", error=%e, "insert provider instance."); }
+            if raw_key.is_empty() {
+                err_sig.set(Some("api key is required".into()));
+                return;
+            }
+            // 检查 alias 是否重复（直接查 DB，确保一致性）
+            let alias_dup = crate::db::with_db(|conn| {
+                provider_instance::list_all(conn)
+                    .map(|list| list.iter().any(|i| i.alias.eq_ignore_ascii_case(&alias)))
+                    .unwrap_or(false)
             });
-            instances.set(crate::db::with_db(|conn| {
-                provider_instance::list_all(conn).unwrap_or_default()
-            }));
-            on_change.call(());
-            // 重置添加表单
-            show_add_form.set(false);
-            add_step.set(AddStep::SelectProvider);
-            add_provider_id.set(String::new());
-            add_alias.set(String::new());
-            add_key.set(String::new());
+            if alias_dup {
+                err_sig.set(Some(format!("alias \"{alias}\" is already in use")));
+                return;
+            }
+            let encoded = encode_key(&raw_key);
+            let ins_id = gen_id();
+            let prov_row = ProviderRow {
+                id: preset.id.to_string(),
+                name: preset.name.to_string(),
+                kind: preset.kind.to_string(),
+                base_url: preset.base_url.to_string(),
+                models_url: preset.models_url.to_string(),
+                balance_url: String::new(),
+                context_window: preset.context_window,
+                is_preset: true,
+            };
+            let preset_id = preset.id.to_string();
+            refresh_sig.set(Some(ins_id.clone()));
+            err_sig.set(None);
+            spawn(async move {
+                // 只做 HTTP 请求，不持有 DB 锁
+                match crate::db::model_fetch::fetch_models(&prov_row, &raw_key).await {
+                    Err(e) => {
+                        err_sig.set(Some(format!("key validation failed: {e}")));
+                        refresh_sig.set(None);
+                    }
+                    Ok(models) => {
+                        // 写入 DB（短暂持锁）
+                        let row = ProviderInstanceRow {
+                            id: ins_id.clone(),
+                            provider_id: preset_id,
+                            alias,
+                            api_key: encoded,
+                            sort_order: 0,
+                            created_at: now,
+                        };
+                        let write_result = crate::db::with_db_result(|conn| {
+                            provider::replace_models(conn, &prov_row.id, &models)
+                                .map_err(|e| format!("db: {e}"))?;
+                            provider_instance::insert(conn, &row)
+                                .map_err(|e| format!("db: {e}"))
+                        });
+                        match write_result {
+                            Err(e) => {
+                                err_sig.set(Some(format!("failed to save: {e}")));
+                            }
+                            Ok(()) => {
+                                models_sig.write().insert(prov_row.id, models);
+                                match crate::db::with_db(|conn| provider_instance::list_all(conn)) {
+                                    Ok(list) => instances_sig.set(list),
+                                    Err(e) => {
+                                        err_sig.set(Some(format!("saved but failed to refresh list: {e}")));
+                                        instances_sig.set(Vec::new());
+                                    }
+                                }
+                                oc.call(());
+                                show_add_form.set(false);
+                                add_step.set(AddStep::SelectProvider);
+                                add_provider_id.set(String::new());
+                                add_alias.set(String::new());
+                                add_key.set(String::new());
+                            }
+                        }
+                        refresh_sig.set(None);
+                    }
+                }
+            });
         }
     };
 
     // ── 添加自定义 provider → 实例 ──
     let mut do_add_custom = {
+        let mut err_sig = add_instance_error;
+        let mut instances_sig = instances;
+        let mut providers_cache_sig = providers_cache;
+        let mut refresh_sig = refreshing;
+        let oc = on_change;
         move |_| {
             let id = custom_id.read().trim().to_string();
             let name = custom_name.read().trim().to_string();
@@ -229,47 +295,98 @@ pub fn SettingsPanel(tab: SettingsTab, on_change: EventHandler<()>) -> Element {
             if id.is_empty() || name.is_empty() || url.is_empty() {
                 return;
             }
-            // 先写入 providers 表 + 刷新缓存
-            providers_cache.set(crate::db::with_db(|conn| {
-                conn.execute(
-                    "INSERT OR IGNORE INTO providers (id, name, kind, base_url, is_preset)
-                     VALUES (?1, ?2, 'openai', ?3, 0)",
-                    rusqlite::params![id, name, url],
-                )
-                .unwrap_or_else(|e| { tracing::error!(target:"db", error=%e, "insert custom provider."); 0 });
-                provider::list_all(conn).unwrap_or_default()
-            }));
-            // 创建实例
-            let now = chrono::Local::now().to_rfc3339();
+            let raw_key = add_key.read().trim().to_string();
+            if raw_key.is_empty() {
+                err_sig.set(Some("api key is required".into()));
+                return;
+            }
             let alias = if add_alias.read().trim().is_empty() {
-                name
+                name.clone()
             } else {
                 add_alias.read().trim().to_string()
             };
-            let raw_key = add_key.read().trim().to_string();
-            let encoded = encode_key(&raw_key);
-            let row = ProviderInstanceRow {
-                id: gen_id(),
-                provider_id: id,
-                alias,
-                api_key: encoded,
-                sort_order: 0,
-                created_at: now,
-            };
-            crate::db::with_db(|conn| {
-                if let Err(e) = provider_instance::insert(conn, &row) { tracing::error!(target:"db", error=%e, "insert provider instance."); }
+            // 检查 alias 是否重复（直接查 DB，确保一致性）
+            let alias_dup = crate::db::with_db(|conn| {
+                provider_instance::list_all(conn)
+                    .map(|list| list.iter().any(|i| i.alias.eq_ignore_ascii_case(&alias)))
+                    .unwrap_or(false)
             });
-            instances.set(crate::db::with_db(|conn| {
-                provider_instance::list_all(conn).unwrap_or_default()
-            }));
-            on_change.call(());
-            show_add_form.set(false);
-            add_step.set(AddStep::SelectProvider);
-            custom_id.set(String::new());
-            custom_name.set(String::new());
-            custom_url.set(String::new());
-            add_alias.set(String::new());
-            add_key.set(String::new());
+            if alias_dup {
+                err_sig.set(Some(format!("alias \"{alias}\" is already in use")));
+                return;
+            }
+            let encoded = encode_key(&raw_key);
+            let ins_id = gen_id();
+            let now = chrono::Local::now().to_rfc3339();
+            let prov_row = ProviderRow {
+                id: id.clone(),
+                name: name.clone(),
+                kind: "openai".to_string(),
+                base_url: url.clone(),
+                models_url: format!("{url}/models"),
+                balance_url: String::new(),
+                context_window: 0,
+                is_preset: false,
+            };
+            err_sig.set(None);
+            refresh_sig.set(Some(ins_id.clone()));
+            spawn(async move {
+                // 只做 HTTP 请求，不持有 DB 锁
+                match crate::db::model_fetch::fetch_models(&prov_row, &raw_key).await {
+                    Err(e) => {
+                        err_sig.set(Some(format!("key validation failed: {e}")));
+                        refresh_sig.set(None);
+                    }
+                    Ok(models) => {
+                        // 写入 DB（短暂持锁）
+                        let write_result = crate::db::with_db_result(|conn| {
+                            conn.execute(
+                                "INSERT OR IGNORE INTO providers (id, name, kind, base_url, is_preset)
+                                 VALUES (?1, ?2, 'openai', ?3, 0)",
+                                rusqlite::params![id, name, url],
+                            ).map_err(|e| format!("db: {e}"))?;
+                            provider::replace_models(conn, &prov_row.id, &models)
+                                .map_err(|e| format!("db: {e}"))?;
+                            let row = ProviderInstanceRow {
+                                id: ins_id.clone(),
+                                provider_id: prov_row.id,
+                                alias,
+                                api_key: encoded,
+                                sort_order: 0,
+                                created_at: now,
+                            };
+                            provider_instance::insert(conn, &row)
+                                .map_err(|e| format!("db: {e}"))
+                        });
+                        match write_result {
+                            Err(e) => {
+                                err_sig.set(Some(format!("failed to save: {e}")));
+                            }
+                            Ok(()) => {
+                                providers_cache_sig.set(
+                                    crate::db::with_db(|conn| provider::list_all(conn).unwrap_or_default())
+                                );
+                                match crate::db::with_db(|conn| provider_instance::list_all(conn)) {
+                                    Ok(list) => instances_sig.set(list),
+                                    Err(e) => {
+                                        err_sig.set(Some(format!("saved but failed to refresh list: {e}")));
+                                        instances_sig.set(Vec::new());
+                                    }
+                                }
+                                oc.call(());
+                                show_add_form.set(false);
+                                add_step.set(AddStep::SelectProvider);
+                                custom_id.set(String::new());
+                                custom_name.set(String::new());
+                                custom_url.set(String::new());
+                                add_alias.set(String::new());
+                                add_key.set(String::new());
+                            }
+                        }
+                        refresh_sig.set(None);
+                    }
+                }
+            });
         }
     };
 
@@ -333,7 +450,7 @@ pub fn SettingsPanel(tab: SettingsTab, on_change: EventHandler<()>) -> Element {
                                             span { class: "settings-modal-title", "add provider instance" }
                                             button {
                                                 class: "settings-modal-close",
-                                                onclick: move |_| { show_add_form.set(false); add_step.set(AddStep::SelectProvider); add_alias.set(String::new()); add_key.set(String::new()); custom_id.set(String::new()); custom_name.set(String::new()); custom_url.set(String::new()); },
+                                                onclick: move |_| { show_add_form.set(false); add_step.set(AddStep::SelectProvider); add_alias.set(String::new()); add_key.set(String::new()); custom_id.set(String::new()); custom_name.set(String::new()); custom_url.set(String::new()); add_instance_error.set(None); },
                                                 "✕"
                                             }
                                         }
@@ -408,9 +525,26 @@ pub fn SettingsPanel(tab: SettingsTab, on_change: EventHandler<()>) -> Element {
                                     label { class: "settings-field-label", "api key" }
                                     input { class: "settings-input", r#type: "password", placeholder: "sk-...", value: "{add_key}", oninput: move |evt| add_key.set(evt.value()) }
                                 }
+                                div { class: "form-feedback",
+                                    if let Some(ref err) = add_instance_error() {
+                                        div { class: "form-error", "{err}" }
+                                    } else if refreshing().is_some() {
+                                        div { class: "form-hint", "checking api key — this may take a moment" }
+                                    }
+                                }
                                 div { class: "provider-custom-form-actions",
-                                    button { class: "btn btn-cancel", onclick: move |_| { show_add_form.set(false); add_step.set(AddStep::SelectProvider); add_alias.set(String::new()); add_key.set(String::new()); custom_id.set(String::new()); custom_name.set(String::new()); custom_url.set(String::new()); }, "cancel" }
-                                    button { class: "btn btn-send", onclick: move |_| do_add_custom(()), "add instance" }
+                                    button { class: "btn btn-cancel", onclick: move |_| { show_add_form.set(false); add_step.set(AddStep::SelectProvider); add_alias.set(String::new()); add_key.set(String::new()); custom_id.set(String::new()); custom_name.set(String::new()); custom_url.set(String::new()); add_instance_error.set(None); }, "cancel" }
+                                    {
+                                        let validating = refreshing().is_some();
+                                        rsx! {
+                                            button {
+                                                class: if validating { "btn btn-send is-disabled" } else { "btn btn-send" },
+                                                disabled: validating,
+                                                onclick: move |_| do_add_custom(()),
+                                                if validating { "validating key..." } else { "add instance" }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -436,6 +570,13 @@ pub fn SettingsPanel(tab: SettingsTab, on_change: EventHandler<()>) -> Element {
                                         oninput: move |evt| add_key.set(evt.value()),
                                     }
                                 }
+                                div { class: "form-feedback",
+                                    if let Some(ref err) = add_instance_error() {
+                                        div { class: "form-error", "{err}" }
+                                    } else if refreshing().is_some() {
+                                        div { class: "form-hint", "checking api key — this may take a moment" }
+                                    }
+                                }
                                 div { class: "provider-custom-form-actions",
                                     button {
                                         class: "btn btn-cancel",
@@ -444,21 +585,27 @@ pub fn SettingsPanel(tab: SettingsTab, on_change: EventHandler<()>) -> Element {
                                             add_step.set(AddStep::SelectProvider);
                                             add_alias.set(String::new());
                                             add_key.set(String::new());
+                                            add_instance_error.set(None);
                                         },
                                         "cancel"
                                     }
-                                    button {
-                                        class: "btn btn-send",
-                                        onclick: move |_| {
-                                            // 判断是 preset 还是 custom
-                                            let pid = add_provider_id.read().clone();
-                                            if pid.is_empty() {
-                                                do_add_custom(());
-                                            } else if let Some(preset) = presets.iter().find(|p| p.id == pid) {
-                                                do_add_preset(&preset);
+                                    {
+                                        let validating = refreshing().is_some();
+                                        rsx! {
+                                            button {
+                                                class: if validating { "btn btn-send is-disabled" } else { "btn btn-send" },
+                                                disabled: validating,
+                                                onclick: move |_| {
+                                                    let pid = add_provider_id.read().clone();
+                                                    if pid.is_empty() {
+                                                        do_add_custom(());
+                                                    } else if let Some(preset) = presets.iter().find(|p| p.id == pid) {
+                                                        do_add_preset(&preset);
+                                                    }
+                                                },
+                                                if validating { "validating key..." } else { "add instance" }
                                             }
-                                        },
-                                        "add instance"
+                                        }
                                     }
                                 }
                             }
