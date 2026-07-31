@@ -290,7 +290,11 @@ impl Agent {
                                     rec.approval_reason = Some(reason.clone());
                                 }
                             }
-                            push_tool_marker(&segments_arc, &version_arc);
+                            // 状态已改为 AwaitingApproval：只递增 version 触发 UI 把
+                            // 该 marker 对应的 running 卡刷新为审批卡，不能再次 push
+                            // ToolCall marker（否则 marker 与 tool_calls 记录错位，
+                            // 后续工具卡/审批卡会被提前渲染）。
+                            inc_version_atomic(&version_arc);
 
                             let (atx, arx) = tokio::sync::oneshot::channel();
                             *approval_arc.lock().expect("approval_arc lock poisoned") = Some(atx);
