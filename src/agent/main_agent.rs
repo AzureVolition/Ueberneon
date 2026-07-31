@@ -47,17 +47,7 @@ impl AgentRun {
         cancel_token: CancellationToken,
     ) -> anyhow::Result<UiMessage> {
 
-        let (segments_arc, approval_arc) =
-            {
-                self.create_streaming();
-                let ss = self.streaming_handle.as_ref().unwrap_or_else(|| {
-                    panic!("create_streaming() must be called first")
-                });
-                (
-                    ss.segments.clone(),
-                    ss.approval_tx.clone(),
-                )
-            };
+        self.create_streaming();
         
         self.agent.hook_register.emit(&AgentEvent::UserPromptSubmit { prompt: user_input.clone() });
 
@@ -77,26 +67,26 @@ impl AgentRun {
 
         // ReAct Loop（编排：只分发，不实现细节）
         loop {
-            match self.stream_round(&cancel_token, &segments_arc).await? {
+            match self.stream_round(&cancel_token).await? {
                 RoundOutcome::Cancelled | RoundOutcome::Abort => break,
                 RoundOutcome::Finish => { self.round_end(); break; }
                 RoundOutcome::Continue => {
-                    self.execute_tools(&cancel_token, &segments_arc, &approval_arc).await?;
+                    self.execute_tools(&cancel_token).await?;
                     if self.cancelled { break; }
                     self.round_end();
                 }
             }
         }
 
-        Ok(self.finish(&segments_arc))
+        Ok(self.finish())
     }
 
     /// 一轮：流式输出 + usage 持久化 + assistant 消息入史，返回本轮走向。
     async fn stream_round(
         &mut self,
         cancel_token: &CancellationToken,
-        segments_arc: &Arc<Mutex<Vec<StreamSegment>>>,
     ) -> anyhow::Result<RoundOutcome> {
+        let segments_arc = self.streaming_handle.as_ref().expect("create_streaming() must be called first").segments.clone();
         self.round_start();
         let mut have_tool_calls = false;
 
@@ -120,7 +110,7 @@ impl AgentRun {
             Ok(s) => s,
             Err(e) => {
                 let msg = format!("Stream error: {e}");
-                push_text(segments_arc, &msg);
+                push_text(&segments_arc, &msg);
                 self.emit(AgentEvent::Error { message: msg.clone() });
                 self.final_output = msg;
                 return Ok(RoundOutcome::Abort);
@@ -145,12 +135,12 @@ impl AgentRun {
                 StreamOrCancel::Chunk(None) => break,
                 StreamOrCancel::Chunk(Some(Ok(Chunk::Text(t)))) => {
                     output.push_str(&t);
-                    push_text(segments_arc, &t);
+                    push_text(&segments_arc, &t);
                     self.emit(AgentEvent::StreamDelta { kind: DeltaKind::Text });
                 }
                 StreamOrCancel::Chunk(Some(Ok(Chunk::Reasoning { text, .. }))) => {
                     reasoning.push_str(&text);
-                    push_reasoning(segments_arc, &text);
+                    push_reasoning(&segments_arc, &text);
                     self.emit(AgentEvent::StreamDelta { kind: DeltaKind::Reasoning });
                 }
                 StreamOrCancel::Chunk(Some(Ok(Chunk::ToolCallComplete(tc)))) => {
@@ -176,7 +166,7 @@ impl AgentRun {
                 StreamOrCancel::Chunk(Some(Err(e))) => {
                     let msg = format!("Stream error: {e}");
                     output.push_str(&msg);
-                    push_text(segments_arc, &msg);
+                    push_text(&segments_arc, &msg);
                     self.emit(AgentEvent::Error { message: msg.clone() });
                     break;
                 }
@@ -261,13 +251,11 @@ impl AgentRun {
     async fn execute_tools(
         &mut self,
         cancel_token: &CancellationToken,
-        segments_arc: &Arc<Mutex<Vec<StreamSegment>>>,
-        approval_arc: &Arc<Mutex<Option<tokio::sync::oneshot::Sender<bool>>>>,
     ) -> anyhow::Result<()> {
         for i in 0..self.pending_tool_calls.len() {
             if self.cancelled { break; }
             let tool_call = self.pending_tool_calls[i].clone();
-            self.execute_tool(&tool_call, cancel_token, segments_arc, approval_arc).await?;
+            self.execute_tool(&tool_call, cancel_token).await?;
         }
         Ok(())
     }
@@ -277,9 +265,8 @@ impl AgentRun {
         &mut self,
         tool_call: &llm::ToolCall,
         cancel_token: &CancellationToken,
-        segments_arc: &Arc<Mutex<Vec<StreamSegment>>>,
-        approval_arc: &Arc<Mutex<Option<tokio::sync::oneshot::Sender<bool>>>>,
     ) -> anyhow::Result<()> {
+        let (segments_arc, approval_arc) = self.arcs();
         let tool_name = tool_call.name.clone();
         self.agent.hook_register.emit(&AgentEvent::PreToolUse {
             tool_name: tool_name.clone(),
@@ -404,7 +391,8 @@ impl AgentRun {
     }
 
     /// 收尾：touch conversation + Stop 事件 + 构建 Static 消息。
-    fn finish(&mut self, segments_arc: &Arc<Mutex<Vec<StreamSegment>>>) -> UiMessage {
+    fn finish(&mut self) -> UiMessage {
+        let segments_arc = self.streaming_handle.as_ref().expect("create_streaming() must be called first").segments.clone();
         // ── 更新对话时间 ──
         crate::db::try_with_db(|conn| {
             if let Err(e) = self.agent.touch_conversation(conn) { tracing::error!(target:"db", error=%e, "touch conversation"); }

@@ -88,6 +88,15 @@ impl AgentRun {
         streaming
     }
 
+    /// 从 streaming_handle 取出共享 Arc（方法内按需取，无需跨方法传参）
+    pub fn arcs(&self) -> (
+        Arc<Mutex<Vec<crate::model::StreamSegment>>>,
+        Arc<Mutex<Option<tokio::sync::oneshot::Sender<bool>>>>,
+    ) {
+        let ss = self.streaming_handle.as_ref().expect("create_streaming() must be called first");
+        (ss.segments.clone(), ss.approval_tx.clone())
+    }
+
     pub fn start_loop(&mut self) {
         self.round = 0;
     }
