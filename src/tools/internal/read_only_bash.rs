@@ -205,6 +205,7 @@ impl CheckableTool for ReadOnlyBash {
 
 }
 
+
 mod tests {
     use super::*;
     use crate::agent::{ActionMode, Tool};

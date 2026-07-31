@@ -49,7 +49,6 @@ pub struct ChatMessage {
     pub role: Role,
     pub content: String,
     pub timestamp: DateTime<Local>,
-    pub tool_calls: Vec<ToolCallRecord>,
     /// LLM 的推理/思考内容（渲染为可折叠区域）
     #[serde(default)]
     pub reasoning: String,
@@ -68,8 +67,8 @@ pub enum StreamSegment {
     Text(String),
     /// 推理/思考片段
     Reasoning(String),
-    /// 工具调用插入点（调用详情从 ToolCallRecord 获取）
-    ToolCall,
+    /// 工具调用插入点（调用详情内嵌，单一数据源，不再单独维护 tool_calls 列表）
+    ToolCall(ToolCallRecord),
 }
 
 /// 对话
@@ -367,10 +366,10 @@ pub enum Difficulty {
 // ── UI 消息 ──────────────────────────────────────────────────────────────────
 
 /// Agent 内部流式状态，通过 Arc 与 UI 共享
+/// 渲染数据只有 segments 一份（工具调用详情内嵌在 StreamSegment::ToolCall 中）。
 #[derive(Clone)]
 pub struct StreamingState {
     pub segments: Arc<Mutex<Vec<StreamSegment>>>,
-    pub tool_calls: Arc<Mutex<Vec<ToolCallRecord>>>,
     pub version: Arc<AtomicU64>,
     pub approval_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<bool>>>>,
 }
@@ -384,7 +383,6 @@ pub enum UiMessage {
     /// version 用于触发 Dioxus 重渲染（每次 push 后递增）。
     Streaming {
         segments: Arc<Mutex<Vec<StreamSegment>>>,
-        tool_calls: Arc<Mutex<Vec<ToolCallRecord>>>,
         version: Arc<AtomicU64>,
         approval_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<bool>>>>,
     },

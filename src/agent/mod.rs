@@ -656,7 +656,6 @@ impl Agent {
                         role: crate::model::Role::User,
                         content: m.content.clone().unwrap_or_default(),
                         timestamp: chrono::Local::now(),
-                        tool_calls: Vec::new(),
                         reasoning: String::new(),
                         segments: Vec::new(),
                         content_html: String::new(),
@@ -664,14 +663,7 @@ impl Agent {
                 }
                 LlmRole::Assistant => {
                     let content = m.content.clone().unwrap_or_default();
-                    let tcs: Vec<ToolCallRecord> = m.tool_calls.iter().map(|tc| ToolCallRecord {
-                        tool_name: tc.name.clone(),
-                        args: serde_json::from_str(&tc.arguments).unwrap_or_default(),
-                        result: None,
-                        status: ToolCallStatus::Success,
-                        approval_reason: None,
-                    }).collect();
-                    // 构建 segments：reasoning → text → tool call markers
+                    // 构建 segments：reasoning → text → tool calls（记录内嵌）
                     let mut segs: Vec<StreamSegment> = Vec::new();
                     let reasoning_text = m.reasoning_content.clone().unwrap_or_default();
                     if !reasoning_text.is_empty() {
@@ -680,14 +672,19 @@ impl Agent {
                     if !content.is_empty() {
                         segs.push(StreamSegment::Text(content.clone()));
                     }
-                    for _ in 0..tcs.len() {
-                        segs.push(StreamSegment::ToolCall);
+                    for tc in &m.tool_calls {
+                        segs.push(StreamSegment::ToolCall(ToolCallRecord {
+                            tool_name: tc.name.clone(),
+                            args: serde_json::from_str(&tc.arguments).unwrap_or_default(),
+                            result: None,
+                            status: ToolCallStatus::Success,
+                            approval_reason: None,
+                        }));
                     }
                     result.push(ChatMessage {
                         role: crate::model::Role::Assistant,
                         content,
                         timestamp: chrono::Local::now(),
-                        tool_calls: tcs,
                         reasoning: reasoning_text,
                         segments: segs,
                         content_html: String::new(),

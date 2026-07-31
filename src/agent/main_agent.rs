@@ -32,7 +32,6 @@ impl Agent {
         if self.streaming_handle.is_none()  {
             let state = crate::model::StreamingState {
                 segments: Arc::new(Mutex::new(Vec::new())),
-                tool_calls: Arc::new(Mutex::new(Vec::new())),
                 version: Arc::new(AtomicU64::new(0)),
                 approval_tx: Arc::new(Mutex::new(None)),
             };
@@ -41,7 +40,6 @@ impl Agent {
 
         let streaming = UiMessage::Streaming {
             segments: self.streaming_handle.as_ref().unwrap().segments.clone(),
-            tool_calls: self.streaming_handle.as_ref().unwrap().tool_calls.clone(),
             version: self.streaming_handle.as_ref().unwrap().version.clone(),
             approval_tx: self.streaming_handle.as_ref().unwrap().approval_tx.clone(),
         };
@@ -58,7 +56,7 @@ impl Agent {
         cancel_token: CancellationToken,
     ) -> anyhow::Result<UiMessage> {
 
-        let (segments_arc, tool_calls_arc, version_arc, approval_arc) =
+        let (segments_arc, version_arc, approval_arc) =
             {
                 self.create_streaming();
                 let ss = self.streaming_handle.as_ref().unwrap_or_else(|| {
@@ -66,7 +64,6 @@ impl Agent {
                 });
                 (
                     ss.segments.clone(),
-                    ss.tool_calls.clone(),
                     ss.version.clone(),
                     ss.approval_tx.clone(),
                 )
@@ -256,15 +253,16 @@ impl Agent {
                 if let Some(tool) = self.registry.get(&tool_name) {
                     let args: serde_json::Value = serde_json::from_str(&tool_call.arguments).unwrap_or_default();
 
-                    // push tool record + ToolCall marker
+                    // push 工具记录（内嵌进 segments —— 单一数据源）
                     {
-                        let mut tcs = tool_calls_arc.lock().expect("tool_calls_arc lock poisoned");
-                        tcs.push(ToolCallRecord {
+                        let rec = ToolCallRecord {
                             tool_name: tool_name.clone(), args: args.clone(),
                             result: None, status: ToolCallStatus::Running, approval_reason: None,
-                        });
+                        };
+                        segments_arc.lock().expect("segments_arc lock poisoned")
+                            .push(StreamSegment::ToolCall(rec));
+                        inc_version_atomic(&version_arc);
                     }
-                    push_tool_marker(&segments_arc, &version_arc);
 
                     let ctx = ToolContext { call_id: tool_call.id.clone(), plan_mode: self.handler.action_mode(), handler: self.handler.clone(), progress: None, main_conversation_id: self.conversation_id.clone(), project_id: self.project_id.clone(), cancel_token: Some(cancel_token.clone()) };
                     let decision = tool.pre_check(&ctx, &args);
@@ -284,8 +282,11 @@ impl Agent {
                         Decision::Ask => {
                             let reason = format!("{} needs approval", tool_name);
                             {
-                                let mut tcs = tool_calls_arc.lock().expect("tool_calls_arc lock poisoned");
-                                if let Some(rec) = tcs.iter_mut().rev().find(|tc| tc.tool_name == tool_name && tc.status == ToolCallStatus::Running) {
+                                let mut segs = segments_arc.lock().expect("segments_arc lock poisoned");
+                                if let Some(rec) = segs.iter_mut().rev().find_map(|s| match s {
+                                    StreamSegment::ToolCall(r) if r.tool_name == tool_name && r.status == ToolCallStatus::Running => Some(r),
+                                    _ => None,
+                                }) {
                                     rec.status = ToolCallStatus::AwaitingApproval { reason: reason.clone() };
                                     rec.approval_reason = Some(reason.clone());
                                 }
@@ -311,9 +312,10 @@ impl Agent {
                                 Some(true) => {
                                     // 立即更新状态为 Running，让 UI 及时响应
                                     {
-                                        let mut tcs = tool_calls_arc.lock().expect("tool_calls_arc lock poisoned");
-                                        if let Some(rec) = tcs.iter_mut().rev().find(|tc| {
-                                            tc.tool_name == tool_name && matches!(tc.status, ToolCallStatus::AwaitingApproval { .. })
+                                        let mut segs = segments_arc.lock().expect("segments_arc lock poisoned");
+                                        if let Some(rec) = segs.iter_mut().rev().find_map(|s| match s {
+                                            StreamSegment::ToolCall(r) if r.tool_name == tool_name && matches!(r.status, ToolCallStatus::AwaitingApproval { .. }) => Some(r),
+                                            _ => None,
                                         }) {
                                             rec.status = ToolCallStatus::Running;
                                         }
@@ -340,12 +342,13 @@ impl Agent {
                         Decision::Deny(msg) => Err(msg),
                     };
 
-                    // 更新 tool record 状态
+                    // 更新 tool record 状态（segments 内嵌记录，锁内直接改）
                     {
-                        let mut tcs = tool_calls_arc.lock().expect("tool_calls_arc lock poisoned");
-                        if let Some(rec) = tcs.iter_mut().rev().find(|tc| {
-                            tc.tool_name == tool_name
-                                && (tc.status == ToolCallStatus::Running || matches!(tc.status, ToolCallStatus::AwaitingApproval { .. }))
+                        let mut segs = segments_arc.lock().expect("segments_arc lock poisoned");
+                        if let Some(rec) = segs.iter_mut().rev().find_map(|s| match s {
+                            StreamSegment::ToolCall(r) if r.tool_name == tool_name
+                                && (r.status == ToolCallStatus::Running || matches!(r.status, ToolCallStatus::AwaitingApproval { .. })) => Some(r),
+                            _ => None,
                         }) {
                             rec.result = Some(match &result { Ok(tr) => tr.output.clone(), Err(e) => e.clone() });
                             rec.status = match &result {
@@ -401,7 +404,6 @@ impl Agent {
 
         // ── 构建 Static 消息 ──
         let segments_snapshot = segments_arc.lock().expect("segments_arc lock poisoned").clone();
-        let tool_records_snapshot = tool_calls_arc.lock().expect("tool_calls_arc lock poisoned").clone();
 
         let content = build_content_from_segments(&segments_snapshot);
         let content = if content.is_empty() { _final_output.clone() } else { content };
@@ -409,14 +411,13 @@ impl Agent {
         let result = UiMessage::Static(ChatMessage {
             role: ChatRole::Assistant, content,
             timestamp: chrono::Local::now(),
-            tool_calls: tool_records_snapshot,
             reasoning: final_reasoning,
             segments: segments_snapshot,
             content_html: String::new(),
         });
 
         // 本轮流式状态已结束：清理 streaming_handle，避免下一轮 create_streaming()
-        // 复用上一轮的 segments/tool_calls，导致流式回显之前所有 agent 的返回消息。
+        // 复用上一轮的 segments，导致流式回显之前所有 agent 的返回消息。
         self.streaming_handle = None;
 
         Ok(result)
@@ -472,11 +473,6 @@ fn push_reasoning(segments: &Arc<Mutex<Vec<StreamSegment>>>, text: &str, version
         _ => segs.push(StreamSegment::Reasoning(text.to_string())),
     }
     drop(segs);
-    inc_version_atomic(version);
-}
-
-fn push_tool_marker(segments: &Arc<Mutex<Vec<StreamSegment>>>, version: &Arc<AtomicU64>) {
-    segments.lock().expect("segments lock poisoned").push(StreamSegment::ToolCall);
     inc_version_atomic(version);
 }
 

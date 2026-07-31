@@ -2,7 +2,7 @@ use dioxus::desktop::use_window;
 use dioxus::prelude::*;
 use std::collections::HashMap;
 
-use crate::model::{Role, StreamSegment, ToolCallRecord, ToolCallStatus, UiMessage};
+use crate::model::{Role, StreamSegment, ToolCallStatus, UiMessage};
 use crate::ui::state::ConversationRuntime;
 
 /// 对话面板 —— 消息列表 + 流式输出 + 空状态 + 时序导航
@@ -138,10 +138,12 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
         .map(|m| matches!(m, UiMessage::Static(cm) if matches!(cm.role, Role::User)))
         .unwrap_or(false);
 
-    // 检查是否有正在等待审批的 tool call
-    let has_approval_pending = msgs.iter().any(|m| {
-        matches!(m, UiMessage::Streaming { tool_calls, .. }
-            if tool_calls.lock().expect("tool_calls lock poisoned").iter().any(|tc| matches!(tc.status, ToolCallStatus::AwaitingApproval { .. })))
+    // 检查是否有正在等待审批的 tool call（遍历 segments 内嵌记录，单一数据源）
+    let has_approval_pending = msgs.iter().any(|m| match m {
+        UiMessage::Streaming { segments, .. } => segments
+            .lock().expect("segments lock poisoned")
+            .iter().any(|s| matches!(s, StreamSegment::ToolCall(tc) if matches!(tc.status, ToolCallStatus::AwaitingApproval { .. }))),
+        UiMessage::Static(cm) => cm.segments.iter().any(|s| matches!(s, StreamSegment::ToolCall(tc) if matches!(tc.status, ToolCallStatus::AwaitingApproval { .. }))),
     });
     let expanded_tc = use_signal(|| std::collections::HashSet::<String>::new());
     let last_user_idx = user_messages.last().map(|(i, _)| *i);
@@ -175,7 +177,6 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
                         };
                         let msg_id = format!("msg-{i}");
                         let segments = chat_msg.segments.clone();
-                        let tool_calls = chat_msg.tool_calls.clone();
                         rsx! {
                             div { key: "{i}", id: "{msg_id}", class: bubble_class,
                                 div { class: "message-header",
@@ -191,16 +192,15 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
                                         };
                                         rsx! { div { class: "message-content", dangerous_inner_html: "{html}" } }
                                     } else {
-                                        rsx! { {render_segments(false, &segments, &tool_calls, markdown_to_html, on_approve, expanded_tc, format!("{i}")).into_iter()} }
+                                        rsx! { {render_segments(false, &segments, markdown_to_html, on_approve, expanded_tc, format!("{i}")).into_iter()} }
                                     }
                                 }
                             }
                         }
                     }
-                    UiMessage::Streaming { segments, tool_calls, approval_tx, .. } => {
+                    UiMessage::Streaming { segments, approval_tx, .. } => {
                         let segs = segments.lock().expect("segments lock poisoned").clone();
-                        let tcs = tool_calls.lock().expect("tool_calls lock poisoned").clone();
-                        let has_approval = tcs.iter().any(|tc| matches!(tc.status, ToolCallStatus::AwaitingApproval { .. }));
+                        let has_approval = segs.iter().any(|s| matches!(s, StreamSegment::ToolCall(tc) if matches!(tc.status, ToolCallStatus::AwaitingApproval { .. })));
                         let streaming_class = if has_approval {
                             "message-bubble message-assistant streaming awaiting-approval"
                         } else {
@@ -215,7 +215,7 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
                         };
                         rsx! {
                             div { key: "{streaming_key}", class: "{streaming_class}",
-                                {render_segments(true, &segs, &tcs, markdown_to_html, EventHandler::new(on_stream_approve), expanded_tc, "stream".into()).into_iter()}
+                                {render_segments(true, &segs, markdown_to_html, EventHandler::new(on_stream_approve), expanded_tc, "stream".into()).into_iter()}
                             }
                         }
                     }
@@ -262,7 +262,6 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
 fn render_segments(
     streaming: bool,
     segments: &[StreamSegment],
-    tool_calls: &[ToolCallRecord],
     markdown_to_html: fn(&str) -> String,
     on_approve: EventHandler<(bool,)>,
     expanded_tc: Signal<std::collections::HashSet<String>>,
@@ -293,9 +292,8 @@ fn render_segments(
                 let html = markdown_to_html(text);
                 buf.push(rsx! { div { class: "thinking-content", dangerous_inner_html: html } });
             }
-            StreamSegment::ToolCall => {
-                if let Some(call) = tool_calls.get(tc_idx) {
-                    let sc = status_class(&call.status);
+            StreamSegment::ToolCall(call) => {
+                let sc = status_class(&call.status);
                     let status_text = match &call.status {
                         ToolCallStatus::Running => "running",
                         ToolCallStatus::Success => "success",
@@ -384,8 +382,7 @@ fn render_segments(
                                 }
                             }
                         }
-                    });
-                }
+                });
                 tc_idx += 1;
             }
         }

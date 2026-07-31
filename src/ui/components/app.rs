@@ -47,26 +47,12 @@ fn load_messages_from_db(conv_id: &str, md_to_html: fn(&str) -> String) -> Vec<C
                     role: Role::User,
                     content,
                     timestamp: chrono::Local::now(),
-                    tool_calls: vec![],
                     reasoning: String::new(),
                     segments: Vec::new(),
                     content_html: html,
                 });
             }
             llm::Role::Assistant => {
-                // 重建 ToolCallRecord（result 暂时为 None，由后续 Tool 消息回填）
-                let tool_calls: Vec<ToolCallRecord> = m
-                    .tool_calls
-                    .iter()
-                    .map(|tc| ToolCallRecord {
-                        tool_name: tc.name.clone(),
-                        args: serde_json::from_str(&tc.arguments).unwrap_or_default(),
-                        result: None,
-                        status: ToolCallStatus::Running,
-                        approval_reason: None,
-                    })
-                    .collect();
-
                 let mut segments = Vec::new();
                 if let Some(ref r) = m.reasoning_content {
                     if !r.is_empty() {
@@ -78,14 +64,20 @@ fn load_messages_from_db(conv_id: &str, md_to_html: fn(&str) -> String) -> Vec<C
                         segments.push(StreamSegment::Text(c.clone()));
                     }
                 }
-                for _ in &m.tool_calls {
-                    segments.push(StreamSegment::ToolCall);
+                // 工具调用记录内嵌进 segments（result 暂时为 None，由后续 Tool 消息回填）
+                for tc in &m.tool_calls {
+                    segments.push(StreamSegment::ToolCall(ToolCallRecord {
+                        tool_name: tc.name.clone(),
+                        args: serde_json::from_str(&tc.arguments).unwrap_or_default(),
+                        result: None,
+                        status: ToolCallStatus::Running,
+                        approval_reason: None,
+                    }));
                 }
 
                 // 如果上一条也是 Assistant（连续的 Assistant 消息），合并到同一条
                 if let Some(prev) = result.last_mut().filter(|cm| cm.role == Role::Assistant) {
                     prev.segments.extend(segments);
-                    prev.tool_calls.extend(tool_calls);
                     if let Some(ref c) = m.content {
                         if !c.is_empty() {
                             prev.content = c.clone();
@@ -106,7 +98,6 @@ fn load_messages_from_db(conv_id: &str, md_to_html: fn(&str) -> String) -> Vec<C
                         timestamp: chrono::Local::now(),
                         reasoning: m.reasoning_content.clone().unwrap_or_default(),
                         segments,
-                        tool_calls,
                         content_html: html,
                     });
                 }
@@ -118,8 +109,9 @@ fn load_messages_from_db(conv_id: &str, md_to_html: fn(&str) -> String) -> Vec<C
                         if cm.role != Role::Assistant {
                             continue;
                         }
-                        if let Some(tc) = cm.tool_calls.iter_mut().find(|tc| {
-                            tc.result.is_none() && tool_name.map_or(true, |n| tc.tool_name == n)
+                        if let Some(tc) = cm.segments.iter_mut().find_map(|s| match s {
+                            StreamSegment::ToolCall(rec) if rec.result.is_none() && tool_name.map_or(true, |n| rec.tool_name == n) => Some(rec),
+                            _ => None,
                         }) {
                             tc.result = Some(content.clone());
                             tc.status = if content.starts_with("error: denied by user:")
@@ -724,7 +716,6 @@ pub fn App() -> Element {
                                                 role: crate::model::Role::User,
                                                 content: "计划已通过审批，请开始执行。".to_string(),
                                                 timestamp: chrono::Local::now(),
-                                                tool_calls: Vec::new(),
                                                 reasoning: String::new(),
                                                 segments: Vec::new(),
                                                 content_html: String::new(),
@@ -849,7 +840,7 @@ pub fn App() -> Element {
                                 role: Role::User,
                                 content: input.clone(),
                                 timestamp: chrono::Local::now(),
-                                tool_calls: vec![], reasoning: String::new(), segments: Vec::new(),
+                                reasoning: String::new(), segments: Vec::new(),
                                 content_html: markdown_to_html(&input),
                             };
 
