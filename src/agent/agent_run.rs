@@ -8,9 +8,12 @@
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::AtomicU64;
 
+use tokio::sync::mpsc;
+
 use crate::model::{StreamingState, UiMessage};
 use llm::ToolCall;
 
+use super::hook::AgentEvent;
 use super::Agent;
 
 pub struct AgentRun {
@@ -24,18 +27,29 @@ pub struct AgentRun {
     pub last_usage: Option<crate::model::TokenUsageRecord>,
     /// 循环数
     pub round: u32,
+    /// 事件通道（执行节点 emit，UI/调用方订阅）
+    events: mpsc::Sender<AgentEvent>,
 }
 
 impl AgentRun {
     /// 从 Agent 取走所有权，进入执行态。
-    pub fn new(agent: Agent) -> Self {
-        Self {
+    /// 返回 (Run, 事件接收端)——调用方订阅事件以驱动 UI。
+    pub fn new(agent: Agent) -> (Self, mpsc::Receiver<AgentEvent>) {
+        let (tx, rx) = mpsc::channel(256);
+        let run = Self {
             agent,
             streaming_handle: None,
             pending_tool_calls: Vec::new(),
             last_usage: None,
             round: 0,
-        }
+            events: tx,
+        };
+        (run, rx)
+    }
+
+    /// 向事件通道投递事件（非阻塞；无订阅者时静默丢弃）
+    pub fn emit(&self, event: AgentEvent) {
+        let _ = self.events.try_send(event);
     }
 
     /// 归还 Agent 所有权（执行结束后恢复配置态）。

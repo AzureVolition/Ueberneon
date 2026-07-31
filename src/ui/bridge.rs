@@ -8,8 +8,6 @@
 
 use dioxus::prelude::*;
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::Ordering;
-use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::{ActionMode, AgentMode, AgentRun};
@@ -62,12 +60,9 @@ pub async fn run_agent_loop(ctx: BridgeContext) {
     let agent = crate::agent::manager::AgentManager::get()
         .remove(&conversation_id)
         .expect("agent must be in cache before run_agent_loop");
-    let mut run = AgentRun::new(agent);
+    let (mut run, mut rx) = AgentRun::new(agent);
     run.agent.handler.set_action_mode(action_mode);
     *run.agent.handler.agent_mode.lock().expect("agent_mode lock poisoned") = agent_mode_val;
-
-    // 克隆 plan_version Arc，供轮询 loop 监控 CompleteStep 更新
-    let plan_version = run.agent.handler.plan_version.clone();
 
     // 从 DB 恢复累计 token 用量（切换回已有对话时恢复之前的数据）
     let db_usage = crate::db::with_db(|conn| {
@@ -93,99 +88,97 @@ pub async fn run_agent_loop(ctx: BridgeContext) {
     streaming_states.lock().expect("streaming_states lock poisoned").insert(conversation_id.clone(), streaming.clone());
 
 
+    // 完成信号：watch 通道（spawn 侧完成后置 true，主循环据此收尾）
+    let (done_tx, mut done_rx) = tokio::sync::watch::channel(false);
+
     // Run 通过 result_cell 传回结果（避免 tokio::spawn 中访问 Signal）
     let result_cell: Arc<Mutex<Option<(AgentRun, Result<UiMessage, anyhow::Error>)>>> = Arc::new(Mutex::new(None));
     let result_cell2 = result_cell.clone();
+    let done_tx2 = done_tx.clone();
 
+    let cancel_for_spawn = cancel_token.clone();
     tokio::spawn(async move {
-        let result = run.accept_message(user_input, cancel_token).await;
+        let result = run.accept_message(user_input, cancel_for_spawn).await;
         *result_cell2.lock().expect("result_cell2 lock poisoned") = Some((run, result));
+        let _ = done_tx2.send(true);
     });
 
-    // 主循环：轮询 version 更新 tick_signal，检查 Agent 是否完成
-    let mut last_v = 0u64;
-    let mut last_pv = 0u64;
+    // 主循环：事件驱动 —— 任何事件触发一次重渲染；done 信号收尾；cancel 中断
+    let mut cancelled = false;
+    let mut rx_closed = false;
     loop {
-        tokio::time::sleep(Duration::from_millis(80)).await;
-
-        // 从 streaming_states 中读取 version
-        let v = {
-            let states = streaming_states.lock().unwrap_or_else(|e| e.into_inner());
-            states.get(&conversation_id).and_then(|s| {
-                if let UiMessage::Streaming { version, .. } = s {
-                    Some(version.load(Ordering::Relaxed))
-                } else {
-                    None
+        tokio::select! {
+            event = rx.recv(), if !rx_closed => {
+                match event {
+                    Some(_) => {
+                        // 有新状态（文本/工具/审批/错误），触发 UI 重渲染
+                        runtimes.write().entry(conversation_id.clone()).or_default().tick += 1;
+                    }
+                    None => { rx_closed = true; } // 事件通道关闭（run 结束），等 done
                 }
-            }).unwrap_or(0)
-        };
-        if v != last_v {
-            last_v = v;
-            runtimes.write().entry(conversation_id.clone()).or_default().tick = v;
-        }
-
-        // 监控 plan_version：CompleteStep 成功后触发 UI 刷新
-        let pv = plan_version.load(Ordering::Relaxed);
-        if pv != last_pv {
-            last_pv = pv;
-            runtimes.write().entry(conversation_id.clone()).or_default().tick = pv;
-        }
-
-        if let Some((run, result)) = result_cell.lock().expect("result_cell lock poisoned").take() {
-            match result {
-                Ok(ui_msg) => {
-                    // 替换 Streaming → Static
-                    {
-                        let mut all = runtimes.write();
-                        if let Some(rt) = all.get_mut(&conversation_id) {
-                            if let Some(pos) = rt.messages.iter().position(|m| matches!(m, UiMessage::Streaming { .. })) {
-                                rt.messages[pos] = ui_msg;
+            }
+            _ = done_rx.changed() => {
+                if let Some((run, result)) = result_cell.lock().expect("result_cell lock poisoned").take() {
+                    match result {
+                        Ok(ui_msg) => {
+                            // 替换 Streaming → Static
+                            {
+                                let mut all = runtimes.write();
+                                if let Some(rt) = all.get_mut(&conversation_id) {
+                                    if let Some(pos) = rt.messages.iter().position(|m| matches!(m, UiMessage::Streaming { .. })) {
+                                        rt.messages[pos] = ui_msg;
+                                    }
+                                }
                             }
                         }
-                    }
-                }
-                Err(e) => {
-                    // 移除 Streaming 占位
-                    {
-                        let mut all = runtimes.write();
-                        if let Some(rt) = all.get_mut(&conversation_id) {
-                            rt.messages.retain(|m| !matches!(m, UiMessage::Streaming { .. }));
+                        Err(e) => {
+                            // 移除 Streaming 占位
+                            {
+                                let mut all = runtimes.write();
+                                if let Some(rt) = all.get_mut(&conversation_id) {
+                                    rt.messages.retain(|m| !matches!(m, UiMessage::Streaming { .. }));
+                                }
+                            }
+                            // 通过 error_signal 通知前端
+                            error_signal.write().push(ErrorInfo::new(
+                                "AGENT_ERROR",
+                                "Agent 执行失败",
+                                format!("{}", e),
+                                ErrorSeverity::Warning,
+                                ErrorSource::Agent,
+                            ).with_detail(format!("{:#}", e)));
                         }
                     }
-                    // 通过 error_signal 通知前端
-                    error_signal.write().push(ErrorInfo::new(
-                        "AGENT_ERROR",
-                        "Agent 执行失败",
-                        format!("{}", e),
-                        ErrorSeverity::Warning,
-                        ErrorSource::Agent,
-                    ).with_detail(format!("{:#}", e)));
+
+                    // 累加本次 token 用量到 conversation runtime，
+                    // 同时保存单次 loop 数据（暂不展示，预留）
+                    if let Some(ref usage) = run.last_usage {
+                        let mut all = runtimes.write();
+                        if let Some(rt) = all.get_mut(&conversation_id) {
+                            rt.accumulated_usage.prompt_tokens += usage.prompt_tokens;
+                            rt.accumulated_usage.completion_tokens += usage.completion_tokens;
+                            rt.accumulated_usage.reasoning_tokens += usage.reasoning_tokens;
+                            rt.accumulated_usage.total_tokens += usage.total_tokens;
+                            rt.accumulated_usage.cache_hit_tokens += usage.cache_hit_tokens;
+                            rt.accumulated_usage.cache_miss_tokens += usage.cache_miss_tokens;
+                            rt.request_count += 1;
+                            rt.last_loop_usage = Some(usage.clone());
+                        }
+                    }
+
+                    is_streaming.set(false);
+                    streaming_project_id.write().retain(|id| id != &project_id);
+
+                    streaming_states.lock().expect("streaming_states lock poisoned").remove(&conversation_id);
+                    crate::agent::manager::AgentManager::get()
+                        .register(run.into_agent());
+                    return;
                 }
             }
-
-            // 累加本次 token 用量到 conversation runtime，
-            // 同时保存单次 loop 数据（暂不展示，预留）
-            if let Some(ref usage) = run.last_usage {
-                let mut all = runtimes.write();
-                if let Some(rt) = all.get_mut(&conversation_id) {
-                    rt.accumulated_usage.prompt_tokens += usage.prompt_tokens;
-                    rt.accumulated_usage.completion_tokens += usage.completion_tokens;
-                    rt.accumulated_usage.reasoning_tokens += usage.reasoning_tokens;
-                    rt.accumulated_usage.total_tokens += usage.total_tokens;
-                    rt.accumulated_usage.cache_hit_tokens += usage.cache_hit_tokens;
-                    rt.accumulated_usage.cache_miss_tokens += usage.cache_miss_tokens;
-                    rt.request_count += 1;
-                    rt.last_loop_usage = Some(usage.clone());
-                }
+            _ = cancel_token.cancelled(), if !cancelled => {
+                // 取消：标记后继续等 done（accept_message 内部响应取消并返回）
+                cancelled = true;
             }
-
-            is_streaming.set(false);
-            streaming_project_id.write().retain(|id| id != &project_id);
-            
-            streaming_states.lock().expect("streaming_states lock poisoned").remove(&conversation_id);
-            crate::agent::manager::AgentManager::get()
-                .register(run.into_agent());
-            return;
         }
     }
 }

@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio_util::sync::CancellationToken;
 
-use super::hook::AgentEvent;
+use super::hook::{AgentEvent, DeltaKind};
 use super::{Agent, AgentRun, ToolContext};
 use crate::model::{ChatMessage, Role as ChatRole, StreamSegment, ToolCallRecord, ToolCallStatus, UiMessage};
 use crate::permission::Decision;
@@ -96,6 +96,7 @@ impl AgentRun {
                 Err(e) => {
                     let msg = format!("Stream error: {e}");
                     push_text(&segments_arc, &msg, &version_arc);
+                    self.emit(AgentEvent::Error { message: msg.clone() });
                     _final_output = msg;
                     break;
                 }
@@ -120,10 +121,12 @@ impl AgentRun {
                     StreamOrCancel::Chunk(Some(Ok(Chunk::Text(t)))) => {
                         output.push_str(&t);
                         push_text(&segments_arc, &t, &version_arc);
+                        self.emit(AgentEvent::StreamDelta { kind: DeltaKind::Text });
                     }
                     StreamOrCancel::Chunk(Some(Ok(Chunk::Reasoning { text, .. }))) => {
                         reasoning.push_str(&text);
                         push_reasoning(&segments_arc, &text, &version_arc);
+                        self.emit(AgentEvent::StreamDelta { kind: DeltaKind::Reasoning });
                     }
                     StreamOrCancel::Chunk(Some(Ok(Chunk::ToolCallComplete(tc)))) => {
                         have_tool_calls = true;
@@ -149,6 +152,7 @@ impl AgentRun {
                         let msg = format!("Stream error: {e}");
                         output.push_str(&msg);
                         push_text(&segments_arc, &msg, &version_arc);
+                        self.emit(AgentEvent::Error { message: msg.clone() });
                         break;
                     }
                 }
@@ -241,6 +245,7 @@ impl AgentRun {
                             .push(StreamSegment::ToolCall(rec));
                         inc_version_atomic(&version_arc);
                     }
+                    self.emit(AgentEvent::ToolCallStart { tool_name: tool_name.clone(), args: args.clone() });
 
                     let ctx = ToolContext { call_id: tool_call.id.clone(), plan_mode: self.agent.handler.action_mode(), handler: self.agent.handler.clone(), progress: None, main_conversation_id: self.agent.conversation_id.clone(), project_id: self.agent.project_id.clone(), cancel_token: Some(cancel_token.clone()) };
                     let decision = tool.pre_check(&ctx, &args);
@@ -266,6 +271,11 @@ impl AgentRun {
                                     rec.approval_reason = Some(reason.clone());
                                 }
                             }
+                            self.emit(AgentEvent::ApprovalRequested {
+                                tool_name: tool_name.clone(),
+                                args: args.clone(),
+                                reason: reason.clone(),
+                            });
                             // 状态已改为 AwaitingApproval：只递增 version 触发 UI 把
                             // 该 marker 对应的 running 卡刷新为审批卡，不能再次 push
                             // ToolCall marker（否则 marker 与 tool_calls 记录错位，
@@ -294,6 +304,8 @@ impl AgentRun {
                                     }
                                     *approval_arc.lock().expect("approval_arc lock poisoned") = None;
                                     inc_version_atomic(&version_arc);
+                                    // 审批通过，进入执行：再次广播 ToolCallStart 让 UI 刷新
+                                    self.emit(AgentEvent::ToolCallStart { tool_name: tool_name.clone(), args: args.clone() });
                                     let exec = tool.execute(&ctx, &args);
                                     tokio::pin!(exec);
                                     tokio::select! {
@@ -332,6 +344,7 @@ impl AgentRun {
                     }
                     *approval_arc.lock().expect("approval_arc lock poisoned") = None;
                     inc_version_atomic(&version_arc);
+                    self.emit(AgentEvent::ToolCallEnd { tool_name: tool_name.clone(), result: result.clone() });
 
                     self.agent.hook_register.emit(&AgentEvent::PostToolUse { tool_name: tool_name.clone(), result: result.clone() });
                     let tool_message = Message {
@@ -371,6 +384,7 @@ impl AgentRun {
         });
 
         self.agent.hook_register.emit(&AgentEvent::Stop { reason: if cancelled { "cancelled" } else { "completed" }.into() });
+        self.emit(AgentEvent::Stop { reason: if cancelled { "cancelled" } else { "completed" }.into() });
 
         // ── 构建 Static 消息 ──
         let segments_snapshot = segments_arc.lock().expect("segments_arc lock poisoned").clone();

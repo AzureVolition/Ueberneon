@@ -2,10 +2,43 @@ use super::ToolResult;
 
 // ── AgentEvent ───────────────────────────────────────────────────────────────
 
+/// 增量类型（StreamDelta 使用）
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeltaKind {
+    /// 文本增量
+    Text,
+    /// 推理/思考增量
+    Reasoning,
+}
+
 pub enum AgentEvent {
     /// 用户提交输入后、进入 LLM 前
     UserPromptSubmit {
         prompt: String,
+    },
+    /// 流式增量（UI 据此刷新）
+    StreamDelta {
+        kind: DeltaKind,
+    },
+    /// 工具开始执行（含审批前的运行态）
+    ToolCallStart {
+        tool_name: String,
+        args: serde_json::Value,
+    },
+    /// 发起审批请求
+    ApprovalRequested {
+        tool_name: String,
+        args: serde_json::Value,
+        reason: String,
+    },
+    /// 工具执行结束（含状态落定）
+    ToolCallEnd {
+        tool_name: String,
+        result: Result<ToolResult, String>,
+    },
+    /// 执行出错
+    Error {
+        message: String,
     },
     /// 工具执行前
     PreToolUse {
