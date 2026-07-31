@@ -402,14 +402,20 @@ impl Agent {
         let content = build_content_from_segments(&segments_snapshot);
         let content = if content.is_empty() { _final_output.clone() } else { content };
 
-        Ok(UiMessage::Static(ChatMessage {
+        let result = UiMessage::Static(ChatMessage {
             role: ChatRole::Assistant, content,
             timestamp: chrono::Local::now(),
             tool_calls: tool_records_snapshot,
             reasoning: final_reasoning,
             segments: segments_snapshot,
             content_html: String::new(),
-        }))
+        });
+
+        // 本轮流式状态已结束：清理 streaming_handle，避免下一轮 create_streaming()
+        // 复用上一轮的 segments/tool_calls，导致流式回显之前所有 agent 的返回消息。
+        self.streaming_handle = None;
+
+        Ok(result)
     }
 
     /// 将 self.messages 转换为 DB 行（日后复用）
