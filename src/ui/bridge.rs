@@ -60,7 +60,7 @@ pub async fn run_agent_loop(ctx: BridgeContext) {
     let agent = crate::agent::manager::AgentManager::get()
         .remove(&conversation_id)
         .expect("agent must be in cache before run_agent_loop");
-    let (mut run, mut rx) = AgentRun::new(agent);
+    let (mut run, mut rx) = AgentRun::new(agent, cancel_token.clone());
     run.agent.handler.set_action_mode(action_mode);
     *run.agent.handler.agent_mode.lock().expect("agent_mode lock poisoned") = agent_mode_val;
 
@@ -96,9 +96,8 @@ pub async fn run_agent_loop(ctx: BridgeContext) {
     let result_cell2 = result_cell.clone();
     let done_tx2 = done_tx.clone();
 
-    let cancel_for_spawn = cancel_token.clone();
     tokio::spawn(async move {
-        let result = run.accept_message(user_input, cancel_for_spawn).await;
+        let result = run.accept_message(user_input).await;
         *result_cell2.lock().expect("result_cell2 lock poisoned") = Some((run, result));
         let _ = done_tx2.send(true);
     });

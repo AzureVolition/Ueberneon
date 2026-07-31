@@ -8,6 +8,7 @@
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use crate::model::{StreamingState, UiMessage};
 use llm::ToolCall;
@@ -35,6 +36,8 @@ pub struct AgentRun {
     pub final_output: String,
     /// 最终推理内容（收尾构建 Static 用）
     pub final_reasoning: String,
+    /// 取消令牌（外部注入；方法内取用，不跨方法传参）
+    pub cancel_token: CancellationToken,
     /// 事件通道（执行节点 emit，UI/调用方订阅）
     events: mpsc::Sender<AgentEvent>,
 }
@@ -42,7 +45,8 @@ pub struct AgentRun {
 impl AgentRun {
     /// 从 Agent 取走所有权，进入执行态。
     /// 返回 (Run, 事件接收端)——调用方订阅事件以驱动 UI。
-    pub fn new(agent: Agent) -> (Self, mpsc::Receiver<AgentEvent>) {
+    /// cancel_token 由调用方创建并注入（Run 内持一份 clone）。
+    pub fn new(agent: Agent, cancel_token: CancellationToken) -> (Self, mpsc::Receiver<AgentEvent>) {
         let (tx, rx) = mpsc::channel(256);
         let run = Self {
             agent,
@@ -54,6 +58,7 @@ impl AgentRun {
             cancelled: false,
             final_output: String::new(),
             final_reasoning: String::new(),
+            cancel_token,
             events: tx,
         };
         (run, rx)

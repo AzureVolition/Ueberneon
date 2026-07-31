@@ -151,13 +151,13 @@ impl Tool for Task {
         let sub_agent = mgr
             .remove(&sub_conv_id)
             .ok_or_else(|| "子 Agent 未找到".to_string())?;
-        let (mut sub_run, _rx) = crate::agent::AgentRun::new(sub_agent);
+        let cancel_token = ctx.cancel_token.clone().unwrap_or_else(CancellationToken::new);
+        let (mut sub_run, _rx) = crate::agent::AgentRun::new(sub_agent, cancel_token);
 
         sub_run.create_streaming();
-        let cancel_token = ctx.cancel_token.clone().unwrap_or_else(CancellationToken::new);
 
         let result = sub_run
-            .accept_message(prompt.to_string(), cancel_token)
+            .accept_message(prompt.to_string())
             .await;
 
         // 5. 提取输出

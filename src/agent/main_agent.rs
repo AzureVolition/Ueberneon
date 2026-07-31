@@ -7,7 +7,6 @@
 
 use futures::StreamExt;
 use std::sync::{Arc, Mutex};
-use tokio_util::sync::CancellationToken;
 
 use super::approval::ApprovalCtx;
 use super::hook::{AgentEvent, DeltaKind};
@@ -41,10 +40,10 @@ impl AgentRun {
     /// 接受用户输入并运行 agent 循环。返回已完成的 UiMessage::Static。
     ///
     /// 调用前必须先调用 create_streaming() 初始化内部流式状态。
+    /// 取消令牌在 AgentRun::new 时注入（self.cancel_token）。
     pub async fn accept_message(
         &mut self,
         user_input: String,
-        cancel_token: CancellationToken,
     ) -> anyhow::Result<UiMessage> {
 
         self.create_streaming();
@@ -67,11 +66,11 @@ impl AgentRun {
 
         // ReAct Loop（编排：只分发，不实现细节）
         loop {
-            match self.stream_round(&cancel_token).await? {
+            match self.stream_round().await? {
                 RoundOutcome::Cancelled | RoundOutcome::Abort => break,
                 RoundOutcome::Finish => { self.round_end(); break; }
                 RoundOutcome::Continue => {
-                    self.execute_tools(&cancel_token).await?;
+                    self.execute_tools().await?;
                     if self.cancelled { break; }
                     self.round_end();
                 }
@@ -84,8 +83,8 @@ impl AgentRun {
     /// 一轮：流式输出 + usage 持久化 + assistant 消息入史，返回本轮走向。
     async fn stream_round(
         &mut self,
-        cancel_token: &CancellationToken,
     ) -> anyhow::Result<RoundOutcome> {
+        let cancel_token = self.cancel_token.clone();
         let segments_arc = self.streaming_handle.as_ref().expect("create_streaming() must be called first").segments.clone();
         self.round_start();
         let mut have_tool_calls = false;
@@ -250,12 +249,11 @@ impl AgentRun {
     /// 执行本轮全部工具调用。
     async fn execute_tools(
         &mut self,
-        cancel_token: &CancellationToken,
     ) -> anyhow::Result<()> {
         for i in 0..self.pending_tool_calls.len() {
             if self.cancelled { break; }
             let tool_call = self.pending_tool_calls[i].clone();
-            self.execute_tool(&tool_call, cancel_token).await?;
+            self.execute_tool(&tool_call).await?;
         }
         Ok(())
     }
@@ -264,8 +262,8 @@ impl AgentRun {
     async fn execute_tool(
         &mut self,
         tool_call: &llm::ToolCall,
-        cancel_token: &CancellationToken,
     ) -> anyhow::Result<()> {
+        let cancel_token = self.cancel_token.clone();
         let (segments_arc, approval_arc) = self.arcs();
         let tool_name = tool_call.name.clone();
         self.agent.hook_register.emit(&AgentEvent::PreToolUse {
