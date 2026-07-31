@@ -12,7 +12,9 @@ use llm::tool::ToolMeta;
 #[cfg(test)]
 use crate::agent::{AgentHandler, ToolResultExt};
 use ueberneon_macros::ToolMetaImpl;
+use serde::Deserialize;
 use serde_json::Value;
+use schemars::JsonSchema;
 
 use crate::tools::content_tracker::FileObserveTracker;
 use crate::tools::internal::common::checkable_tool::CheckableTool;
@@ -27,7 +29,7 @@ use crate::permission::{Check, Decision, gate::PermissionChecked};
 ///
 /// `work_dir` 是工作目录的共享引用 —— 所有文件路径必须在此目录之下。
 #[derive(ToolMetaImpl)]
-#[tool(schema = r#"{"type":"object","properties":{"path":{"type":"string","description":"File path"},"content":{"type":"string","description":"File content to write"},"overwrite":{"type":"boolean","description":"If true, overwrite an existing file (default: false)"}},"required":["path","content"]}"#)]
+#[tool(argType = WriteFileParams)]
 pub struct WriteFile {
     /// 工作目录（共享引用语义）。
     work_dir: PathBuf,
@@ -37,6 +39,22 @@ pub struct WriteFile {
     checks: Vec<Box<dyn Check>>,
     /// 文件内容追踪器（陈旧锚点检查）。
     tracker: Arc<FileObserveTracker>,
+}
+
+/// write_file 工具的输入参数。
+#[derive(Debug, Deserialize, JsonSchema)]
+#[allow(dead_code)]
+pub struct WriteFileParams {
+    /// 文件路径。
+    #[schemars(description = "File path")]
+    path: String,
+    /// 文件内容。
+    #[schemars(description = "File content to write")]
+    content: String,
+    /// 是否覆盖已存在的文件。
+    #[serde(default)]
+    #[schemars(description = "If true, overwrite an existing file (default: false)")]
+    overwrite: bool,
 }
 
 impl WriteFile {

@@ -7,7 +7,7 @@ pub mod jobs;
 pub mod registry;
 pub mod sandbox;
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use crate::permission::Check;
 
@@ -38,7 +38,7 @@ pub struct InternalToolMeta {
     pub name: &'static str,
     pub description: &'static str,
     pub read_only: bool,
-    pub schema: &'static str,
+    pub schema: &'static LazyLock<String>, 
 }
 
 inventory::collect!(InternalToolMeta);

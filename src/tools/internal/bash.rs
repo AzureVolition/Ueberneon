@@ -6,11 +6,12 @@
 // 支持沙箱隔离（macOS Seatbelt / Linux bubblewrap）和环境变量安全处理。
 
 #[cfg_attr(not(test), allow(unused_imports))]
-use crate::agent::{ActionMode, AgentMode, Tool, ToolContext, ToolResult, ToolResultExt};
+use crate::agent::{ActionMode, AgentMode, Tool, GenericsTool, ToolContext, ToolResult, ToolResultExt};
 use llm::tool::ToolMeta;
 use ueberneon_macros::ToolMetaImpl;
 use serde::Deserialize;
 use serde_json::Value;
+use schemars::JsonSchema;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -28,7 +29,7 @@ use crate::tools::internal::common::checkable_tool::CheckableTool;
 /// 使用场景：build、test、git、包管理器等需要真实操作系统命令的操作。
 /// 不要用于搜索/读取/编辑文件 —— 请使用专用的 grep / read_file / edit_file 工具。
 #[derive(ToolMetaImpl)]
-#[tool(schema = r#"{"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute"},"run_in_background":{"type":"boolean","description":"Run detached: returns a job id immediately and keeps running across turns. Use bash_output to read output and kill_shell to terminate."},"preserve_background_processes":{"type":"boolean","description":"After the shell command exits normally, keep any process-group members it intentionally left behind."}},"required":["command"]}"#)]
+#[tool(argType=BashParams)]
 pub struct Bash {
     /// 工作目录（命令在此目录下执行）。
     work_dir: PathBuf,
@@ -45,16 +46,19 @@ pub struct Bash {
 }
 
 /// bash 工具的输入参数。
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[allow(dead_code)]
-struct BashParams {
+pub struct BashParams {
     /// 要执行的 shell 命令。
+    #[schemars(description = "Shell command to execute")]
     command: String,
     /// 是否以后台模式运行。
     #[serde(default)]
+    #[schemars(description = "Run detached: returns a job id immediately and keeps running across turns. Use bash_output to read output and kill_shell to terminate.")]
     run_in_background: bool,
     /// 后台任务结束后是否保留子进程组。
     #[serde(default)]
+    #[schemars(description = "After the shell command exits normally, keep any process-group members it intentionally left behind.")]
     preserve_background_processes: bool,
 }
 
@@ -88,34 +92,18 @@ impl Bash {
         builder.filter_secrets();
         builder.build()
     }
-}
 
-impl PermissionChecked for Bash {
-    fn permission_checks(&self) -> &[Box<dyn Check>] {
-        &self.checks
-    }
-}
-
-#[async_trait::async_trait]
-impl Tool for Bash {
     
-    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
-        // 1. 解析参数
-        let params: BashParams = match serde_json::from_value(args.clone()) {
-            Ok(p) => p,
-            Err(e) => return Err(format!("bash: invalid arguments: {e}")),
-        };
-
-        if params.command.trim().is_empty() {
+    async fn do_execute(&self, ctx: &ToolContext, args: &BashParams) -> Result<ToolResult, String> {
+        if args.command.trim().is_empty() {
             return Err("bash: 'command' must not be empty".into());
         }
-
-        // 2. Shell 探测 + 命令包装
+        // 1. Shell 探测 + 命令包装
         let shell = self.get_shell();
-        let (prog, shell_args) = shell.build_command(&params.command);
+        let (prog, shell_args) = shell.build_command(&args.command);
 
-        // 3. 后台模式：通过 JobManager spawn
-        if params.run_in_background {
+        // 2. 后台模式：通过 JobManager spawn
+        if args.run_in_background {
             let job_id = self
                 .job_manager
                 .spawn(&prog, &shell_args, &self.work_dir)
@@ -128,13 +116,13 @@ impl Tool for Bash {
             )));
         }
 
-        // 4. 构建安全的环境变量
+        // 3. 构建安全的环境变量
         let env = self.build_env();
 
-        // 5. 前台模式：通过 ProcessRunner 同步执行（带沙箱 + 安全环境变量）
+        // 4. 前台模式：通过 ProcessRunner 同步执行（带沙箱 + 安全环境变量）
         let runner = ProcessRunner::new(self.work_dir.clone(), self.timeout)
             .with_env(env)
-            .with_cancel_token(_ctx.cancel_token.clone());
+            .with_cancel_token(ctx.cancel_token.clone());
 
         // 沙箱：启用时传递给 ProcessRunner
         let runner = if let Some(spec) = &self.sandbox {
@@ -145,8 +133,34 @@ impl Tool for Bash {
 
         let output = runner.run(&prog, &shell_args).await;
 
-        // 6. 构建返回结果
+        // 5. 构建返回结果
         Self::build_tool_result(output)
+    }
+}
+
+impl PermissionChecked for Bash {
+    fn permission_checks(&self) -> &[Box<dyn Check>] {
+        &self.checks
+    }
+}
+
+// #[async_trait::async_trait]
+// impl Tool for Bash {
+    
+//     async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
+//         // 1. 解析参数
+//         let params: BashParams = match serde_json::from_value(args.clone()) {
+//             Ok(p) => p,
+//             Err(e) => return Err(format!("bash: invalid arguments: {e}")),
+//         };
+//         self.generics_execute(_ctx, &params).await
+//     }
+// }
+
+#[async_trait::async_trait]
+impl GenericsTool for Bash {
+    async fn generics_execute(&self, _ctx: &ToolContext, args: &BashParams) -> Result<ToolResult, String> {
+        self.do_execute(_ctx, args).await
     }
 }
 

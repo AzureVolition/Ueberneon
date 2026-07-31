@@ -9,6 +9,8 @@
 use crate::agent::manager::AgentManager;
 use crate::agent::{Tool, ToolContext, ToolResult};
 use crate::permission::Decision;
+
+
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
@@ -71,6 +73,7 @@ impl Task {
 // ── ToolMeta 手动实现 ──
 
 impl llm::tool::ToolMeta for Task {
+
     fn name(&self) -> &str {
         "Task"
     }
@@ -95,12 +98,16 @@ impl llm::tool::ToolMeta for Task {
 // ── 编译时注册 InternalToolMeta ──
 
 #[cfg(not(test))]
+use std::sync::LazyLock;
+#[cfg(not(test))]
+static TOOL_SCHEMA_JSON_TASK: LazyLock<String> = LazyLock::new(|| "".to_string());
+#[cfg(not(test))]
 ::inventory::submit! {
     crate::tools::InternalToolMeta {
         name: "Task",
         description: "将任务委派给指定的子 Agent 执行，子 Agent 在独立对话中运行并返回结果",
         read_only: false,
-        schema: "",
+        schema: &TOOL_SCHEMA_JSON_TASK,
     }
 }
 

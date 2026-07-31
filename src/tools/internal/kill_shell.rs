@@ -6,7 +6,9 @@ use crate::agent::{Tool, ToolContext, ToolResult};
 #[cfg(test)]
 use crate::agent::{AgentHandler, ActionMode, ToolResultExt};
 use ueberneon_macros::ToolMetaImpl;
+use serde::Deserialize;
 use serde_json::Value;
+use schemars::JsonSchema;
 use std::sync::Arc;
 
 use crate::tools::jobs::JobManager;
@@ -17,9 +19,18 @@ use crate::permission::Decision;
 ///
 /// 发送 SIGTERM 后等待 200ms，然后发送 SIGKILL 确保终止。
 #[derive(ToolMetaImpl)]
-#[tool(schema = r#"{"type":"object","properties":{"job_id":{"type":"string","description":"Background job id to terminate (e.g. 'bg-1')"}},"required":["job_id"]}"#)]
+#[tool(argType = KillShellParams)]
 pub struct KillShell {
     job_manager: Arc<JobManager>,
+}
+
+/// kill_shell 工具的输入参数。
+#[derive(Debug, Deserialize, JsonSchema)]
+#[allow(dead_code)]
+pub struct KillShellParams {
+    /// 后台任务 ID。
+    #[schemars(description = "Background job id to terminate (e.g. 'bg-1')")]
+    job_id: String,
 }
 
 impl KillShell {

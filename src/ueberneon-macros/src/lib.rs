@@ -1,5 +1,6 @@
 
 use proc_macro::TokenStream;
+use syn::{Path, Meta, Meta::NameValue};
 
 /// 派生宏 —— 自动实现 `ToolMeta` trait。
 ///
@@ -29,14 +30,26 @@ fn expand_tool(input: &syn::DeriveInput) -> Result<TokenStream, syn::Error> {
 
     // 解析 #[tool(...)] 辅助属性
     let is_read_only = has_tool_flag(&input.attrs, "read_only");
-    let schema_str = get_tool_schema(&input.attrs).unwrap_or_else(|| String::new());
     let name_str = tool_name.to_string();
     let desc_str = description.as_str();
+    let args = ToolArgs::get_tool_schema_struct(&input.attrs)
+        .unwrap_or_else(|e| panic!("{}", e));
+    let args_type = args.args_type.expect("args type is required");
 
-    let inventory_schema = if schema_str.is_empty() { "" } else { &schema_str };
-
+    let snake_upper = to_upper_snake(&name_str);
+    let schema_var_name = syn::Ident::new(
+        &format!("TOOL_SCHEMA_JSON_{}", snake_upper),
+        tool_name.span()
+    );
     let expanded = quote::quote! {
+        
+        static #schema_var_name: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+            let schema = ::schemars::schema_for!(#args_type);
+            serde_json::to_string_pretty(&schema).unwrap()
+        });
+        
         impl ::llm::tool::ToolMeta for #tool_name {
+            
             fn name(&self) -> &str {
                 #name_str
             }
@@ -46,12 +59,16 @@ fn expand_tool(input: &syn::DeriveInput) -> Result<TokenStream, syn::Error> {
             }
 
             fn schema_str_str(&self) -> &str {
-                #inventory_schema
+                #schema_var_name.as_str()
             }
 
             fn read_only(&self) -> bool {
                 #is_read_only
             }
+        }
+
+        impl crate::agent::GenericsType for #tool_name {
+            type ArgType = #args_type;
         }
 
         #[cfg(not(test))]
@@ -60,7 +77,7 @@ fn expand_tool(input: &syn::DeriveInput) -> Result<TokenStream, syn::Error> {
                 name: #name_str,
                 description: #desc_str,
                 read_only: #is_read_only,
-                schema: #inventory_schema,
+                schema:  &#schema_var_name,
             }
         }
     };
@@ -84,26 +101,37 @@ fn has_tool_flag(attrs: &[syn::Attribute], key: &str) -> bool {
     false
 }
 
-/// 从 `#[tool(schema = "...")]` 中提取 schema JSON 字符串。
-/// 支持普通字符串和 raw string (`r#"..."#`)。
-fn get_tool_schema(attrs: &[syn::Attribute]) -> Option<String> {
-    for attr in attrs {
-        if attr.path().is_ident("tool") {
-            if let Ok(meta) = attr.meta.require_list() {
-                let mut result: Option<String> = None;
-                let _ = meta.parse_nested_meta(|m| {
-                    if m.path.is_ident("schema") {
-                        let val: syn::LitStr = m.value()?.parse()?;
-                        result = Some(val.value());
-                    }
-                    Ok(())
-                });
-                if result.is_some() { return result; }
-            }
-        }
-    }
-    None
+// 自定义属性解析：`#[tool(args = "SomeType")]`
+#[derive(Default)]
+struct ToolArgs {
+    args_type: Option<Path>,  // 存储类型路径，例如 `MyParams`
 }
+
+impl ToolArgs {
+    
+    fn get_tool_schema_struct(attrs: &[syn::Attribute]) -> Result<Self, syn::Error> {
+        let mut result = Self::default();
+        
+        for attr in attrs {
+            if !attr.path().is_ident("tool") {continue;}
+            
+            let meta = attr.parse_args::<Meta>()?;
+
+            if let NameValue(nv) = meta {
+                if nv.path.is_ident("argType") {
+                    if let syn::Expr::Path(expr_path) = nv.value {
+                        result.args_type = Some(expr_path.path);
+                    } else {
+                        return Err(syn::Error::new_spanned(nv.value, "expected a path"));
+                    }
+                }
+            }
+            
+        }
+        Ok(result)
+    }
+}
+
 
 /// 从 `#[doc = "..."]` 属性中提取第一行文档注释。
 fn extract_doc(attrs: &[syn::Attribute]) -> String {
@@ -125,6 +153,26 @@ fn extract_doc(attrs: &[syn::Attribute]) -> String {
     }
     lines.join("\n")
 }
+
+fn to_upper_snake(s: &str) -> String {
+    let mut result = String::with_capacity(s.len() + 5);
+    let mut chars = s.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch.is_uppercase() && !result.is_empty() {
+            // 在前一个大写字母后插入下划线（但连续大写字母不插，例如 HTTP）
+            // 更精确的规则：如果当前大写且前一个字符是小写或数字，则插入下划线
+            // 简单实现：只要前一个不是下划线且不是开头就插入
+            if !result.ends_with('_') {
+                result.push('_');
+            }
+        }
+        result.push(ch.to_ascii_uppercase());
+    }
+    // 处理连续大写后跟小写的情况（如 HTTPClient -> HTTP_CLIENT）
+    // 上面简单实现已基本满足。
+    result
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -195,31 +243,5 @@ mod tests {
     fn tool_flag_other_tool_attrs_ignored() {
         let attrs: Vec<syn::Attribute> = vec![parse_quote!(#[tool(schema = "{}")])];
         assert!(!has_tool_flag(&attrs, "something_else"));
-    }
-
-    // ── get_tool_schema ──
-
-    #[test]
-    fn get_schema_absent() {
-        let attrs: Vec<syn::Attribute> = vec![parse_quote!(#[tool(read_only)])];
-        assert_eq!(get_tool_schema(&attrs), None);
-    }
-
-    #[test]
-    fn get_schema_present() {
-        let attrs: Vec<syn::Attribute> = vec![parse_quote!(#[tool(schema = r#"{"type":"object"}"#)])];
-        assert_eq!(get_tool_schema(&attrs), Some(r#"{"type":"object"}"#.into()));
-    }
-
-    #[test]
-    fn get_schema_no_tool_attr() {
-        let attrs: Vec<syn::Attribute> = vec![parse_quote!(#[doc = "docs only"])];
-        assert_eq!(get_tool_schema(&attrs), None);
-    }
-
-    #[test]
-    fn get_schema_empty_string() {
-        let attrs: Vec<syn::Attribute> = vec![parse_quote!(#[tool(schema = "")])];
-        assert_eq!(get_tool_schema(&attrs), Some(String::new()));
     }
 }

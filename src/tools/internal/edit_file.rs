@@ -12,7 +12,9 @@ use llm::tool::ToolMeta;
 #[cfg(test)]
 use crate::agent::{AgentHandler, ToolResultExt};
 use ueberneon_macros::ToolMetaImpl;
+use serde::Deserialize;
 use serde_json::Value;
+use schemars::JsonSchema;
 use crate::permission::{Check, Decision, gate::PermissionChecked};
 use crate::tools::internal::common::checkable_tool::CheckableTool;
 
@@ -33,7 +35,7 @@ pub use crate::tools::diff::FileChange;
 /// `work_dir` 是工作目录的共享引用 —— 所有文件路径必须在此目录之下，
 /// 相对路径会相对于 work_dir 解析。
 #[derive(ToolMetaImpl)]
-#[tool(schema = r#"{"type":"object","properties":{"path":{"type":"string","description":"File path"},"old_string":{"type":"string","description":"Exact text to replace (must be unique in the file)"},"new_string":{"type":"string","description":"Replacement text (may be empty to delete)"}},"required":["path","old_string","new_string"]}"#)]
+#[tool(argType = EditFileParams)]
 pub struct EditFile {
     /// 工作目录（共享引用语义）。路径限制 + 相对路径解析的基础。
     work_dir: PathBuf,
@@ -43,6 +45,21 @@ pub struct EditFile {
     checks: Vec<Box<dyn Check>>,
     /// 文件内容追踪器（陈旧锚点 + 循环守卫）。
     tracker: Arc<FileObserveTracker>,
+}
+
+/// edit_file 工具的输入参数。
+#[derive(Debug, Deserialize, JsonSchema)]
+#[allow(dead_code)]
+pub struct EditFileParams {
+    /// 文件路径。
+    #[schemars(description = "File path")]
+    path: String,
+    /// 要替换的文本（必须在文件中唯一）。
+    #[schemars(description = "Exact text to replace (must be unique in the file)")]
+    old_string: String,
+    /// 替换后的文本（可为空以删除）。
+    #[schemars(description = "Replacement text (may be empty to delete)")]
+    new_string: String,
 }
 
 impl EditFile {

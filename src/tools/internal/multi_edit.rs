@@ -13,6 +13,7 @@ use crate::agent::{AgentHandler, ToolResultExt};
 use ueberneon_macros::ToolMetaImpl;
 use serde::Deserialize;
 use serde_json::Value;
+use schemars::JsonSchema;
 
 use super::common::edit;
 use super::common::encoding;
@@ -28,7 +29,7 @@ use crate::permission::{Check, Decision, gate::PermissionChecked};
 /// 编辑在内存中顺序应用；仅在所有编辑都成功时才写入磁盘。
 /// `work_dir` 是工作目录的共享引用 —— 所有文件路径必须在此目录之下。
 #[derive(ToolMetaImpl)]
-#[tool(schema = r#"{"type":"object","properties":{"path":{"type":"string","description":"File path"},"edits":{"type":"array","minItems":1,"items":{"type":"object","properties":{"old_string":{"type":"string","description":"Text to find"},"new_string":{"type":"string","description":"Replacement text"},"replace_all":{"type":"boolean","description":"Replace all occurrences instead of just the first"}},"required":["old_string","new_string"]},"description":"Ordered list of edits to apply"}},"required":["path","edits"]}"#)]
+#[tool(argType = MultiEditParams)]
 pub struct MultiEdit {
     /// 工作目录（共享引用语义）。
     work_dir: PathBuf,
@@ -41,23 +42,29 @@ pub struct MultiEdit {
 }
 
 /// 单次编辑操作。
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct EditOp {
     /// 要查找的旧文本。
+    #[schemars(description = "Text to find")]
     old_string: String,
     /// 替换的新文本（可为空以删除）。
+    #[schemars(description = "Replacement text")]
     new_string: String,
     /// 是否替换所有匹配（而非仅第一个）。
     #[serde(default)]
+    #[schemars(description = "Replace all occurrences instead of just the first")]
     replace_all: bool,
 }
 
 /// multi_edit 工具参数。
-#[derive(Debug, Deserialize)]
-struct MultiEditParams {
+#[derive(Debug, Deserialize, JsonSchema)]
+#[allow(dead_code)]
+pub struct MultiEditParams {
     /// 文件路径。
+    #[schemars(description = "File path")]
     path: String,
     /// 编辑操作列表（至少 1 项）。
+    #[schemars(length(min = 1), description = "Ordered list of edits to apply")]
     edits: Vec<EditOp>,
 }
 

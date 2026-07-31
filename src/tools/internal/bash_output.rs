@@ -7,7 +7,9 @@ use crate::agent::{Tool, ToolContext, ToolResult};
 #[cfg(test)]
 use crate::agent::{AgentHandler, ActionMode, ToolResultExt};
 use ueberneon_macros::ToolMetaImpl;
+use serde::Deserialize;
 use serde_json::Value;
+use schemars::JsonSchema;
 use std::sync::Arc;
 
 use crate::tools::jobs::JobManager;
@@ -19,9 +21,18 @@ use crate::permission::Decision;
 /// 返回自上次调用以来产生的新文本。当任务已结束时标记 finished。
 #[derive(ToolMetaImpl)]
 #[tool(read_only)]
-#[tool(schema = r#"{"type":"object","properties":{"job_id":{"type":"string","description":"Background job id returned by bash (e.g. 'bg-1')"}},"required":["job_id"]}"#)]
+#[tool(argType = BashOutputParams)]
 pub struct BashOutput {
     job_manager: Arc<JobManager>,
+}
+
+/// bash_output 工具的输入参数。
+#[derive(Debug, Deserialize, JsonSchema)]
+#[allow(dead_code)]
+pub struct BashOutputParams {
+    /// 后台任务 ID。
+    #[schemars(description = "Background job id returned by bash (e.g. 'bg-1')")]
+    job_id: String,
 }
 
 impl BashOutput {

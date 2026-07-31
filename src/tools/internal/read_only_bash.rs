@@ -12,7 +12,9 @@ use crate::agent::{Tool, AgentHandler, ToolContext, ToolResult};
 #[cfg(test)]
 use crate::agent::ToolResultExt;
 use ueberneon_macros::ToolMetaImpl;
+use serde::Deserialize;
 use serde_json::Value;
+use schemars::JsonSchema;
 
 use super::common::env::EnvBuilder;
 use super::common::process::{ProcessOutput, ProcessRunner};
@@ -29,7 +31,7 @@ use crate::permission::Decision;
 /// 不支持后台执行。不会修改文件系统。
 #[derive(ToolMetaImpl)]
 #[tool(read_only)]
-#[tool(schema = r#"{"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute (read-only commands only)"},"description":{"type":"string","description":"Optional description of what the command does"}},"required":["command"]}"#)]
+#[tool(argType = ReadOnlyBashParams)]
 pub struct ReadOnlyBash {
     /// 工作目录。
     work_dir: PathBuf,
@@ -39,6 +41,19 @@ pub struct ReadOnlyBash {
     sandbox: Option<SandboxSpec>,
     /// 缓存的 shell 探测结果。
     shell: std::sync::OnceLock<Shell>,
+}
+
+/// read_only_bash 工具的输入参数。
+#[derive(Debug, Deserialize, JsonSchema)]
+#[allow(dead_code)]
+pub struct ReadOnlyBashParams {
+    /// 要执行的命令。
+    #[schemars(description = "Shell command to execute (read-only commands only)")]
+    command: String,
+    /// 命令用途描述（可选）。
+    #[serde(default)]
+    #[schemars(description = "Optional description of what the command does")]
+    description: String,
 }
 
 impl ReadOnlyBash {

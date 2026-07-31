@@ -12,7 +12,9 @@ use crate::agent::{Tool, ToolContext, ToolResult};
 #[cfg(test)]
 use crate::agent::{AgentHandler, ActionMode, ToolResultExt};
 use ueberneon_macros::ToolMetaImpl;
+use serde::Deserialize;
 use serde_json::Value;
+use schemars::JsonSchema;
 
 use super::common::encoding;
 use crate::tools::internal::common::checkable_tool::CheckableTool;
@@ -33,9 +35,26 @@ const GREP_MAX_TIMEOUT_SECS: u64 = 300;
 /// 返回 path:line:text 格式的匹配行，最多 200 条。
 #[derive(ToolMetaImpl)]
 #[tool(read_only)]
-#[tool(schema = r#"{"type":"object","properties":{"pattern":{"type":"string","description":"Regular expression (RE2 syntax)"},"path":{"type":"string","description":"File or directory to search (default ".")"},"timeout_seconds":{"type":"integer","description":"Abort after this many seconds (default 30, max 300)","minimum":1}},"required":["pattern"]}"#)]
+#[tool(argType = GrepParams)]
 pub struct Grep {
     work_dir: PathBuf,
+}
+
+/// grep 工具的输入参数。
+#[derive(Debug, Deserialize, JsonSchema)]
+#[allow(dead_code)]
+pub struct GrepParams {
+    /// 正则表达式。
+    #[schemars(description = "Regular expression (RE2 syntax)")]
+    pattern: String,
+    /// 要搜索的文件或目录路径。
+    #[serde(default)]
+    #[schemars(description = "File or directory to search (default \".\")")]
+    path: String,
+    /// 超时时间（秒）。
+    #[serde(default)]
+    #[schemars(range(min = 1), description = "Abort after this many seconds (default 30, max 300)")]
+    timeout_seconds: Option<u64>,
 }
 
 impl Grep {

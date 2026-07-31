@@ -14,6 +14,32 @@ pub trait Tool: ToolMeta {
     async fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> Result<ToolResult, String>;
 }
 
+#[async_trait::async_trait]
+pub trait GenericsType: ToolMeta + Send + Sync 
+{
+    type ArgType: serde::de::DeserializeOwned + Send + Sync;
+}
+
+#[async_trait::async_trait]
+pub trait GenericsTool: GenericsType
+{
+    async fn generics_execute(&self, ctx: &ToolContext, args: &Self::ArgType) -> Result<ToolResult, String>;
+}
+
+#[async_trait::async_trait]
+impl <G> Tool for G
+    where  G: GenericsTool + Send + Sync ,
+{
+    async fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> Result<ToolResult, String> {
+        let params: G::ArgType = match serde_json::from_value(args.clone()) {
+            Ok(p) => p,
+            Err(e) => return Err(format!("bash: invalid arguments: {e}")),
+        };
+        self.generics_execute(ctx, &params).await
+    }
+}
+
+
 // ── ToolResult ───────────────────────────────────────────────────────────────
 
 /// 工具执行成功结果。

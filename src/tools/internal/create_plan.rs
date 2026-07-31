@@ -6,7 +6,10 @@
 use crate::agent::{ToolContext, Tool, ToolResult};
 use crate::model::{Plan, PlanNode, PlanStatus, StepStatus};
 use ueberneon_macros::ToolMetaImpl;
+use serde::Deserialize;
 use serde_json::Value;
+use schemars::JsonSchema;
+
 
 use super::common::checkable_tool::CheckableTool;
 use crate::permission::Decision;
@@ -49,71 +52,61 @@ use crate::permission::Decision;
 /// ```
 #[derive(ToolMetaImpl)]
 #[tool(read_only)]
-#[tool(schema = r##"{
-    "type": "object",
-    "required": ["plan"],
-    "properties": {
-        "plan": {
-            "type": "object",
-            "description": "要创建的计划，使用嵌套 children[] 表示层级。参考顶部 doc 示例",
-            "required": ["goal", "children"],
-            "additionalProperties": false,
-            "properties": {
-                "goal": {
-                    "type": "string",
-                    "description": "计划目标，概括本次工作的核心目的"
-                },
-                "description": {
-                    "type": "string",
-                    "description": "计划的详细描述（可选）"
-                },
-                "children": {
-                    "type": "array",
-                    "description": "顶层节点列表。有阶段分组时为阶段列表，纯任务时为任务列表。同级 idx 从 1 开始连续",
-                    "items": {
-                        "type": "object",
-                        "required": ["idx", "description"],
-                        "additionalProperties": false,
-                        "properties": {
-                            "idx": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 255,
-                                "description": "同级唯一序号（从 1 开始连续）"
-                            },
-                            "description": {
-                                "type": "string",
-                                "description": "阶段或任务的描述"
-                            },
-                            "children": {
-                                "type": "array",
-                                "description": "子任务列表。有阶段分组时使用，纯任务模式不传。同级 idx 从 1 开始连续",
-                                "items": {
-                                    "type": "object",
-                                    "required": ["idx", "description"],
-                                    "additionalProperties": false,
-                                    "properties": {
-                                        "idx": {
-                                            "type": "integer",
-                                            "minimum": 1,
-                                            "maximum": 255,
-                                            "description": "同父下唯一序号（从 1 开始连续）"
-                                        },
-                                        "description": {
-                                            "type": "string",
-                                            "description": "任务描述"
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    }"##)]
+#[tool(argType = CreatePlanParams)]
 pub struct CreatePlan;
+
+/// 叶子任务节点（无 children）。
+#[derive(Debug, Deserialize, JsonSchema)]
+#[allow(dead_code)]
+pub struct PlanTaskDef {
+    /// 同父下唯一序号（从 1 开始连续）。
+    #[schemars(range(min = 1, max = 255), description = "同父下唯一序号（从 1 开始连续）")]
+    idx: u8,
+    /// 任务描述。
+    #[schemars(description = "任务描述")]
+    description: String,
+}
+
+/// 计划节点（可递归包含子节点）。
+#[derive(Debug, Deserialize, JsonSchema)]
+#[allow(dead_code)]
+pub struct PlanNodeDef {
+    /// 同级唯一序号（从 1 开始连续）。
+    #[schemars(range(min = 1, max = 255), description = "同级唯一序号（从 1 开始连续）")]
+    idx: u8,
+    /// 阶段或任务的描述。
+    #[schemars(description = "阶段或任务的描述")]
+    description: String,
+    /// 子任务列表。
+    #[serde(default)]
+    #[schemars(description = "子任务列表。有阶段分组时使用，纯任务模式不传。同级 idx 从 1 开始连续")]
+    children: Option<Vec<PlanTaskDef>>,
+}
+
+/// 计划定义。
+#[derive(Debug, Deserialize, JsonSchema)]
+#[allow(dead_code)]
+pub struct PlanDef {
+    /// 计划目标。
+    #[schemars(description = "计划目标，概括本次工作的核心目的")]
+    goal: String,
+    /// 详细描述（可选）。
+    #[serde(default)]
+    #[schemars(description = "计划的详细描述（可选）")]
+    description: Option<String>,
+    /// 顶层节点列表。
+    #[schemars(description = "顶层节点列表。有阶段分组时为阶段列表，纯任务时为任务列表。同级 idx 从 1 开始连续")]
+    children: Vec<PlanNodeDef>,
+}
+
+/// create_plan 工具的输入参数。
+#[derive(Debug, Deserialize, JsonSchema)]
+#[allow(dead_code)]
+pub struct CreatePlanParams {
+    /// 要创建的计划。
+    #[schemars(description = "要创建的计划，使用嵌套 children[] 表示层级。参考顶部 doc 示例")]
+    plan: PlanDef,
+}
 
 fn parse_plan(value: &Value) -> Result<Plan, String> {
     let val = match value {

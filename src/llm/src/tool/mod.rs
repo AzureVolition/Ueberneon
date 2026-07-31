@@ -3,6 +3,7 @@
 
 /// 模型可调用的工具 
 pub trait ToolMeta: Send + Sync {
+    
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     /// JSON Schema，定义工具参数

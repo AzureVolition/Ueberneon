@@ -6,7 +6,9 @@
 use crate::agent::{ToolContext, Tool, ToolResult};
 use crate::model::{QueueItemStatus, StepStatus};
 use ueberneon_macros::ToolMetaImpl;
+use serde::Deserialize;
 use serde_json::Value;
+use schemars::JsonSchema;
 
 use super::common::checkable_tool::CheckableTool;
 use crate::permission::Decision;
@@ -14,25 +16,21 @@ use crate::db::metadata::task::TaskStatus as DbTaskStatus;
 
 /// 标记计划中的一个任务为已完成。
 #[derive(ToolMetaImpl)]
-#[tool(schema = r#"{
-    "type": "object",
-    "required": ["idx"],
-    "properties": {
-        "parent_idx": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 255,
-            "description": "阶段 idx。有阶段分组时传入，纯任务模式不传"
-        },
-        "idx": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 255,
-            "description": "任务序号（同级从 1 开始）"
-        }
-    }
-}"#)]
+#[tool(argType = CompleteStepParams)]
 pub struct CompleteStep;
+
+/// complete_step 工具的输入参数。
+#[derive(Debug, Deserialize, JsonSchema)]
+#[allow(dead_code)]
+pub struct CompleteStepParams {
+    /// 阶段 idx。
+    #[serde(default)]
+    #[schemars(range(min = 0, max = 255), description = "阶段 idx。有阶段分组时传入，纯任务模式不传")]
+    parent_idx: Option<u8>,
+    /// 任务序号。
+    #[schemars(range(min = 1, max = 255), description = "任务序号（同级从 1 开始）")]
+    idx: u8,
+}
 
 /// 更新 DB 中一批实体的状态为 Completed
 fn update_batch_in_db(conn: &rusqlite::Connection, batch: &[crate::model::Entity]) -> Result<usize, String> {

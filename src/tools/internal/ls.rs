@@ -9,7 +9,9 @@ use crate::agent::{Tool, ToolContext, ToolResult};
 #[cfg(test)]
 use crate::agent::{AgentHandler, ActionMode, ToolResultExt};
 use ueberneon_macros::ToolMetaImpl;
+use serde::Deserialize;
 use serde_json::Value;
+use schemars::JsonSchema;
 use crate::tools::internal::common::checkable_tool::CheckableTool;
 use crate::permission::Decision;
 
@@ -19,20 +21,23 @@ use crate::permission::Decision;
 /// 递归模式跳过 .git、node_modules 等噪声目录。
 #[derive(ToolMetaImpl)]
 #[tool(read_only)]
-#[tool(schema = r#"{"type":"object",
-                    "properties":{"
-                                path":{"
-                                    "type":"string",
-                                    "description":"Directory path (default ".")"
-                                },
-                                "recursive":{"
-                                    "type":"boolean",
-                                    "description":"When true, recursively list all nested files (default false)"
-                                }
-                            }}
-                    "#)]
+#[tool(argType = LsParams)]
 pub struct Ls {
     work_dir: PathBuf,
+}
+
+/// ls 工具的输入参数。
+#[derive(Debug, Deserialize, JsonSchema)]
+#[allow(dead_code)]
+pub struct LsParams {
+    /// 目录路径。
+    #[serde(default)]
+    #[schemars(description = "Directory path (default '.')")]
+    path: String,
+    /// 是否递归列出。
+    #[serde(default)]
+    #[schemars(description = "When true, recursively list all nested files (default false)")]
+    recursive: bool,
 }
 
 /// 递归遍历时要跳过的噪声目录名。

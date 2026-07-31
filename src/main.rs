@@ -38,7 +38,7 @@ fn _print_tools_inventory() {
     for meta in inventory::iter::<ueberneon::tools::InternalToolMeta> {
         let _ = writeln!(stderr, "  {:15} | ro={:5} | {:10} | {}",
             meta.name, meta.read_only,
-            meta.schema,
+            meta.schema.as_str(),
             meta.description,
         );
     }

@@ -7,7 +7,9 @@ use std::path::PathBuf;
 #[cfg(test)]
 use crate::agent::{AgentHandler, ActionMode, ToolResultExt};
 use ueberneon_macros::ToolMetaImpl;
+use serde::Deserialize;
 use serde_json::Value;
+use schemars::JsonSchema;
 use crate::tools::internal::common::checkable_tool::CheckableTool;
 use crate::permission::Decision;
 
@@ -17,9 +19,18 @@ use crate::permission::Decision;
 /// 结果按路径字符串排序。
 #[derive(ToolMetaImpl)]
 #[tool(read_only)]
-#[tool(schema = r#"{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern (supports ** for recursive matching)"}},"required":["pattern"]}"#)]
+#[tool(argType = GlobParams)]
 pub struct Glob {
     work_dir: PathBuf,
+}
+
+/// glob 工具的输入参数。
+#[derive(Debug, Deserialize, JsonSchema)]
+#[allow(dead_code)]
+pub struct GlobParams {
+    /// glob 匹配模式。
+    #[schemars(description = "Glob pattern (supports ** for recursive matching)")]
+    pattern: String,
 }
 
 /// 最大返回结果数。

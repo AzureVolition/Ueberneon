@@ -12,7 +12,9 @@ use crate::agent::{AgentHandler, ActionMode, ToolResultExt};
 use ueberneon_macros::ToolMetaImpl;
 use regex::Regex;
 use std::sync::LazyLock;
+use serde::Deserialize;
 use serde_json::Value;
+use schemars::JsonSchema;
 use crate::tools::internal::common::checkable_tool::CheckableTool;
 // ── Lazy-compiled regexes (compiled once, reused across calls) ──────────
 
@@ -72,9 +74,34 @@ use crate::permission::Decision;
 /// 支持 .rs/.py/.js/.ts/.go/.java/.c/.cpp/.h/.cs/.kt 文件。
 #[derive(ToolMetaImpl)]
 #[tool(read_only)]
-#[tool(schema = r#"{"type":"object","properties":{"action":{"type":"string","description":"Action: 'outline' (list symbols under path) or 'search' (search by name)","enum":["outline","search"]},"path":{"type":"string","description":"File or directory path (default ".")"},"query":{"type":"string","description":"Symbol name or substring to search for (required for action=search)"},"kind":{"type":"string","description":"Filter by symbol kind: func/fn, method, class, type, interface, const, var, struct, enum, trait, mod, impl"},"limit":{"type":"integer","description":"Maximum symbols to return (default 100, max 200)","minimum":1}},"required":["action"]}"#)]
+#[tool(argType = CodeIndexParams)]
 pub struct CodeIndex {
     work_dir: PathBuf,
+}
+
+/// code_index 工具的输入参数。
+#[derive(Debug, Deserialize, JsonSchema)]
+#[allow(dead_code)]
+pub struct CodeIndexParams {
+    /// 操作类型。
+    #[schemars(description = "Action: 'outline' (list symbols under path) or 'search' (search by name)")]
+    action: String,
+    /// 文件或目录路径。
+    #[serde(default)]
+    #[schemars(description = "File or directory path (default \".\")")]
+    path: String,
+    /// 要搜索的符号名称或子串。
+    #[serde(default)]
+    #[schemars(description = "Symbol name or substring to search for (required for action=search)")]
+    query: Option<String>,
+    /// 按符号类型过滤。
+    #[serde(default)]
+    #[schemars(description = "Filter by symbol kind: func/fn, method, class, type, interface, const, var, struct, enum, trait, mod, impl")]
+    kind: Option<String>,
+    /// 最大返回符号数。
+    #[serde(default)]
+    #[schemars(range(min = 1), description = "Maximum symbols to return (default 100, max 200)")]
+    limit: Option<u64>,
 }
 
 /// 一个符号定义。
