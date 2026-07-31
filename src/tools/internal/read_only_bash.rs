@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::agent::{AgentHandler, ToolContext, ToolResult};
+use crate::agent::{ToolContext, ToolResult};
 #[cfg(test)]
 use crate::agent::ToolResultExt;
 use ueberneon_macros::ToolMetaImpl;
@@ -205,10 +205,10 @@ impl CheckableTool for ReadOnlyBash {
 
 }
 
-
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::{ActionMode, Tool};
+    use crate::agent::{ActionMode, Tool, AgentHandler};
     
     
 
