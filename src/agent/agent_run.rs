@@ -6,13 +6,13 @@
 // Run 结束即销毁 —— 跨轮状态泄漏在结构上不可能发生。
 
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::AtomicU64;
 
 use tokio::sync::mpsc;
 
 use crate::model::{StreamingState, UiMessage};
 use llm::ToolCall;
 
+use super::approval::{ApprovalChain, ApprovalGate, UserApprovalGate};
 use super::hook::AgentEvent;
 use super::Agent;
 
@@ -27,6 +27,14 @@ pub struct AgentRun {
     pub last_usage: Option<crate::model::TokenUsageRecord>,
     /// 循环数
     pub round: u32,
+    /// 审批策略链（Ask 之后怎么决策，可替换）
+    pub approval_gate: Box<dyn ApprovalGate>,
+    /// 是否被取消（accept_message 全程有效，拆方法后需要跨方法共享）
+    pub cancelled: bool,
+    /// 最终输出兜底（收尾构建 Static 用）
+    pub final_output: String,
+    /// 最终推理内容（收尾构建 Static 用）
+    pub final_reasoning: String,
     /// 事件通道（执行节点 emit，UI/调用方订阅）
     events: mpsc::Sender<AgentEvent>,
 }
@@ -42,6 +50,10 @@ impl AgentRun {
             pending_tool_calls: Vec::new(),
             last_usage: None,
             round: 0,
+            approval_gate: Box::new(ApprovalChain::new(vec![Box::new(UserApprovalGate)])),
+            cancelled: false,
+            final_output: String::new(),
+            final_reasoning: String::new(),
             events: tx,
         };
         (run, rx)
@@ -63,7 +75,6 @@ impl AgentRun {
         if self.streaming_handle.is_none() {
             let state = StreamingState {
                 segments: Arc::new(Mutex::new(Vec::new())),
-                version: Arc::new(AtomicU64::new(0)),
                 approval_tx: Arc::new(Mutex::new(None)),
             };
             self.streaming_handle = Some(state);
@@ -71,7 +82,6 @@ impl AgentRun {
 
         let streaming = UiMessage::Streaming {
             segments: self.streaming_handle.as_ref().unwrap().segments.clone(),
-            version: self.streaming_handle.as_ref().unwrap().version.clone(),
             approval_tx: self.streaming_handle.as_ref().unwrap().approval_tx.clone(),
         };
 

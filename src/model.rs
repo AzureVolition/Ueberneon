@@ -7,7 +7,6 @@ use chrono::{DateTime, Local, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::AtomicU64;
 
 /// 消息角色
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -370,7 +369,6 @@ pub enum Difficulty {
 #[derive(Clone)]
 pub struct StreamingState {
     pub segments: Arc<Mutex<Vec<StreamSegment>>>,
-    pub version: Arc<AtomicU64>,
     pub approval_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<bool>>>>,
 }
 
@@ -379,11 +377,10 @@ pub struct StreamingState {
 pub enum UiMessage {
     /// 已完成的静态消息
     Static(ChatMessage),
-    /// 流式进行中的消息：segments 和 tool_calls 由 Agent 异步填充，
-    /// version 用于触发 Dioxus 重渲染（每次 push 后递增）。
+    /// 流式进行中的消息：segments 由 Agent 异步填充，
+    /// UI 通过事件流（而非轮询 version）感知刷新。
     Streaming {
         segments: Arc<Mutex<Vec<StreamSegment>>>,
-        version: Arc<AtomicU64>,
         approval_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<bool>>>>,
     },
 }

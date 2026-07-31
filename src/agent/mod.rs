@@ -4,9 +4,11 @@ pub mod action_plan;
 pub mod manager;
 pub mod prompts;
 pub mod agent_run;
+pub mod approval;
 
 use anyhow::Context;
 pub use agent_run::AgentRun;
+pub use approval::{ApprovalChain, ApprovalCtx, ApprovalGate, UserApprovalGate};
 pub use llm::{tool::ToolMeta, ToolCall};
 
 // ── Tool trait ──────────────────────────────────────────────────────────────
