@@ -3,12 +3,11 @@
 // 通过 JobManager 读取后台任务的 stdout+stderr 增量。
 // 每次调用返回自上次读取以来的新内容。
 
-use crate::agent::{Tool, ToolContext, ToolResult};
+use crate::agent::{ToolContext, ToolResult, GenericsTool};
 #[cfg(test)]
 use crate::agent::{AgentHandler, ActionMode, ToolResultExt};
 use ueberneon_macros::ToolMetaImpl;
 use serde::Deserialize;
-use serde_json::Value;
 use schemars::JsonSchema;
 use std::sync::Arc;
 
@@ -41,21 +40,14 @@ impl BashOutput {
             job_manager,
         }
     }
-}
 
-#[async_trait::async_trait]
-impl Tool for BashOutput {
-    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
-        let job_id = match args.get("job_id").and_then(|v| v.as_str()) {
-            Some(id) => id,
-            None => return Err("bash_output: missing required argument 'job_id'".into()),
-        };
-
-        let handle = match self.job_manager.get(job_id) {
+    async fn do_execute(&self, _ctx: &ToolContext, args: &BashOutputParams) -> Result<ToolResult, String> {
+        let handle = match self.job_manager.get(&args.job_id) {
             Some(h) => h,
             None => {
                 return Err(format!(
-                    "bash_output: job '{job_id}' not found (it may have been reaped or never existed)"
+                    "bash_output: job '{}' not found (it may have been reaped or never existed)",
+                    args.job_id
                 ));
             }
         };
@@ -66,23 +58,26 @@ impl Tool for BashOutput {
         if output.is_empty() && finished {
             let exit_code = handle.exit_code.load(std::sync::atomic::Ordering::SeqCst);
             if exit_code == 0 {
-                Ok(ToolResult::ok(format!("job {job_id} finished successfully (exit 0)")))
+                Ok(ToolResult::ok(format!("job {} finished successfully (exit 0)", args.job_id)))
             } else {
                 Ok(ToolResult::ok(format!(
-                    "job {job_id} finished with exit code {exit_code}"
+                    "job {} finished with exit code {exit_code}", args.job_id
                 )))
             }
         } else if output.is_empty() {
-            Ok(ToolResult::ok(format!("job {job_id} is still running (no new output)")))
+            Ok(ToolResult::ok(format!("job {} is still running (no new output)", args.job_id)))
         } else if finished {
-            Ok(ToolResult::ok(format!(
-                "{output}",
-            )))
+            Ok(ToolResult::ok(format!("{output}")))
         } else {
-            Ok(ToolResult::ok(format!(
-                "{output}\n[job {job_id} still running]"
-            )))
+            Ok(ToolResult::ok(format!("{output}\n[job {} still running]", args.job_id)))
         }
+    }
+}
+
+#[async_trait::async_trait]
+impl GenericsTool for BashOutput {
+    async fn generics_execute(&self, ctx: &ToolContext, args: &BashOutputParams) -> Result<ToolResult, String> {
+        self.do_execute(ctx, args).await
     }
 }
 
@@ -97,6 +92,7 @@ impl CheckableTool for BashOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::Tool;
     use std::time::Duration;
 
     #[tokio::test]

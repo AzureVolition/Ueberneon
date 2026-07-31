@@ -5,12 +5,11 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::agent::{Tool, ToolContext, ToolResult};
+use crate::agent::{GenericsTool, ToolContext, ToolResult};
 #[cfg(test)]
-use crate::agent::{AgentHandler, ActionMode, ToolResultExt};
+use crate::agent::{AgentHandler, ActionMode, ToolResultExt, Tool};
 use ueberneon_macros::ToolMetaImpl;
 use serde::Deserialize;
-use serde_json::Value;
 use schemars::JsonSchema;
 use crate::tools::internal::common::checkable_tool::CheckableTool;
 use crate::permission::Decision;
@@ -62,23 +61,12 @@ impl Ls {
             work_dir,
         }
     }
-}
 
-#[async_trait::async_trait]
-impl Tool for Ls {
-    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
-        let path_str = args
-            .get("path")
-            .and_then(|v| v.as_str())
-            .filter(|p| !p.is_empty())
-            .unwrap_or(".");
-
-        let recursive = args
-            .get("recursive")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-
+    async fn do_execute(&self, _ctx: &ToolContext, args: &LsParams) -> Result<ToolResult, String> {
         // 相对路径基于项目目录解析
+        let path_str: &str = if args.path.is_empty() { "." } else { &args.path };
+        let recursive = args.recursive;
+
         let path = if path_str == "." || !path_str.starts_with('/') {
             self.work_dir.join(path_str)
         } else {
@@ -103,6 +91,13 @@ impl Tool for Ls {
         } else {
             list_flat(&path, path_str)
         }
+    }
+}
+
+#[async_trait::async_trait]
+impl GenericsTool for Ls {
+    async fn generics_execute(&self, ctx: &ToolContext, args: &LsParams) -> Result<ToolResult, String> {
+        self.do_execute(ctx, args).await
     }
 }
 

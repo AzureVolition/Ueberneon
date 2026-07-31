@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::agent::{ActionMode, Tool, ToolContext, ToolResult};
+use crate::agent::{ActionMode, GenericsTool, ToolContext, ToolResult};
 use llm::tool::ToolMeta;
 #[cfg(test)]
 use crate::agent::{AgentHandler, ToolResultExt};
@@ -110,49 +110,13 @@ impl WriteFile {
 
         Ok(abs)
     }
-}
 
-/// 规范化路径中的 `..` 和 `.` 组件（不要求文件存在）。
-fn normalize_path(path: &std::path::Path) -> PathBuf {
-    use std::path::Component;
-    let mut components = Vec::new();
-    for component in path.components() {
-        match component {
-            Component::ParentDir => {
-                if !components.is_empty() {
-                    components.pop();
-                }
-            }
-            Component::CurDir => {}
-            other => components.push(other),
-        }
-    }
-    let mut result = PathBuf::new();
-    for component in components {
-        result.push(component);
-    }
-    result
-}
-
-impl PermissionChecked for WriteFile {
-    fn permission_checks(&self) -> &[Box<dyn Check>] {
-        &self.checks
-    }
-}
-
-#[async_trait::async_trait]
-impl Tool for WriteFile {
-    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
+    /// 工具执行体：参数已由 `GenericsTool` 反序列化为强类型 `WriteFileParams`。
+    async fn do_execute(&self, _ctx: &ToolContext, args: &WriteFileParams) -> Result<ToolResult, String> {
         // 1. 解析参数
-        let path_str = match args.get("path").and_then(|v| v.as_str()) {
-            Some(p) => p,
-            None => return Err("write_file: missing required argument 'path'".into()),
-        };
-        let content = match args.get("content").and_then(|v| v.as_str()) {
-            Some(c) => c,
-            None => return Err("write_file: missing required argument 'content'".into()),
-        };
-        let overwrite = args.get("overwrite").and_then(|v| v.as_bool()).unwrap_or(false);
+        let path_str = &args.path;
+        let content = &args.content;
+        let overwrite = args.overwrite;
 
         // 2. 解析路径并检查范围
         let path = match self.resolve_path(path_str) {
@@ -216,6 +180,41 @@ impl Tool for WriteFile {
     }
 }
 
+/// 规范化路径中的 `..` 和 `.` 组件（不要求文件存在）。
+fn normalize_path(path: &std::path::Path) -> PathBuf {
+    use std::path::Component;
+    let mut components = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                if !components.is_empty() {
+                    components.pop();
+                }
+            }
+            Component::CurDir => {}
+            other => components.push(other),
+        }
+    }
+    let mut result = PathBuf::new();
+    for component in components {
+        result.push(component);
+    }
+    result
+}
+
+impl PermissionChecked for WriteFile {
+    fn permission_checks(&self) -> &[Box<dyn Check>] {
+        &self.checks
+    }
+}
+
+#[async_trait::async_trait]
+impl GenericsTool for WriteFile {
+    async fn generics_execute(&self, _ctx: &ToolContext, args: &WriteFileParams) -> Result<ToolResult, String> {
+        self.do_execute(_ctx, args).await
+    }
+}
+
 #[async_trait::async_trait]
 impl CheckableTool for WriteFile {
     fn check(&self, ctx: &ToolContext, args: &Value) -> Decision {
@@ -234,6 +233,7 @@ impl CheckableTool for WriteFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::Tool;
     
 
     static TEST_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

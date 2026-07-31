@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::agent::{ActionMode, Tool, ToolContext, ToolResult};
+use crate::agent::{ActionMode, ToolContext, ToolResult};
 use llm::tool::ToolMeta;
 #[cfg(test)]
 use crate::agent::{AgentHandler, ToolResultExt};
@@ -98,35 +98,13 @@ impl EditFile {
 
         Ok(abs)
     }
-}
 
-impl PermissionChecked for EditFile {
-    fn permission_checks(&self) -> &[Box<dyn Check>] {
-        &self.checks
-    }
-}
-
-#[async_trait::async_trait]
-impl Tool for EditFile {
-    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
-
+    /// 工具执行体：参数已由 `GenericsTool` 反序列化为强类型 `EditFileParams`。
+    async fn do_execute(&self, _ctx: &ToolContext, args: &EditFileParams) -> Result<ToolResult, String> {
         // 1. 解析参数
-        let path_str = match args.get("path").and_then(|v| v.as_str()) {
-            Some(p) => p,
-            None => return Err("edit_file: missing required argument 'path'".into()),
-        };
-        let old_string = match args.get("old_string").and_then(|v| v.as_str()) {
-            Some(s) => s,
-            None => return Err("edit_file: missing required argument 'old_string'".into()),
-        };
-        let new_string = match args.get("new_string").and_then(|v| v.as_str()) {
-            Some(s) => s,
-            None => return Err("edit_file: missing required argument 'new_string'".into()),
-        };
-
-        if old_string.is_empty() {
-            return Err("edit_file: 'old_string' must not be empty".into());
-        }
+        let path_str = &args.path;
+        let old_string = &args.old_string;
+        let new_string = &args.new_string;
 
         // 2. 解析路径并检查范围
         let path = match self.resolve_path(path_str) {
@@ -190,6 +168,19 @@ impl Tool for EditFile {
     }
 }
 
+impl PermissionChecked for EditFile {
+    fn permission_checks(&self) -> &[Box<dyn Check>] {
+        &self.checks
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::agent::GenericsTool for EditFile {
+    async fn generics_execute(&self, ctx: &ToolContext, args: &EditFileParams) -> Result<ToolResult, String> {
+        self.do_execute(ctx, args).await
+    }
+}
+
 #[async_trait::async_trait]
 impl CheckableTool for EditFile {
     fn check(&self, ctx: &ToolContext, args: &Value) -> Decision {
@@ -208,6 +199,7 @@ impl CheckableTool for EditFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::Tool;
     use std::io::Write;
     
 

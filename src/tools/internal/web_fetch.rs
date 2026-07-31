@@ -3,12 +3,11 @@
 // 支持 HTTP/HTTPS，自动将 HTML 转为纯文本。
 // 内置 SSRF 防护：拒绝私有 IP、回环地址和链路本地地址。
 
-use crate::agent::{Tool, ToolContext, ToolResult};
+use crate::agent::{GenericsTool, ToolContext, ToolResult};
 #[cfg(test)]
-use crate::agent::{AgentHandler, ActionMode, ToolResultExt};
+use crate::agent::{AgentHandler, ActionMode, Tool, ToolResultExt};
 use ueberneon_macros::ToolMetaImpl;
 use serde::Deserialize;
-use serde_json::Value;
 use schemars::JsonSchema;
 use crate::tools::internal::common::checkable_tool::CheckableTool;
 use crate::permission::Decision;
@@ -259,15 +258,12 @@ impl WebFetch {
         let s = std::str::from_utf8(&lower).unwrap_or("");
         s.contains("<!doctype html") || s.contains("<html") || s.contains("<head")
     }
-}
 
-#[async_trait::async_trait]
-impl Tool for WebFetch {
-    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
-        let url_str = match args.get("url").and_then(|v| v.as_str()) {
-            Some(u) if !u.is_empty() => u.trim(),
-            _ => return Err("web_fetch: missing required argument 'url'".into()),
-        };
+    async fn do_execute(&self, _ctx: &ToolContext, args: &WebFetchParams) -> Result<ToolResult, String> {
+        let url_str = args.url.trim();
+        if url_str.is_empty() {
+            return Err("web_fetch: missing required argument 'url'".into());
+        }
 
         // URL 格式校验
         let url = match url::Url::parse(url_str) {
@@ -394,6 +390,12 @@ impl Tool for WebFetch {
     }
 }
 
+#[async_trait::async_trait]
+impl GenericsTool for WebFetch {
+    async fn generics_execute(&self, ctx: &ToolContext, args: &WebFetchParams) -> Result<ToolResult, String> {
+        self.do_execute(ctx, args).await
+    }
+}
 
 #[async_trait::async_trait]
 impl CheckableTool for WebFetch {

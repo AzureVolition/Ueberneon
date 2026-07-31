@@ -2,12 +2,11 @@
 //
 // 通过 JobManager 终止后台任务，先 SIGTERM 后 SIGKILL。
 
-use crate::agent::{Tool, ToolContext, ToolResult};
+use crate::agent::{GenericsTool, ToolContext, ToolResult};
 #[cfg(test)]
-use crate::agent::{AgentHandler, ActionMode, ToolResultExt};
+use crate::agent::{ActionMode, AgentHandler, Tool, ToolResultExt};
 use ueberneon_macros::ToolMetaImpl;
 use serde::Deserialize;
-use serde_json::Value;
 use schemars::JsonSchema;
 use std::sync::Arc;
 
@@ -39,15 +38,9 @@ impl KillShell {
             job_manager,
         }
     }
-}
 
-#[async_trait::async_trait]
-impl Tool for KillShell {
-    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
-        let job_id = match args.get("job_id").and_then(|v| v.as_str()) {
-            Some(id) => id,
-            None => return Err("kill_shell: missing required argument 'job_id'".into()),
-        };
+    async fn do_execute(&self, _ctx: &ToolContext, args: &KillShellParams) -> Result<ToolResult, String> {
+        let job_id = &args.job_id;
 
         let handle = match self.job_manager.get(job_id) {
             Some(h) => h,
@@ -68,6 +61,13 @@ impl Tool for KillShell {
         } else {
             Ok(ToolResult::ok(format!("job {job_id} terminated\n\nRemaining output:\n{remaining}")))
         }
+    }
+}
+
+#[async_trait::async_trait]
+impl GenericsTool for KillShell {
+    async fn generics_execute(&self, ctx: &ToolContext, args: &KillShellParams) -> Result<ToolResult, String> {
+        self.do_execute(ctx, args).await
     }
 }
 

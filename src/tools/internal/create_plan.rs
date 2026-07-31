@@ -3,11 +3,10 @@
 // 使用嵌套 children[] 表示层级。
 // 校验规则：同级 idx 从 1 开始连续，最多 2 层。
 
-use crate::agent::{ToolContext, Tool, ToolResult};
+use crate::agent::{GenericsTool, ToolContext, ToolResult};
 use crate::model::{Plan, PlanNode, PlanStatus, StepStatus};
 use ueberneon_macros::ToolMetaImpl;
 use serde::Deserialize;
-use serde_json::Value;
 use schemars::JsonSchema;
 
 
@@ -56,7 +55,7 @@ use crate::permission::Decision;
 pub struct CreatePlan;
 
 /// 叶子任务节点（无 children）。
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[allow(dead_code)]
 pub struct PlanTaskDef {
     /// 同父下唯一序号（从 1 开始连续）。
@@ -68,7 +67,7 @@ pub struct PlanTaskDef {
 }
 
 /// 计划节点（可递归包含子节点）。
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[allow(dead_code)]
 pub struct PlanNodeDef {
     /// 同级唯一序号（从 1 开始连续）。
@@ -84,7 +83,7 @@ pub struct PlanNodeDef {
 }
 
 /// 计划定义。
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[allow(dead_code)]
 pub struct PlanDef {
     /// 计划目标。
@@ -108,13 +107,47 @@ pub struct CreatePlanParams {
     plan: PlanDef,
 }
 
-fn parse_plan(value: &Value) -> Result<Plan, String> {
-    let val = match value {
-        Value::String(s) => serde_json::from_str(s)
-            .map_err(|e| format!("invalid plan (string content): {e}"))?,
-        other => other.clone(),
-    };
-    serde_json::from_value(val).map_err(|e| format!("invalid plan: {e}"))
+impl From<PlanTaskDef> for PlanNode {
+    fn from(def: PlanTaskDef) -> Self {
+        PlanNode {
+            idx: def.idx,
+            description: def.description,
+            children: Vec::new(),
+            status: StepStatus::Pending,
+        }
+    }
+}
+
+impl From<PlanNodeDef> for PlanNode {
+    fn from(def: PlanNodeDef) -> Self {
+        let children = def
+            .children
+            .unwrap_or_default()
+            .into_iter()
+            .map(PlanNode::from)
+            .collect();
+        PlanNode {
+            idx: def.idx,
+            description: def.description,
+            children,
+            status: StepStatus::Pending,
+        }
+    }
+}
+
+impl From<PlanDef> for Plan {
+    fn from(def: PlanDef) -> Self {
+        Plan {
+            db_plan_id: None,
+            goal: def.goal,
+            description: def.description.unwrap_or_default(),
+            completion_queue: Vec::new(),
+            status: PlanStatus::NeedApproval,
+            started_at: None,
+            stall_count: 0,
+            children: def.children.into_iter().map(PlanNode::from).collect(),
+        }
+    }
 }
 
 /// 递归校验节点列表：同级 idx 从 1 开始连续，最多 2 层
@@ -160,14 +193,11 @@ fn reset_nodes(nodes: &mut [PlanNode]) {
     }
 }
 
-#[async_trait::async_trait]
-impl Tool for CreatePlan {
-    async fn execute(&self, ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
-        let plan_val = args
-            .get("plan")
-            .ok_or_else(|| "missing 'plan'".to_string())?;
-
-        let mut plan = parse_plan(plan_val)?;
+impl CreatePlan {
+    /// 工具执行体：参数已由 `GenericsTool` 反序列化为强类型 `CreatePlanParams`。
+    async fn do_execute(&self, ctx: &ToolContext, args: &CreatePlanParams) -> Result<ToolResult, String> {
+        // PlanDef → 模型 Plan（From 转换中已初始化状态字段）
+        let mut plan: Plan = args.plan.clone().into();
 
         // 校验
         validate_nodes(&plan.children, 0)?;
@@ -185,6 +215,13 @@ impl Tool for CreatePlan {
         }
 
         Ok(ToolResult::ok("plan created — waiting for approval".to_string()))
+    }
+}
+
+#[async_trait::async_trait]
+impl GenericsTool for CreatePlan {
+    async fn generics_execute(&self, ctx: &ToolContext, args: &CreatePlanParams) -> Result<ToolResult, String> {
+        self.do_execute(ctx, args).await
     }
 }
 

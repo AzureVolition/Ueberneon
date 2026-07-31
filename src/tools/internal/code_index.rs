@@ -6,14 +6,13 @@
 use std::path::PathBuf;
 use std::path::Path;
 
-use crate::agent::{Tool, ToolContext, ToolResult};
+use crate::agent::{GenericsTool, ToolContext, ToolResult};
 #[cfg(test)]
-use crate::agent::{AgentHandler, ActionMode, ToolResultExt};
+use crate::agent::{AgentHandler, ActionMode, Tool, ToolResultExt};
 use ueberneon_macros::ToolMetaImpl;
 use regex::Regex;
 use std::sync::LazyLock;
 use serde::Deserialize;
-use serde_json::Value;
 use schemars::JsonSchema;
 use crate::tools::internal::common::checkable_tool::CheckableTool;
 // ── Lazy-compiled regexes (compiled once, reused across calls) ──────────
@@ -220,6 +219,124 @@ impl CodeIndex {
         let re_trailing = &RE_TRAILING;
 
         (lang.parser)(&file_path, &content, &re_leading_ws, &re_trailing)
+    }
+
+    /// 工具执行体：参数已由 `GenericsTool` 反序列化为强类型 `CodeIndexParams`。
+    async fn do_execute(&self, _ctx: &ToolContext, args: &CodeIndexParams) -> Result<ToolResult, String> {
+        let action = match args.action.as_str() {
+            "outline" => "outline",
+            "search" => "search",
+            _ => return Err("code_index: 'action' must be 'outline' or 'search'".into()),
+        };
+
+        let query = if action == "search" {
+            match args.query.as_deref() {
+                Some(q) if !q.is_empty() => Some(q.to_lowercase()),
+                _ => return Err("code_index: 'query' is required for action='search'".into()),
+            }
+        } else {
+            args.query.as_deref().map(|q| q.to_lowercase())
+        };
+
+        let path_str: &str = if args.path.is_empty() { "." } else { &args.path };
+
+        let kind_filter = args.kind.as_deref().map(|s| s.to_lowercase());
+
+        let limit = args.limit.unwrap_or(CODE_INDEX_DEFAULT_LIMIT as u64) as usize;
+        let limit = limit.clamp(1, CODE_INDEX_MAX_LIMIT);
+
+        let path = self.resolve_path(path_str)?;
+
+        if !path.exists() {
+            return Err(format!("code_index: path '{}' does not exist", path_str));
+        }
+
+        // 收集符号
+        let mut symbols: Vec<CodeSymbol> = Vec::new();
+        let mut file_count = 0;
+
+        if path.is_file() {
+            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                if let Some(lang) = Self::lang_for_ext(ext) {
+                    symbols = Self::parse_file(&path, lang);
+                }
+            }
+        } else if path.is_dir() {
+            let walker = ignore::WalkBuilder::new(path)
+                .standard_filters(true)
+                .build();
+
+            for entry in walker {
+                if file_count >= CODE_INDEX_MAX_FILES {
+                    break;
+                }
+                let entry = match entry {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+                if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                    continue;
+                }
+                let ext = match entry.path().extension().and_then(|e| e.to_str()) {
+                    Some(e) => e,
+                    None => continue,
+                };
+                let lang = match Self::lang_for_ext(ext) {
+                    Some(l) => l,
+                    None => continue,
+                };
+                file_count += 1;
+                let file_symbols = Self::parse_file(entry.path(), lang);
+                symbols.extend(file_symbols);
+            }
+        }
+
+        // 过滤
+        let query_lower = query.as_ref().map(|q| q.to_lowercase());
+        let kind_lower = kind_filter.as_ref().map(|k| k.to_lowercase());
+
+        let filtered: Vec<&CodeSymbol> = symbols.iter()
+            .filter(|s| {
+                if let Some(ref q) = query_lower {
+                    if !s.name.to_lowercase().contains(q.as_str())
+                        && !s.signature.to_lowercase().contains(q.as_str())
+                    {
+                        return false;
+                    }
+                }
+                if let Some(ref k) = kind_lower {
+                    if s.kind.to_lowercase() != *k {
+                        return false;
+                    }
+                }
+                true
+            })
+            .take(limit)
+            .collect();
+
+        if filtered.is_empty() {
+            let msg = match action {
+                "search" => format!("code_index: no symbols found matching '{}'", query.unwrap_or_default()),
+                _ => "code_index: no symbols found".into(),
+            };
+            return Ok(ToolResult::ok(msg));
+        }
+
+        // 格式化输出
+        let mut output = String::new();
+        for sym in &filtered {
+            let parent_str = sym.parent.as_ref().map(|p| format!("{}.", p)).unwrap_or_default();
+            output.push_str(&format!(
+                "{}:{}: {} {}{} — {}\n",
+                sym.file, sym.line, sym.kind, parent_str, sym.name, sym.signature
+            ));
+        }
+
+        if filtered.len() >= limit || symbols.len() > limit {
+            output.push_str("... (truncated; narrow path/query/kind or raise limit)\n");
+        }
+
+        Ok(ToolResult::ok(output.trim_end().to_string()))
     }
 }
 
@@ -485,132 +602,10 @@ fn parse_kotlin(file: &str, content: &str, _: &Regex, _: &Regex) -> Vec<CodeSymb
     symbols
 }
 
-// ── 工具执行 ────────────────────────────────────────────────────────────
-
 #[async_trait::async_trait]
-impl Tool for CodeIndex {
-    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
-        let action = match args.get("action").and_then(|v| v.as_str()) {
-            Some("outline") => "outline",
-            Some("search") => "search",
-            _ => return Err("code_index: 'action' must be 'outline' or 'search'".into()),
-        };
-
-        let query = if action == "search" {
-            match args.get("query").and_then(|v| v.as_str()) {
-                Some(q) if !q.is_empty() => Some(q.to_lowercase()),
-                _ => return Err("code_index: 'query' is required for action='search'".into()),
-            }
-        } else {
-            args.get("query").and_then(|v| v.as_str()).map(|q| q.to_lowercase())
-        };
-
-        let path_str = args
-            .get("path")
-            .and_then(|v| v.as_str())
-            .filter(|p| !p.is_empty())
-            .unwrap_or(".");
-
-        let kind_filter = args.get("kind").and_then(|v| v.as_str()).map(|s| s.to_lowercase());
-
-        let limit = args
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .map(|l| (l as usize).clamp(1, CODE_INDEX_MAX_LIMIT))
-            .unwrap_or(CODE_INDEX_DEFAULT_LIMIT);
-
-        let path = self.resolve_path(path_str)?;
-
-        if !path.exists() {
-            return Err(format!("code_index: path '{}' does not exist", path_str));
-        }
-
-        // 收集符号
-        let mut symbols: Vec<CodeSymbol> = Vec::new();
-        let mut file_count = 0;
-
-        if path.is_file() {
-            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                if let Some(lang) = Self::lang_for_ext(ext) {
-                    symbols = Self::parse_file(&path, lang);
-                }
-            }
-        } else if path.is_dir() {
-            let walker = ignore::WalkBuilder::new(path)
-                .standard_filters(true)
-                .build();
-
-            for entry in walker {
-                if file_count >= CODE_INDEX_MAX_FILES {
-                    break;
-                }
-                let entry = match entry {
-                    Ok(e) => e,
-                    Err(_) => continue,
-                };
-                if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
-                    continue;
-                }
-                let ext = match entry.path().extension().and_then(|e| e.to_str()) {
-                    Some(e) => e,
-                    None => continue,
-                };
-                let lang = match Self::lang_for_ext(ext) {
-                    Some(l) => l,
-                    None => continue,
-                };
-                file_count += 1;
-                let file_symbols = Self::parse_file(entry.path(), lang);
-                symbols.extend(file_symbols);
-            }
-        }
-
-        // 过滤
-        let query_lower = query.as_ref().map(|q| q.to_lowercase());
-        let kind_lower = kind_filter.as_ref().map(|k| k.to_lowercase());
-
-        let filtered: Vec<&CodeSymbol> = symbols.iter()
-            .filter(|s| {
-                if let Some(ref q) = query_lower {
-                    if !s.name.to_lowercase().contains(q.as_str())
-                        && !s.signature.to_lowercase().contains(q.as_str())
-                    {
-                        return false;
-                    }
-                }
-                if let Some(ref k) = kind_lower {
-                    if s.kind.to_lowercase() != *k {
-                        return false;
-                    }
-                }
-                true
-            })
-            .take(limit)
-            .collect();
-
-        if filtered.is_empty() {
-            let msg = match action {
-                "search" => format!("code_index: no symbols found matching '{}'", query.unwrap_or_default()),
-                _ => "code_index: no symbols found".into(),
-            };
-            return Ok(ToolResult::ok(msg));
-        }
-
-        // 格式化输出
-        let mut output = String::new();
-        for sym in &filtered {
-            let parent_str = sym.parent.as_ref().map(|p| format!("{}.", p)).unwrap_or_default();
-            output.push_str(&format!(
-                "{}:{}: {} {}{} — {}\n",
-                sym.file, sym.line, sym.kind, parent_str, sym.name, sym.signature
-            ));
-        }
-
-        if filtered.len() >= limit || symbols.len() > limit {
-            output.push_str("... (truncated; narrow path/query/kind or raise limit)\n");
-        }
-
-        Ok(ToolResult::ok(output.trim_end().to_string()))
+impl GenericsTool for CodeIndex {
+    async fn generics_execute(&self, ctx: &ToolContext, args: &CodeIndexParams) -> Result<ToolResult, String> {
+        self.do_execute(ctx, args).await
     }
 }
 

@@ -2,13 +2,12 @@
 //
 // 支持 ** 递归匹配，结果排序后输出，最多返回 1000 条。
 
-use crate::agent::{Tool, ToolContext, ToolResult};
+use crate::agent::{GenericsTool, ToolContext, ToolResult};
 use std::path::PathBuf;
 #[cfg(test)]
-use crate::agent::{AgentHandler, ActionMode, ToolResultExt};
+use crate::agent::{AgentHandler, ActionMode, ToolResultExt, Tool};
 use ueberneon_macros::ToolMetaImpl;
 use serde::Deserialize;
-use serde_json::Value;
 use schemars::JsonSchema;
 use crate::tools::internal::common::checkable_tool::CheckableTool;
 use crate::permission::Decision;
@@ -42,14 +41,12 @@ impl Glob {
             work_dir,
         }
     }
-}
 
-#[async_trait::async_trait]
-impl Tool for Glob {
-    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
-        let pattern = match args.get("pattern").and_then(|v| v.as_str()) {
-            Some(p) if !p.is_empty() => p,
-            _ => return Err("glob: missing required argument 'pattern'".into()),
+    async fn do_execute(&self, _ctx: &ToolContext, args: &GlobParams) -> Result<ToolResult, String> {
+        let pattern: &str = if args.pattern.is_empty() {
+            return Err("glob: missing required argument 'pattern'".into());
+        } else {
+            &args.pattern
         };
 
         // 相对 pattern 拼接到 work_dir 下
@@ -116,6 +113,13 @@ impl Tool for Glob {
         }
 
         Ok(ToolResult::ok(output))
+    }
+}
+
+#[async_trait::async_trait]
+impl GenericsTool for Glob {
+    async fn generics_execute(&self, ctx: &ToolContext, args: &GlobParams) -> Result<ToolResult, String> {
+        self.do_execute(ctx, args).await
     }
 }
 

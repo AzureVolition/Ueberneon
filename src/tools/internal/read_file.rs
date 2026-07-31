@@ -7,12 +7,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::agent::{Tool, ToolContext, ToolResult};
+use crate::agent::{GenericsTool, ToolContext, ToolResult};
 #[cfg(test)]
 use crate::agent::{AgentHandler, ActionMode, ToolResultExt};
 use ueberneon_macros::ToolMetaImpl;
 use serde::Deserialize;
-use serde_json::Value;
 use schemars::JsonSchema;
 
 use super::common::encoding;
@@ -86,15 +85,10 @@ impl ReadFile {
         }
         Ok(abs)
     }
-}
 
-#[async_trait::async_trait]
-impl Tool for ReadFile {
-    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
-        let path_str = match args.get("path").and_then(|v| v.as_str()) {
-            Some(p) => p,
-            None => return Err("read_file: missing required argument 'path'".into()),
-        };
+    /// 工具执行体：参数已由 `GenericsTool` 反序列化为强类型 `ReadFileParams`。
+    async fn do_execute(&self, _ctx: &ToolContext, args: &ReadFileParams) -> Result<ToolResult, String> {
+        let path_str = &args.path;
 
         let path = self.resolve_path(path_str)?;
 
@@ -155,24 +149,22 @@ impl Tool for ReadFile {
         let content = encoding::decode(&data, enc);
 
         // 解析可选参数
-        let offset = args.get("offset").and_then(|v| v.as_i64()).unwrap_or(0).max(0) as usize;
-        let limit = args.get("limit").and_then(|v| v.as_i64())
-            .map(|v| v.max(1).min(100_000) as usize)
-            .unwrap_or(2000);
+        let offset = args.offset as usize;
+        let limit = args.limit.map_or(2000, |v| v as usize);
 
         // 处理 head 和 tail 参数
         let lines: Vec<&str> = content.lines().collect();
         let total_lines = lines.len();
 
-        let (start, end) = if let Some(tail) = args.get("tail").and_then(|v| v.as_i64()) {
-            let n = tail.max(1) as usize;
+        let (start, end) = if let Some(tail) = args.tail.map(|v| v as usize) {
+            let n = tail.max(1);
             if n >= total_lines {
                 (0, total_lines)
             } else {
                 (total_lines - n, total_lines)
             }
-        } else if let Some(head) = args.get("head").and_then(|v| v.as_i64()) {
-            let n = head.max(1) as usize;
+        } else if let Some(head) = args.head.map(|v| v as usize) {
+            let n = head.max(1);
             (0, n.min(total_lines))
         } else {
             let end = (offset + limit).min(total_lines);
@@ -215,6 +207,13 @@ impl Tool for ReadFile {
 }
 
 #[async_trait::async_trait]
+impl GenericsTool for ReadFile {
+    async fn generics_execute(&self, _ctx: &ToolContext, args: &ReadFileParams) -> Result<ToolResult, String> {
+        self.do_execute(_ctx, args).await
+    }
+}
+
+#[async_trait::async_trait]
 impl CheckableTool for ReadFile {
     fn check(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> Decision {
         Decision::Allow
@@ -225,6 +224,7 @@ impl CheckableTool for ReadFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::Tool;
     use std::io::Write;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};

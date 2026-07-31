@@ -8,12 +8,11 @@ use std::path::PathBuf;
 use std::path::Path;
 use std::time::Duration;
 
-use crate::agent::{Tool, ToolContext, ToolResult};
+use crate::agent::{GenericsTool, ToolContext, ToolResult};
 #[cfg(test)]
-use crate::agent::{AgentHandler, ActionMode, ToolResultExt};
+use crate::agent::{ActionMode, AgentHandler, Tool, ToolResultExt};
 use ueberneon_macros::ToolMetaImpl;
 use serde::Deserialize;
-use serde_json::Value;
 use schemars::JsonSchema;
 
 use super::common::encoding;
@@ -24,10 +23,6 @@ use crate::permission::Decision;
 
 /// 最大匹配行数。
 const GREP_MAX_MATCHES: usize = 200;
-/// 默认超时（秒）。
-const GREP_DEFAULT_TIMEOUT_SECS: u64 = 30;
-/// 最大超时（秒）。
-const GREP_MAX_TIMEOUT_SECS: u64 = 300;
 
 /// grep —— 在文件或目录中搜索正则表达式。
 ///
@@ -72,36 +67,23 @@ impl Grep {
         }
         Ok(abs)
     }
-}
 
-#[async_trait::async_trait]
-impl Tool for Grep {
-    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
+    async fn do_execute(&self, _ctx: &ToolContext, args: &GrepParams) -> Result<ToolResult, String> {
         // 1. 解析参数
-        let pattern_str = match args.get("pattern").and_then(|v| v.as_str()) {
-            Some(p) if !p.is_empty() => p,
+        let pattern_str = match args.pattern.as_str() {
+            p if !p.is_empty() => p,
             _ => return Err("grep: missing required argument 'pattern'".into()),
         };
-        let path_str = args
-            .get("path")
-            .and_then(|v| v.as_str())
-            .filter(|p| !p.is_empty())
-            .unwrap_or(".");
+        let path_str: &str = if args.path.is_empty() { "." } else { &args.path };
 
         let path_buf = self.resolve_path(path_str)?;
-        let timeout_secs = args
-            .get("timeout_seconds")
-            .and_then(|v| v.as_u64())
-            .map(|s| s.clamp(1, GREP_MAX_TIMEOUT_SECS))
-            .unwrap_or(GREP_DEFAULT_TIMEOUT_SECS);
+        let timeout_secs = args.timeout_seconds.map(|v| v as u64).unwrap_or(30);
 
         // 2. 编译正则（RE2 语法）
         let re = match regex::Regex::new(pattern_str) {
             Ok(r) => r,
             Err(e) => return Err(format!("grep: invalid regex pattern: {}", e)),
         };
-
-
 
         // 3. 安全检查：拒绝搜索 .git 目录
         if path_buf.components().any(|c| c.as_os_str() == ".git") {
@@ -135,6 +117,13 @@ impl Tool for Grep {
 
         // 6. 格式化输出
         Ok(ToolResult::ok(format_grep_output(&matches, timed_out, timeout)))
+    }
+}
+
+#[async_trait::async_trait]
+impl GenericsTool for Grep {
+    async fn generics_execute(&self, ctx: &ToolContext, args: &GrepParams) -> Result<ToolResult, String> {
+        self.do_execute(ctx, args).await
     }
 }
 
@@ -338,6 +327,7 @@ mod tests {
         let args = serde_json::json!({
             "pattern": "hello",
             "path": dir.to_str().unwrap(),
+            "timeout_seconds": 5,
         });
         let result = tool.execute(&test_ctx(), &args).await;
         assert!(result.error().is_none(), "error: {:?}", result.error());

@@ -6,10 +6,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::agent::{ActionMode, Tool, ToolContext, ToolResult};
+use crate::agent::{ActionMode, GenericsTool, ToolContext, ToolResult};
 use llm::tool::ToolMeta;
 #[cfg(test)]
-use crate::agent::{AgentHandler, ToolResultExt};
+use crate::agent::{AgentHandler, ToolResultExt, Tool};
 use ueberneon_macros::ToolMetaImpl;
 use serde::Deserialize;
 use serde_json::Value;
@@ -103,29 +103,15 @@ impl MultiEdit {
 
         Ok(abs)
     }
-}
 
-impl PermissionChecked for MultiEdit {
-    fn permission_checks(&self) -> &[Box<dyn Check>] {
-        &self.checks
-    }
-}
-
-#[async_trait::async_trait]
-impl Tool for MultiEdit {
-    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
-        // 1. 解析参数
-        let params: MultiEditParams = match serde_json::from_value(args.clone()) {
-            Ok(p) => p,
-            Err(e) => return Err(format!("multi_edit: invalid arguments: {e}")),
-        };
-
-        if params.edits.is_empty() {
+    async fn do_execute(&self, _ctx: &ToolContext, args: &MultiEditParams) -> Result<ToolResult, String> {
+        // 1. 检查 edits 非空
+        if args.edits.is_empty() {
             return Err("multi_edit: 'edits' must not be empty".into());
         }
 
         // 2. 解析路径
-        let path = match self.resolve_path(&params.path) {
+        let path = match self.resolve_path(&args.path) {
             Ok(p) => p,
             Err(e) => return Err(format!("multi_edit: {}", e)),
         };
@@ -133,7 +119,7 @@ impl Tool for MultiEdit {
         // 3. 读取文件
         let data = match std::fs::read(&path) {
             Ok(d) => d,
-            Err(e) => return Err(format!("multi_edit: failed to read '{}': {}", params.path, e)),
+            Err(e) => return Err(format!("multi_edit: failed to read '{}': {}", args.path, e)),
         };
 
         let (enc, _) = encoding::detect(&data);
@@ -141,20 +127,20 @@ impl Tool for MultiEdit {
         let original_content = content.clone();
 
         // 4. 陈旧锚点检查
-        if let Err(msg) = self.tracker.check_anchor(&params.path, &content) {
+        if let Err(msg) = self.tracker.check_anchor(&args.path, &content) {
             return Err(msg);
         }
 
         // 5. 循环守卫：检查每项编辑是否重复
-        for (i, op) in params.edits.iter().enumerate() {
-            if let Err(msg) = self.tracker.check_loop(&params.path, &op.old_string, &op.new_string) {
+        for (i, op) in args.edits.iter().enumerate() {
+            if let Err(msg) = self.tracker.check_loop(&args.path, &op.old_string, &op.new_string) {
                 return Err(format!("multi_edit: edit {} — {}", i, msg));
             }
         }
 
         // 6. 在内存中顺序应用所有编辑
         let mut _total_applied = 0usize;
-        for (i, op) in params.edits.iter().enumerate() {
+        for (i, op) in args.edits.iter().enumerate() {
             if op.old_string.is_empty() {
                 return Err(format!(
                     "multi_edit: edits[{}].old_string must not be empty", i
@@ -168,14 +154,14 @@ impl Tool for MultiEdit {
                     return Err(format!(
                         "multi_edit: edit {} failed — {}",
                         i,
-                        edit::old_string_not_found_error(&params.path, &op.old_string, &content)
+                        edit::old_string_not_found_error(&args.path, &op.old_string, &content)
                     ));
                 }
                 0 if result.matches > 1 && !op.replace_all => {
                     return Err(format!(
                         "multi_edit: edit {} failed — {}",
                         i,
-                        edit::old_string_not_unique_error(&params.path, &op.old_string, &content, result.matches)
+                        edit::old_string_not_unique_error(&args.path, &op.old_string, &content, result.matches)
                     ));
                 }
                 _ => {
@@ -186,24 +172,37 @@ impl Tool for MultiEdit {
         }
 
         // 5. 构建 diff 并记录 checkpoint
-        let file_change = diff::build_diff(&params.path, &original_content, &content, DiffKind::Modify);
-        self.checkpoint.snapshot(&params.path, &original_content, 0);
+        let file_change = diff::build_diff(&args.path, &original_content, &content, DiffKind::Modify);
+        self.checkpoint.snapshot(&args.path, &original_content, 0);
 
         // 6. 回写文件
         let output_bytes = encoding::encode(&content, enc);
         if let Err(e) = std::fs::write(&path, &output_bytes) {
-            return Err(format!("multi_edit: failed to write '{}': {}", params.path, e));
+            return Err(format!("multi_edit: failed to write '{}': {}", args.path, e));
         }
 
         // 7. 更新追踪器
-        self.tracker.record_write(&params.path, &content);
-        for op in &params.edits {
-            self.tracker.record_edit(&params.path, &op.old_string, &op.new_string);
+        self.tracker.record_write(&args.path, &content);
+        for op in &args.edits {
+            self.tracker.record_edit(&args.path, &op.old_string, &op.new_string);
         }
 
         // 8. 返回成功消息
         let summary = diff::change_summary(&file_change);
-        Ok(ToolResult::ok(format!("edited {} ({} edits applied)\n{}", params.path, params.edits.len(), summary)))
+        Ok(ToolResult::ok(format!("edited {} ({} edits applied)\n{}", args.path, args.edits.len(), summary)))
+    }
+}
+
+impl PermissionChecked for MultiEdit {
+    fn permission_checks(&self) -> &[Box<dyn Check>] {
+        &self.checks
+    }
+}
+
+#[async_trait::async_trait]
+impl GenericsTool for MultiEdit {
+    async fn generics_execute(&self, _ctx: &ToolContext, args: &MultiEditParams) -> Result<ToolResult, String> {
+        self.do_execute(_ctx, args).await
     }
 }
 

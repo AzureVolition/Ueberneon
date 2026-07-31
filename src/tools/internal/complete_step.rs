@@ -3,11 +3,10 @@
 // 由 completion_queue 驱动执行，每次取队列头部当前批次完成。
 
 
-use crate::agent::{ToolContext, Tool, ToolResult};
+use crate::agent::{ToolContext, ToolResult};
 use crate::model::{QueueItemStatus, StepStatus};
 use ueberneon_macros::ToolMetaImpl;
 use serde::Deserialize;
-use serde_json::Value;
 use schemars::JsonSchema;
 
 use super::common::checkable_tool::CheckableTool;
@@ -58,13 +57,11 @@ fn set_in_progress_in_db(conn: &rusqlite::Connection, db_id: i64) -> Result<usiz
     ).map_err(|e| format!("db error: {e}"))
 }
 
-#[async_trait::async_trait]
-impl Tool for CompleteStep {
-    async fn execute(&self, ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
-        let parent_idx = args.get("parent_idx").and_then(|v| v.as_u64()).map(|v| v as u8);
-        let idx = args.get("idx")
-            .and_then(|v| v.as_u64())
-            .ok_or_else(|| "missing 'idx'".to_string())? as u8;
+impl CompleteStep {
+    /// 工具执行体：参数已由 `GenericsTool` 反序列化为强类型 `CompleteStepParams`。
+    async fn do_execute(&self, ctx: &ToolContext, args: &CompleteStepParams) -> Result<ToolResult, String> {
+        let parent_idx = args.parent_idx;
+        let idx = args.idx as u8;
 
         let mut msg_parts: Vec<String> = Vec::new();
         {
@@ -140,6 +137,13 @@ impl Tool for CompleteStep {
         ctx.handler.plan_version.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
         Ok(ToolResult::ok(msg_parts.join(" ")))
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::agent::GenericsTool for CompleteStep {
+    async fn generics_execute(&self, ctx: &ToolContext, args: &CompleteStepParams) -> Result<ToolResult, String> {
+        self.do_execute(ctx, args).await
     }
 }
 

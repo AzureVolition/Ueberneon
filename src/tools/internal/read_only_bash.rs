@@ -8,12 +8,11 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::agent::{Tool, AgentHandler, ToolContext, ToolResult};
+use crate::agent::{AgentHandler, ToolContext, ToolResult};
 #[cfg(test)]
 use crate::agent::ToolResultExt;
 use ueberneon_macros::ToolMetaImpl;
 use serde::Deserialize;
-use serde_json::Value;
 use schemars::JsonSchema;
 
 use super::common::env::EnvBuilder;
@@ -64,6 +63,43 @@ impl ReadOnlyBash {
             sandbox,
             shell: std::sync::OnceLock::new(),
         }
+    }
+
+    /// 工具执行体：参数已由 `GenericsTool` 反序列化为强类型 `ReadOnlyBashParams`。
+    async fn do_execute(&self, _ctx: &ToolContext, args: &ReadOnlyBashParams) -> Result<ToolResult, String> {
+        // 1. 校验参数
+        if args.command.trim().is_empty() {
+            return Err("read_only_bash: missing required argument 'command'".into());
+        }
+
+        let command = &args.command;
+
+        // 2. 只读白名单检查（始终强制执行）
+        if let Some(reason) = Self::check_read_only(command) {
+            return Err(reason);
+        }
+
+        // 3. Shell 探测 + 命令包装
+        let shell = self.get_shell();
+        let (prog, shell_args) = shell.build_command(command);
+
+        // 4. 构建安全的环境变量
+        let env = self.build_env();
+
+        // 5. 通过 ProcessRunner 执行（带超时 + 可选沙箱）
+        let runner = ProcessRunner::new(self.work_dir.clone(), self.timeout)
+            .with_env(env);
+
+        let runner = if let Some(spec) = &self.sandbox {
+            runner.with_sandbox(spec.clone())
+        } else {
+            runner
+        };
+
+        let output = runner.run(&prog, &shell_args).await;
+
+        // 6. 构建返回结果
+        Self::build_tool_result(output)
     }
 
     /// 获取（或初始化）探测到的 shell。
@@ -155,49 +191,11 @@ impl ReadOnlyBash {
 }
 
 #[async_trait::async_trait]
-impl Tool for ReadOnlyBash {
-    async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
-        // 1. 解析参数
-        let command = match args.get("command").and_then(|v| v.as_str()) {
-            Some(c) if !c.trim().is_empty() => c,
-            _ => return Err("read_only_bash: missing required argument 'command'".into()),
-        };
-
-        let timeout = args
-            .get("timeout")
-            .and_then(|v| v.as_u64())
-            .map(Duration::from_secs)
-            .unwrap_or(self.timeout);
-
-        // 2. 只读白名单检查（始终强制执行）
-        if let Some(reason) = Self::check_read_only(command) {
-            return Err(reason);
-        }
-
-        // 3. Shell 探测 + 命令包装
-        let shell = self.get_shell();
-        let (prog, shell_args) = shell.build_command(command);
-
-        // 4. 构建安全的环境变量
-        let env = self.build_env();
-
-        // 5. 通过 ProcessRunner 执行（带超时 + 可选沙箱）
-        let runner = ProcessRunner::new(self.work_dir.clone(), timeout)
-            .with_env(env);
-
-        let runner = if let Some(spec) = &self.sandbox {
-            runner.with_sandbox(spec.clone())
-        } else {
-            runner
-        };
-
-        let output = runner.run(&prog, &shell_args).await;
-
-        // 6. 构建返回结果
-        Self::build_tool_result(output)
+impl crate::agent::GenericsTool for ReadOnlyBash {
+    async fn generics_execute(&self, ctx: &ToolContext, args: &ReadOnlyBashParams) -> Result<ToolResult, String> {
+        self.do_execute(ctx, args).await
     }
 }
-
 
 #[async_trait::async_trait]
 impl CheckableTool for ReadOnlyBash {
@@ -209,7 +207,8 @@ impl CheckableTool for ReadOnlyBash {
 
 mod tests {
     use super::*;
-    use crate::agent::ActionMode;
+    use crate::agent::{ActionMode, Tool};
+    
     
 
     #[allow(dead_code)]
