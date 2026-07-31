@@ -147,15 +147,16 @@ impl Tool for Task {
             )
             .map_err(|e| format!("创建子 Agent 失败: {e}"))?;
 
-        // 4. 取出子 Agent 所有权并运行
-        let mut sub_agent = mgr
+        // 4. 取出子 Agent 所有权，包成 AgentRun 执行
+        let sub_agent = mgr
             .remove(&sub_conv_id)
             .ok_or_else(|| "子 Agent 未找到".to_string())?;
+        let mut sub_run = crate::agent::AgentRun::new(sub_agent);
 
-        sub_agent.create_streaming();
+        sub_run.create_streaming();
         let cancel_token = ctx.cancel_token.clone().unwrap_or_else(CancellationToken::new);
 
-        let result = sub_agent
+        let result = sub_run
             .accept_message(prompt.to_string(), cancel_token)
             .await;
 
@@ -168,8 +169,8 @@ impl Tool for Task {
             Err(e) => format!("子 Agent 执行失败: {e}"),
         };
 
-        // 子 Agent 执行完毕，不注册回缓存（清理）
-        drop(sub_agent);
+        // 子 Agent 执行完毕，Run 与 Agent 一并释放（不注册回缓存）
+        drop(sub_run);
 
         Ok(ToolResult::ok(output))
     }

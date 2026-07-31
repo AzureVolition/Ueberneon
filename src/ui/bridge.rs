@@ -12,7 +12,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::{ActionMode, Agent, AgentMode};
+use crate::agent::{ActionMode, AgentMode, AgentRun};
 use crate::model::*;
 use crate::ui::components::error::*;
 
@@ -58,15 +58,16 @@ pub async fn run_agent_loop(ctx: BridgeContext) {
             ).with_detail(format!("{:#}", e)));
             return;
         }
-    // 从 Manager 取出 Agent
-    let mut agent = crate::agent::manager::AgentManager::get()
+    // 从 Manager 取出 Agent，包成 AgentRun（执行上下文，方案 B：持有所有权）
+    let agent = crate::agent::manager::AgentManager::get()
         .remove(&conversation_id)
         .expect("agent must be in cache before run_agent_loop");
-    agent.handler.set_action_mode(action_mode);
-    *agent.handler.agent_mode.lock().expect("agent_mode lock poisoned") = agent_mode_val;
+    let mut run = AgentRun::new(agent);
+    run.agent.handler.set_action_mode(action_mode);
+    *run.agent.handler.agent_mode.lock().expect("agent_mode lock poisoned") = agent_mode_val;
 
     // 克隆 plan_version Arc，供轮询 loop 监控 CompleteStep 更新
-    let plan_version = agent.handler.plan_version.clone();
+    let plan_version = run.agent.handler.plan_version.clone();
 
     // 从 DB 恢复累计 token 用量（切换回已有对话时恢复之前的数据）
     let db_usage = crate::db::with_db(|conn| {
@@ -78,8 +79,8 @@ pub async fn run_agent_loop(ctx: BridgeContext) {
             .unwrap_or(0)
     });
 
-    // Agent 内部创建流式状态
-    let streaming = agent.create_streaming();
+    // Run 内部创建流式状态
+    let streaming = run.create_streaming();
     {
         let mut rts = runtimes.write();
         let rt = rts.entry(conversation_id.clone()).or_insert_with(|| crate::ui::state::ConversationRuntime {
@@ -92,13 +93,13 @@ pub async fn run_agent_loop(ctx: BridgeContext) {
     streaming_states.lock().expect("streaming_states lock poisoned").insert(conversation_id.clone(), streaming.clone());
 
 
-    // Agent 通过 result_cell 传回结果（避免 tokio::spawn 中访问 Signal）
-    let result_cell: Arc<Mutex<Option<(Agent, Result<UiMessage, anyhow::Error>)>>> = Arc::new(Mutex::new(None));
+    // Run 通过 result_cell 传回结果（避免 tokio::spawn 中访问 Signal）
+    let result_cell: Arc<Mutex<Option<(AgentRun, Result<UiMessage, anyhow::Error>)>>> = Arc::new(Mutex::new(None));
     let result_cell2 = result_cell.clone();
 
     tokio::spawn(async move {
-        let result = agent.accept_message(user_input, cancel_token).await;
-        *result_cell2.lock().expect("result_cell2 lock poisoned") = Some((agent, result));
+        let result = run.accept_message(user_input, cancel_token).await;
+        *result_cell2.lock().expect("result_cell2 lock poisoned") = Some((run, result));
     });
 
     // 主循环：轮询 version 更新 tick_signal，检查 Agent 是否完成
@@ -130,7 +131,7 @@ pub async fn run_agent_loop(ctx: BridgeContext) {
             runtimes.write().entry(conversation_id.clone()).or_default().tick = pv;
         }
 
-        if let Some((ag, result)) = result_cell.lock().expect("result_cell lock poisoned").take() {
+        if let Some((run, result)) = result_cell.lock().expect("result_cell lock poisoned").take() {
             match result {
                 Ok(ui_msg) => {
                     // 替换 Streaming → Static
@@ -164,7 +165,7 @@ pub async fn run_agent_loop(ctx: BridgeContext) {
 
             // 累加本次 token 用量到 conversation runtime，
             // 同时保存单次 loop 数据（暂不展示，预留）
-            if let Some(ref usage) = ag.last_usage {
+            if let Some(ref usage) = run.last_usage {
                 let mut all = runtimes.write();
                 if let Some(rt) = all.get_mut(&conversation_id) {
                     rt.accumulated_usage.prompt_tokens += usage.prompt_tokens;
@@ -183,7 +184,7 @@ pub async fn run_agent_loop(ctx: BridgeContext) {
             
             streaming_states.lock().expect("streaming_states lock poisoned").remove(&conversation_id);
             crate::agent::manager::AgentManager::get()
-                .register(ag);
+                .register(run.into_agent());
             return;
         }
     }

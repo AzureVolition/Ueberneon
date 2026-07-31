@@ -1,6 +1,7 @@
-// ── Agent 主循环 ──
+// ── AgentRun 主循环 ──
 //
-// Agent 自己管理消息历史 + 本地持久化。
+// 一次 accept_message 执行的完整逻辑，挂在 AgentRun（方案 B：持有 Agent 所有权）。
+// 配置资源通过 self.agent.* 访问；运行态（流式句柄 / 挂起工具 / 轮次 / usage）在 Run 上。
 // 流式数据通过 Arc 共享给 UI，不再使用 mpsc channel。
 
 use futures::StreamExt;
@@ -9,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio_util::sync::CancellationToken;
 
 use super::hook::AgentEvent;
-use super::ToolContext;
+use super::{Agent, AgentRun, ToolContext};
 use crate::model::{ChatMessage, Role as ChatRole, StreamSegment, ToolCallRecord, ToolCallStatus, UiMessage};
 use crate::permission::Decision;
 use llm::{Chunk, Message, Request, Role as LlmRole, Usage};
@@ -21,32 +22,9 @@ enum StreamOrCancel<T> {
     Cancelled,
 }
 
-// ── Agent::accept_message ────────────────────────────────────────────
+// ── AgentRun::accept_message ────────────────────────────────────────────
 
-use super::Agent;
-
-impl Agent {
-    /// 创建内部流式状态，返回 UiMessage::Streaming 供 UI 显示。
-    /// 必须先调用此方法，再调用 accept_message。
-    pub fn create_streaming(&mut self) -> UiMessage {
-        if self.streaming_handle.is_none()  {
-            let state = crate::model::StreamingState {
-                segments: Arc::new(Mutex::new(Vec::new())),
-                version: Arc::new(AtomicU64::new(0)),
-                approval_tx: Arc::new(Mutex::new(None)),
-            };
-            self.streaming_handle = Some(state);
-        }        
-
-        let streaming = UiMessage::Streaming {
-            segments: self.streaming_handle.as_ref().unwrap().segments.clone(),
-            version: self.streaming_handle.as_ref().unwrap().version.clone(),
-            approval_tx: self.streaming_handle.as_ref().unwrap().approval_tx.clone(),
-        };
-        
-        streaming
-    }
-
+impl AgentRun {
     /// 接受用户输入并运行 agent 循环。返回已完成的 UiMessage::Static。
     ///
     /// 调用前必须先调用 create_streaming() 初始化内部流式状态。
@@ -69,15 +47,15 @@ impl Agent {
                 )
             };
         
-        self.hook_register.emit(&AgentEvent::UserPromptSubmit { prompt: user_input.clone() });
+        self.agent.hook_register.emit(&AgentEvent::UserPromptSubmit { prompt: user_input.clone() });
 
         // ── 前缀注入 目前只有 Plan Mode ──
-        let augmented_input = self.handler.prompt_before_user_message();
+        let augmented_input = self.agent.handler.prompt_before_user_message();
         if let Some(augmented_input) = augmented_input {
-            self.push_message(Message { role: LlmRole::System, content: Some(augmented_input.to_string()), timestamp: Some(chrono::Utc::now()), ..Default::default() })?;
+            self.agent.push_message(Message { role: LlmRole::System, content: Some(augmented_input.to_string()), timestamp: Some(chrono::Utc::now()), ..Default::default() })?;
         }
         // 用户输入
-        self.push_message(Message { role: LlmRole::User, content: Some(user_input), timestamp: Some(chrono::Utc::now()), ..Default::default() })?;
+        self.agent.push_message(Message { role: LlmRole::User, content: Some(user_input), timestamp: Some(chrono::Utc::now()), ..Default::default() })?;
 
         
         let mut _final_output = String::new();
@@ -85,8 +63,8 @@ impl Agent {
         let mut cancelled = false;
  
         
-        if let Some(pre_prompt) = self.handler.prompt_pre_loop() {
-            self.push_message(Message { role: LlmRole::System, content: Some(pre_prompt), timestamp: Some(chrono::Utc::now()), ..Default::default() })?;
+        if let Some(pre_prompt) = self.agent.handler.prompt_pre_loop() {
+            self.agent.push_message(Message { role: LlmRole::System, content: Some(pre_prompt), timestamp: Some(chrono::Utc::now()), ..Default::default() })?;
         }
 
         self.start_loop();
@@ -100,20 +78,20 @@ impl Agent {
             // Agent 回合日志
             tracing::debug!(
                 target: "agent",
-                round = self.round.ok_or(anyhow::anyhow!("round must be set"))?,
-                messages = self.messages.len(),
-                tools = self.registry.schemas().len(),
+                round = self.round,
+                messages = self.agent.messages.len(),
+                tools = self.agent.registry.schemas().len(),
                 "agent round"
             );
 
             let req = Request {
-                messages: self.messages.clone(),
-                tools: self.registry.schemas(),
-                temperature: self.temperature,
-                max_tokens: self.max_tokens.unwrap_or(65536),
+                messages: self.agent.messages.clone(),
+                tools: self.agent.registry.schemas(),
+                temperature: self.agent.temperature,
+                max_tokens: self.agent.max_tokens.unwrap_or(65536),
             };
 
-            let stream = match self.provider.stream(&req).await {
+            let stream = match self.agent.provider.stream(&req).await {
                 Ok(s) => s,
                 Err(e) => {
                     let msg = format!("Stream error: {e}");
@@ -190,7 +168,7 @@ impl Agent {
                 match crate::db::get_db().lock() {
                     Ok(guard) => {
                         if let Err(e) = crate::db::metadata::conversation::accumulate_usage(
-                            &guard, &self.conversation_id,
+                            &guard, &self.agent.conversation_id,
                             &usaget_record,
                         ) {
                             tracing::warn!(target: "dashboard", error = %e, "accumulate_usage failed (cancelled)");
@@ -217,14 +195,14 @@ impl Agent {
                         timestamp: Some(chrono::Utc::now()),
                         ..Default::default()
                     };
-                    self.push_message(msg)?;
+                    self.agent.push_message(msg)?;
                    
                 }
                 break;
             }
 
 
-            // Assistant 消息入 self.messages
+            // Assistant 消息入 self.agent.messages
             {
                 let mut msg = Message {
                     role: LlmRole::Assistant,
@@ -236,7 +214,7 @@ impl Agent {
                 if !self.pending_tool_calls.is_empty() {
                     msg.tool_calls = self.pending_tool_calls.clone();
                 }
-                self.push_message(msg)?;
+                self.agent.push_message(msg)?;
                 
             }
 
@@ -245,12 +223,12 @@ impl Agent {
                 let tool_call = &self.pending_tool_calls[i];
                 if cancelled { break; }
                 let tool_name = tool_call.name.clone();
-                self.hook_register.emit(&AgentEvent::PreToolUse {
+                self.agent.hook_register.emit(&AgentEvent::PreToolUse {
                     tool_name: tool_name.clone(),
                     args: serde_json::from_str(&tool_call.arguments).unwrap_or_default(),
                 });
 
-                if let Some(tool) = self.registry.get(&tool_name) {
+                if let Some(tool) = self.agent.registry.get(&tool_name) {
                     let args: serde_json::Value = serde_json::from_str(&tool_call.arguments).unwrap_or_default();
 
                     // push 工具记录（内嵌进 segments —— 单一数据源）
@@ -264,7 +242,7 @@ impl Agent {
                         inc_version_atomic(&version_arc);
                     }
 
-                    let ctx = ToolContext { call_id: tool_call.id.clone(), plan_mode: self.handler.action_mode(), handler: self.handler.clone(), progress: None, main_conversation_id: self.conversation_id.clone(), project_id: self.project_id.clone(), cancel_token: Some(cancel_token.clone()) };
+                    let ctx = ToolContext { call_id: tool_call.id.clone(), plan_mode: self.agent.handler.action_mode(), handler: self.agent.handler.clone(), progress: None, main_conversation_id: self.agent.conversation_id.clone(), project_id: self.agent.project_id.clone(), cancel_token: Some(cancel_token.clone()) };
                     let decision = tool.pre_check(&ctx, &args);
                     let is_denied = matches!(decision, Decision::Deny(_));
                     let result = match decision {
@@ -283,10 +261,7 @@ impl Agent {
                             let reason = format!("{} needs approval", tool_name);
                             {
                                 let mut segs = segments_arc.lock().expect("segments_arc lock poisoned");
-                                if let Some(rec) = segs.iter_mut().rev().find_map(|s| match s {
-                                    StreamSegment::ToolCall(r) if r.tool_name == tool_name && r.status == ToolCallStatus::Running => Some(r),
-                                    _ => None,
-                                }) {
+                                if let Some(rec) = find_record(&mut segs, &tool_name, |r| r.status == ToolCallStatus::Running) {
                                     rec.status = ToolCallStatus::AwaitingApproval { reason: reason.clone() };
                                     rec.approval_reason = Some(reason.clone());
                                 }
@@ -313,10 +288,7 @@ impl Agent {
                                     // 立即更新状态为 Running，让 UI 及时响应
                                     {
                                         let mut segs = segments_arc.lock().expect("segments_arc lock poisoned");
-                                        if let Some(rec) = segs.iter_mut().rev().find_map(|s| match s {
-                                            StreamSegment::ToolCall(r) if r.tool_name == tool_name && matches!(r.status, ToolCallStatus::AwaitingApproval { .. }) => Some(r),
-                                            _ => None,
-                                        }) {
+                                        if let Some(rec) = find_record(&mut segs, &tool_name, |r| matches!(r.status, ToolCallStatus::AwaitingApproval { .. })) {
                                             rec.status = ToolCallStatus::Running;
                                         }
                                     }
@@ -345,10 +317,8 @@ impl Agent {
                     // 更新 tool record 状态（segments 内嵌记录，锁内直接改）
                     {
                         let mut segs = segments_arc.lock().expect("segments_arc lock poisoned");
-                        if let Some(rec) = segs.iter_mut().rev().find_map(|s| match s {
-                            StreamSegment::ToolCall(r) if r.tool_name == tool_name
-                                && (r.status == ToolCallStatus::Running || matches!(r.status, ToolCallStatus::AwaitingApproval { .. })) => Some(r),
-                            _ => None,
+                        if let Some(rec) = find_record(&mut segs, &tool_name, |r| {
+                            r.status == ToolCallStatus::Running || matches!(r.status, ToolCallStatus::AwaitingApproval { .. })
                         }) {
                             rec.result = Some(match &result { Ok(tr) => tr.output.clone(), Err(e) => e.clone() });
                             rec.status = match &result {
@@ -363,7 +333,7 @@ impl Agent {
                     *approval_arc.lock().expect("approval_arc lock poisoned") = None;
                     inc_version_atomic(&version_arc);
 
-                    self.hook_register.emit(&AgentEvent::PostToolUse { tool_name: tool_name.clone(), result: result.clone() });
+                    self.agent.hook_register.emit(&AgentEvent::PostToolUse { tool_name: tool_name.clone(), result: result.clone() });
                     let tool_message = Message {
                         role: LlmRole::Tool,
                         content: Some(match &result { Ok(tr) => tr.output.clone(), Err(e) => format!("error: {e}") }),
@@ -371,7 +341,7 @@ impl Agent {
                         timestamp: Some(chrono::Utc::now()),
                         ..Default::default()
                     };
-                    self.push_message(tool_message)?;
+                    self.agent.push_message(tool_message)?;
                 }
             }
                 
@@ -383,8 +353,8 @@ impl Agent {
             self.round_end();
             
             if !have_tool_calls { 
-                if let Some(reason) = self.handler.can_finish() {
-                    self.push_message(Message { role: LlmRole::System, content: Some(reason), timestamp: Some(chrono::Utc::now()), ..Default::default() })?;
+                if let Some(reason) = self.agent.handler.can_finish() {
+                    self.agent.push_message(Message { role: LlmRole::System, content: Some(reason), timestamp: Some(chrono::Utc::now()), ..Default::default() })?;
                     continue;
                 }
                 break; 
@@ -397,10 +367,10 @@ impl Agent {
         
         // ── 更新对话时间 ──
         crate::db::try_with_db(|conn| {
-            if let Err(e) = self.touch_conversation(conn) { tracing::error!(target:"db", error=%e, "touch conversation"); }
+            if let Err(e) = self.agent.touch_conversation(conn) { tracing::error!(target:"db", error=%e, "touch conversation"); }
         });
 
-        self.hook_register.emit(&AgentEvent::Stop { reason: if cancelled { "cancelled" } else { "completed" }.into() });
+        self.agent.hook_register.emit(&AgentEvent::Stop { reason: if cancelled { "cancelled" } else { "completed" }.into() });
 
         // ── 构建 Static 消息 ──
         let segments_snapshot = segments_arc.lock().expect("segments_arc lock poisoned").clone();
@@ -422,7 +392,11 @@ impl Agent {
 
         Ok(result)
     }
+}
 
+// ── Agent 配置态方法（跨轮，不依赖 Run）──────────────────────────────
+
+impl Agent {
     /// 将 self.messages 转换为 DB 行（日后复用）
     pub fn to_message_rows(&self) -> Vec<crate::db::metadata::message::MessageRow> {
         self.messages
@@ -474,6 +448,18 @@ fn push_reasoning(segments: &Arc<Mutex<Vec<StreamSegment>>>, text: &str, version
     }
     drop(segs);
     inc_version_atomic(version);
+}
+
+/// 在 segments 中按条件定位工具记录（从末尾往前找最近的一条）
+fn find_record<'a>(
+    segs: &'a mut [StreamSegment],
+    tool_name: &str,
+    pred: impl Fn(&ToolCallRecord) -> bool,
+) -> Option<&'a mut ToolCallRecord> {
+    segs.iter_mut().rev().find_map(|s| match s {
+        StreamSegment::ToolCall(r) if r.tool_name == tool_name && pred(r) => Some(r),
+        _ => None,
+    })
 }
 
 fn build_content_from_segments(segments: &[StreamSegment]) -> String {

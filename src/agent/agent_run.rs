@@ -1,0 +1,101 @@
+// ── AgentRun：单次执行上下文（方案 B） ──
+//
+// Agent（配置态 + 消息历史，跨轮存活）与"一次 accept_message 执行"分离：
+// AgentRun 持有 Agent 的**所有权**（无借用、无生命周期），可 move / spawn；
+// 运行态（流式句柄 / 挂起工具 / 轮次 / token 用量）都挂在 Run 上，
+// Run 结束即销毁 —— 跨轮状态泄漏在结构上不可能发生。
+
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::AtomicU64;
+
+use crate::model::{StreamingState, UiMessage};
+use llm::ToolCall;
+
+use super::Agent;
+
+pub struct AgentRun {
+    /// 整个 Agent（配置 + 历史 + provider/registry/handler 等）
+    pub agent: Agent,
+    /// 内部流式状态（由 create_streaming() 初始化）
+    pub streaming_handle: Option<StreamingState>,
+    /// 挂起的工具调用
+    pub pending_tool_calls: Vec<ToolCall>,
+    /// 最近一次 LLM 交互的 token 用量（accept_message 结束后填充）
+    pub last_usage: Option<crate::model::TokenUsageRecord>,
+    /// 循环数
+    pub round: u32,
+}
+
+impl AgentRun {
+    /// 从 Agent 取走所有权，进入执行态。
+    pub fn new(agent: Agent) -> Self {
+        Self {
+            agent,
+            streaming_handle: None,
+            pending_tool_calls: Vec::new(),
+            last_usage: None,
+            round: 0,
+        }
+    }
+
+    /// 归还 Agent 所有权（执行结束后恢复配置态）。
+    pub fn into_agent(self) -> Agent {
+        self.agent
+    }
+
+    /// 创建内部流式状态，返回 UiMessage::Streaming 供 UI 显示。
+    /// 必须先调用此方法，再调用 accept_message。
+    pub fn create_streaming(&mut self) -> UiMessage {
+        if self.streaming_handle.is_none() {
+            let state = StreamingState {
+                segments: Arc::new(Mutex::new(Vec::new())),
+                version: Arc::new(AtomicU64::new(0)),
+                approval_tx: Arc::new(Mutex::new(None)),
+            };
+            self.streaming_handle = Some(state);
+        }
+
+        let streaming = UiMessage::Streaming {
+            segments: self.streaming_handle.as_ref().unwrap().segments.clone(),
+            version: self.streaming_handle.as_ref().unwrap().version.clone(),
+            approval_tx: self.streaming_handle.as_ref().unwrap().approval_tx.clone(),
+        };
+
+        streaming
+    }
+
+    pub fn start_loop(&mut self) {
+        self.round = 0;
+    }
+
+    pub fn round_start(&mut self) {
+        self.round += 1;
+    }
+
+    pub fn round_end(&mut self) {
+        // ── stall_count 计数与催促 ──
+        let mut plan_guard = self.agent.handler.current_plan.lock().expect("current_plan lock poisoned");
+        if let Some(ref mut plan) = *plan_guard {
+            let completed_this_round = self.pending_tool_calls.iter().any(|tc| tc.name == "CompleteStep");
+            if completed_this_round {
+                plan.stall_count = 0;
+            } else {
+                plan.stall_count += 1;
+                if plan.stall_count >= 3 {
+                    // 注入催促系统消息
+                    let nudge = llm::Message {
+                        role: llm::Role::System,
+                        content: Some(super::prompts::plan::STALL_NUDGE_SUFFIX.to_string()),
+                        timestamp: Some(chrono::Utc::now()),
+                        ..Default::default()
+                    };
+                    // 直接 push 到下一条，让 LLM 看到催促
+                    self.agent.messages.push(nudge);
+                    plan.stall_count = 0; // 重置避免重复催促
+                }
+            }
+        }
+        // 清空本轮工具调用，避免下轮重复执行
+        self.pending_tool_calls.clear();
+    }
+}
