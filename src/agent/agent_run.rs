@@ -17,6 +17,53 @@ use super::approval::{ApprovalChain, ApprovalGate, UserApprovalGate};
 use super::hook::AgentEvent;
 use super::Agent;
 
+/// Agent 运行状态（变体 A：状态可查，UI 可通过事件/字段精确感知）
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum AgentState {
+    /// 未开始
+    Idle,
+    /// LLM 流式输出中
+    Streaming,
+    /// 执行工具
+    Executing,
+    /// 停在审批（仍阻塞等待，但状态对外可见）
+    WaitingApproval,
+    /// 正常完成
+    Done,
+    /// 被取消
+    Cancelled,
+    /// 出错（流式错误等）
+    Error,
+}
+
+/// 审批挂起点（可查询、可序列化，为断点铺路）
+#[derive(Clone)]
+pub struct PendingApproval {
+    pub call_id: String,
+    pub tool_name: String,
+    pub args: serde_json::Value,
+    pub reason: String,
+}
+
+/// 审批结果注入后待执行的工具（resolve_approval 只存决策，next_step 驱动执行）
+pub struct PendingResume {
+    pub req: PendingApproval,
+    pub decision: crate::permission::Decision,
+}
+
+/// run 一路跑到"需要外部介入"或"结束"时返回给驱动者的结果
+pub enum Blocked {
+    Approval(PendingApproval, tokio::sync::oneshot::Receiver<bool>),
+    Done(StopReason),
+}
+
+/// 运行结束原因
+pub enum StopReason {
+    Completed,
+    Cancelled,
+    Error,
+}
+
 pub struct AgentRun {
     /// 整个 Agent（配置 + 历史 + provider/registry/handler 等）
     pub agent: Agent,
@@ -38,16 +85,23 @@ pub struct AgentRun {
     pub final_reasoning: String,
     /// 取消令牌（外部注入；方法内取用，不跨方法传参）
     pub cancel_token: CancellationToken,
+    /// 当前运行状态
+    pub state: AgentState,
+    /// 工具批次断点游标：已执行到第几个工具（审批恢复后续跑，防重复执行）
+    pub tool_index: usize,
+    /// 审批结果注入后待执行的工具（resolve_approval 只存决策，next_step 驱动执行）
+    pub pending_resume: Option<PendingResume>,
     /// 事件通道（执行节点 emit，UI/调用方订阅）
-    events: mpsc::Sender<AgentEvent>,
+    /// unbounded：高频流式下也不丢事件（丢事件会导致 UI 漏掉审批卡/tick 而卡死）
+    events: mpsc::UnboundedSender<AgentEvent>,
 }
 
 impl AgentRun {
     /// 从 Agent 取走所有权，进入执行态。
     /// 返回 (Run, 事件接收端)——调用方订阅事件以驱动 UI。
     /// cancel_token 由调用方创建并注入（Run 内持一份 clone）。
-    pub fn new(agent: Agent, cancel_token: CancellationToken) -> (Self, mpsc::Receiver<AgentEvent>) {
-        let (tx, rx) = mpsc::channel(256);
+    pub fn new(agent: Agent, cancel_token: CancellationToken) -> (Self, mpsc::UnboundedReceiver<AgentEvent>) {
+        let (tx, rx) = mpsc::unbounded_channel();
         let run = Self {
             agent,
             streaming_handle: None,
@@ -59,14 +113,23 @@ impl AgentRun {
             final_output: String::new(),
             final_reasoning: String::new(),
             cancel_token,
+            state: AgentState::Idle,
+            tool_index: 0,
+            pending_resume: None,
             events: tx,
         };
         (run, rx)
     }
 
-    /// 向事件通道投递事件（非阻塞；无订阅者时静默丢弃）
+    /// 向事件通道投递事件（unbounded：不阻塞、不丢；无订阅者时静默丢弃）
     pub fn emit(&self, event: AgentEvent) {
-        let _ = self.events.try_send(event);
+        let _ = self.events.send(event);
+    }
+
+    /// 更新运行状态并广播 StateChanged 事件（变体 A：状态可查）
+    pub fn set_state(&mut self, state: AgentState) {
+        self.state = state;
+        self.emit(AgentEvent::StateChanged { state });
     }
 
     /// 归还 Agent 所有权（执行结束后恢复配置态）。

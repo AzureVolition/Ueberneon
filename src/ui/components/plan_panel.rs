@@ -45,10 +45,12 @@ pub fn PlanPanel(
     let all_entities = collect_entities(plan_data);
     let roots = roots_from(&all_entities);
 
-    let tasks: Vec<&crate::model::Entity> = if roots.is_empty() {
-        all_entities.iter().collect()
-    } else {
+    // 有子任务（层级 plan）时统计子任务为步骤；无子任务（扁平 plan，全部为根）时统计全部
+    let has_subtasks = all_entities.iter().any(|e| e.parent_idx.is_some());
+    let tasks: Vec<&crate::model::Entity> = if has_subtasks {
         all_entities.iter().filter(|e| e.parent_idx.is_some()).collect()
+    } else {
+        all_entities.iter().collect()
     };
     let total = tasks.len() as u32;
     let completed = tasks.iter().filter(|t| matches!(t.step_status, StepStatus::Completed)).count() as u32;

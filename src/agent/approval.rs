@@ -1,18 +1,20 @@
-// ── ApprovalGate：审批策略接口 ──
+// ── ApprovalGate：审批策略接口（B2 形态） ──
 //
-// 把"Ask 决策之后怎么走审批"从主循环里抽出来，变成可替换的策略链。
-// 与 permission::Decision 统一：Allow=放行，Deny(msg)=拒绝，Ask=无法定论（交给链中下一个）。
-// 默认链只含 UserApprovalGate（弹窗让用户点），将来可插入规则/超时/自动放行等策略。
+// 从"阻塞等待用户"改为"非阻塞会话"：
+//   gate.start() 立即返回裁决（Allow/Deny）或创建会话（Session）；
+//   会话把 oneshot receiver 交给驱动者（bridge），由驱动者决定何时/如何等待用户，
+//   拿到结果后调 AgentRun::resolve_approval 恢复执行。
+// 这使审批成为真正的挂起点：可超时、可放弃、可序列化（为断点铺路）。
 
 use std::sync::{Arc, Mutex};
 
-use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
-use crate::permission::Decision;
+use super::PendingApproval;
 
-/// 审批上下文（调用方在 Ask 分支构造，注入给每个策略）
+/// 审批上下文（Ask 分支构造，注入给每个策略）
 pub struct ApprovalCtx {
+    pub call_id: String,
     pub tool_name: String,
     pub args: serde_json::Value,
     pub reason: String,
@@ -21,38 +23,42 @@ pub struct ApprovalCtx {
     pub approval_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<bool>>>>,
 }
 
-/// 审批策略接口
-#[async_trait]
-pub trait ApprovalGate: Send + Sync {
-    /// - `Decision::Allow` → 放行执行
-    /// - `Decision::Deny(msg)` → 拒绝（msg 为 "cancelled by user" 时调用方终止循环）
-    /// - `Decision::Ask` → 本策略无法定论，交给链中下一个策略
-    async fn request(&self, ctx: &ApprovalCtx) -> Decision;
+/// 审批裁决：要么立即定，要么创建会话交驱动者
+pub enum GateOutcome {
+    Allow,
+    Deny(String),
+    /// 需要人工：会话已建立，UI 显示审批卡，驱动者等 result_rx
+    Session {
+        req: PendingApproval,
+        result_rx: tokio::sync::oneshot::Receiver<bool>,
+    },
 }
 
-/// 用户弹窗审批（现有行为：把 Ask 分支的 oneshot 审批流程搬进来）
+/// 审批策略接口（非阻塞：立即返回裁决或会话，不自己 await 用户）
+pub trait ApprovalGate: Send + Sync {
+    fn start(&self, ctx: &ApprovalCtx) -> GateOutcome;
+}
+
+/// 用户弹窗审批：建立会话，UI 点选后经 oneshot 回传
 pub struct UserApprovalGate;
 
-#[async_trait]
 impl ApprovalGate for UserApprovalGate {
-    async fn request(&self, ctx: &ApprovalCtx) -> Decision {
-        let (atx, arx) = tokio::sync::oneshot::channel();
-        *ctx.approval_tx.lock().expect("approval_tx lock poisoned") = Some(atx);
-
-        let approval = tokio::select! {
-            _ = ctx.cancel.cancelled() => None,
-            r = arx => r.ok(),
-        };
-
-        match approval {
-            Some(true) => Decision::Allow,
-            Some(false) => Decision::Deny(format!("denied by user: {}", ctx.reason)),
-            None => Decision::Deny("cancelled by user".into()),
+    fn start(&self, ctx: &ApprovalCtx) -> GateOutcome {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        *ctx.approval_tx.lock().expect("approval_tx lock poisoned") = Some(tx);
+        GateOutcome::Session {
+            req: PendingApproval {
+                call_id: ctx.call_id.clone(),
+                tool_name: ctx.tool_name.clone(),
+                args: ctx.args.clone(),
+                reason: ctx.reason.clone(),
+            },
+            result_rx: rx,
         }
     }
 }
 
-/// 策略链：按序执行，Deny 短路，Ask 继续下一个，最后归总
+/// 策略链：按序执行，Deny 短路，Session 直达驱动者
 pub struct ApprovalChain {
     gates: Vec<Box<dyn ApprovalGate>>,
 }
@@ -63,21 +69,17 @@ impl ApprovalChain {
     }
 }
 
-#[async_trait]
 impl ApprovalGate for ApprovalChain {
-    async fn request(&self, ctx: &ApprovalCtx) -> Decision {
-        let mut saw_ask = false;
+    fn start(&self, ctx: &ApprovalCtx) -> GateOutcome {
         for gate in &self.gates {
-            match gate.request(ctx).await {
-                Decision::Deny(msg) => return Decision::Deny(msg),
-                Decision::Ask => saw_ask = true,
-                Decision::Allow => {}
+            match gate.start(ctx) {
+                GateOutcome::Deny(msg) => return GateOutcome::Deny(msg),
+                GateOutcome::Session { req, result_rx } => {
+                    return GateOutcome::Session { req, result_rx };
+                }
+                GateOutcome::Allow => {}
             }
         }
-        if saw_ask {
-            Decision::Ask
-        } else {
-            Decision::Allow
-        }
+        GateOutcome::Allow
     }
 }

@@ -1,18 +1,19 @@
-// ── AgentRun 主循环 ──
+// ── AgentRun 执行（B2：run 内驱动，审批是挂起点） ──
 //
-// 一次 accept_message 执行被拆成有名字的步骤（阶段 3）：
-//   accept_message（编排）→ stream_round（一轮流式）→ execute_tools/execute_tool（工具）
-//   → finish（收尾构建 Static）
-// 审批走 ApprovalGate 策略链（可替换）；事件经 mpsc 发给 UI。
+// run 自己驱动（run_until_blocked），一路跑到需要外部介入（审批）或结束；
+// 驱动者（bridge）拿到 Blocked::Approval 后等用户点选，注入结果继续。
+// 执行步骤：begin（注入消息）→ next_step（步进）→ stream_round / execute_tools
+//          → execute_tool_start / resolve_approval / finalize_tool → finish。
 
 use futures::StreamExt;
 use std::sync::{Arc, Mutex};
 
-use super::approval::ApprovalCtx;
+use super::approval::{ApprovalCtx, GateOutcome};
 use super::hook::{AgentEvent, DeltaKind};
-use super::{Agent, AgentRun, ToolContext};
+use super::{Agent, AgentRun, AgentState, Blocked, PendingApproval, PendingResume, StopReason, ToolContext, ToolResult};
 use crate::model::{ChatMessage, Role as ChatRole, StreamSegment, ToolCallRecord, ToolCallStatus, UiMessage};
 use crate::permission::Decision;
+use crate::tools::internal::common::checkable_tool::CheckableTool;
 use llm::{Chunk, Message, Request, Role as LlmRole, Usage};
 
 // ── select! 辅助枚举 ────────────────────────────────────────────────────────
@@ -34,20 +35,27 @@ enum RoundOutcome {
     Cancelled,
 }
 
+/// 步进结果（run 内部，run_until_blocked 消费）
+enum LoopStep {
+    /// 已消费一轮流式（有工具，待执行）
+    Execute,
+    /// 已消费一批工具，回到流式
+    Stream,
+    /// 停在审批（挂起点交驱动者）
+    WaitApproval {
+        req: PendingApproval,
+        rx: tokio::sync::oneshot::Receiver<bool>,
+    },
+    /// 结束
+    Finish(StopReason),
+}
+
 // ── AgentRun 执行步骤 ───────────────────────────────────────────────────
 
 impl AgentRun {
-    /// 接受用户输入并运行 agent 循环。返回已完成的 UiMessage::Static。
-    ///
-    /// 调用前必须先调用 create_streaming() 初始化内部流式状态。
-    /// 取消令牌在 AgentRun::new 时注入（self.cancel_token）。
-    pub async fn accept_message(
-        &mut self,
-        user_input: String,
-    ) -> anyhow::Result<UiMessage> {
-
-        self.create_streaming();
-        
+    /// 注入用户消息 + 前缀 + 启动循环（bridge 与便捷路径共用）。
+    /// 调用前必须先 create_streaming() 初始化流式状态。
+    pub fn begin(&mut self, user_input: String) -> anyhow::Result<()> {
         self.agent.hook_register.emit(&AgentEvent::UserPromptSubmit { prompt: user_input.clone() });
 
         // ── 前缀注入 目前只有 Plan Mode ──
@@ -63,21 +71,59 @@ impl AgentRun {
         }
 
         self.start_loop();
+        self.set_state(AgentState::Streaming);
+        Ok(())
+    }
 
-        // ReAct Loop（编排：只分发，不实现细节）
+    /// 便捷路径（子 agent / 无交互场景）：遇审批自动拒绝。
+    /// 调用前必须先 create_streaming()。
+    pub async fn accept_message(&mut self, user_input: String) -> anyhow::Result<UiMessage> {
+        self.create_streaming();
+        self.begin(user_input)?;
         loop {
-            match self.stream_round().await? {
-                RoundOutcome::Cancelled | RoundOutcome::Abort => break,
-                RoundOutcome::Finish => { self.round_end(); break; }
-                RoundOutcome::Continue => {
-                    self.execute_tools().await?;
-                    if self.cancelled { break; }
-                    self.round_end();
+            match self.run_until_blocked().await? {
+                Blocked::Approval(req, _rx) => {
+                    self.resolve_approval(&req, Decision::Deny("no interactive approval".into()))?;
                 }
+                Blocked::Done(_) => break,
             }
         }
-
         Ok(self.finish())
+    }
+
+    /// 驱动入口：一路跑到需要外部（审批）或结束。
+    pub async fn run_until_blocked(&mut self) -> anyhow::Result<Blocked> {
+        loop {
+            match self.next_step().await? {
+                LoopStep::Stream | LoopStep::Execute => continue,
+                LoopStep::WaitApproval { req, rx } => return Ok(Blocked::Approval(req, rx)),
+                LoopStep::Finish(reason) => return Ok(Blocked::Done(reason)),
+            }
+        }
+    }
+
+    /// 步进：按当前状态走一步。
+    async fn next_step(&mut self) -> anyhow::Result<LoopStep> {
+        match self.state {
+            AgentState::Streaming => match self.stream_round().await? {
+                RoundOutcome::Continue => { self.set_state(AgentState::Executing); Ok(LoopStep::Execute) }
+                RoundOutcome::Finish => { self.round_end(); self.set_state(AgentState::Done); Ok(LoopStep::Finish(StopReason::Completed)) }
+                RoundOutcome::Cancelled => { self.set_state(AgentState::Cancelled); Ok(LoopStep::Finish(StopReason::Cancelled)) }
+                RoundOutcome::Abort => { self.set_state(AgentState::Error); Ok(LoopStep::Finish(StopReason::Error)) }
+            },
+            AgentState::Executing => {
+                // 先执行审批注入后的工具（resolve_approval 只存了决策）
+                if let Some(resume) = self.pending_resume.take() {
+                    self.resolve_tool(&resume.req, resume.decision).await?;
+                }
+                match self.execute_tools().await? {
+                    None => { self.set_state(AgentState::Streaming); Ok(LoopStep::Stream) }
+                    Some((req, rx)) => { self.set_state(AgentState::WaitingApproval); Ok(LoopStep::WaitApproval { req, rx }) }
+                }
+            }
+            // Idle / Done / Cancelled / Error 不应被驱动到；防御性结束
+            _ => Ok(LoopStep::Finish(StopReason::Completed)),
+        }
     }
 
     /// 一轮：流式输出 + usage 持久化 + assistant 消息入史，返回本轮走向。
@@ -87,6 +133,7 @@ impl AgentRun {
         let cancel_token = self.cancel_token.clone();
         let segments_arc = self.streaming_handle.as_ref().expect("create_streaming() must be called first").segments.clone();
         self.round_start();
+        self.set_state(AgentState::Streaming);
         let mut have_tool_calls = false;
 
         // Agent 回合日志
@@ -112,6 +159,7 @@ impl AgentRun {
                 push_text(&segments_arc, &msg);
                 self.emit(AgentEvent::Error { message: msg.clone() });
                 self.final_output = msg;
+                self.set_state(AgentState::Error);
                 return Ok(RoundOutcome::Abort);
             }
         };
@@ -246,23 +294,24 @@ impl AgentRun {
         Ok(RoundOutcome::Continue)
     }
 
-    /// 执行本轮全部工具调用。
-    async fn execute_tools(
-        &mut self,
-    ) -> anyhow::Result<()> {
-        for i in 0..self.pending_tool_calls.len() {
+    /// 执行本轮工具：带 tool_index 断点，遇审批挂起返回。
+    async fn execute_tools(&mut self) -> anyhow::Result<Option<(PendingApproval, tokio::sync::oneshot::Receiver<bool>)>> {
+        self.set_state(AgentState::Executing);
+        for i in self.tool_index..self.pending_tool_calls.len() {
             if self.cancelled { break; }
-            let tool_call = self.pending_tool_calls[i].clone();
-            self.execute_tool(&tool_call).await?;
+            let tc = self.pending_tool_calls[i].clone();
+            match self.execute_tool_start(&tc).await? {
+                None => { self.tool_index = i + 1; }
+                Some((req, rx)) => { self.tool_index = i + 1; return Ok(Some((req, rx))); }
+            }
         }
-        Ok(())
+        self.tool_index = 0;
+        self.round_end();
+        Ok(None)
     }
 
-    /// 执行单个工具调用（记录 push → 决策 → 审批 → 执行 → 回写），完整单元。
-    async fn execute_tool(
-        &mut self,
-        tool_call: &llm::ToolCall,
-    ) -> anyhow::Result<()> {
+    /// 工具执行阶段一：push record + pre_check + 可能挂起（不执行）。
+    async fn execute_tool_start(&mut self, tool_call: &llm::ToolCall) -> anyhow::Result<Option<(PendingApproval, tokio::sync::oneshot::Receiver<bool>)>> {
         let cancel_token = self.cancel_token.clone();
         let (segments_arc, approval_arc) = self.arcs();
         let tool_name = tool_call.name.clone();
@@ -271,130 +320,197 @@ impl AgentRun {
             args: serde_json::from_str(&tool_call.arguments).unwrap_or_default(),
         });
 
-        if let Some(tool) = self.agent.registry.get(&tool_name) {
-            let args: serde_json::Value = serde_json::from_str(&tool_call.arguments).unwrap_or_default();
+        let Some(tool) = self.agent.registry.get(&tool_name) else {
+            return Ok(None);
+        };
+        let args: serde_json::Value = serde_json::from_str(&tool_call.arguments).unwrap_or_default();
 
-            // push 工具记录（内嵌进 segments —— 单一数据源）
-            {
-                let rec = ToolCallRecord {
-                    tool_name: tool_name.clone(), args: args.clone(),
-                    result: None, status: ToolCallStatus::Running, approval_reason: None,
+        // push 工具记录（内嵌进 segments —— 单一数据源）
+        {
+            let rec = ToolCallRecord {
+                tool_name: tool_name.clone(), args: args.clone(),
+                result: None, status: ToolCallStatus::Running, approval_reason: None,
+            };
+            segments_arc.lock().expect("segments_arc lock poisoned")
+                .push(StreamSegment::ToolCall(rec));
+        }
+        self.emit(AgentEvent::ToolCallStart { tool_name: tool_name.clone(), args: args.clone() });
+
+        let ctx = ToolContext { call_id: tool_call.id.clone(), plan_mode: self.agent.handler.action_mode(), handler: self.agent.handler.clone(), progress: None, main_conversation_id: self.agent.conversation_id.clone(), project_id: self.agent.project_id.clone(), cancel_token: Some(cancel_token.clone()) };
+        match tool.pre_check(&ctx, &args) {
+            Decision::Allow => {
+                let result = self.execute_with_cancel(&tool, &ctx, &args).await;
+                self.finalize_tool(&tool_call.id, &tool_name, result, false).await?;
+                Ok(None)
+            }
+            Decision::Deny(msg) => {
+                self.finalize_tool(&tool_call.id, &tool_name, Err(msg), true).await?;
+                Ok(None)
+            }
+            Decision::Ask => {
+                let reason = format!("{} needs approval", tool_name);
+                {
+                    let mut segs = segments_arc.lock().expect("segments_arc lock poisoned");
+                    if let Some(rec) = find_record(&mut segs, &tool_name, |r| r.status == ToolCallStatus::Running) {
+                        rec.status = ToolCallStatus::AwaitingApproval { reason: reason.clone() };
+                        rec.approval_reason = Some(reason.clone());
+                    }
+                }
+                self.emit(AgentEvent::ApprovalRequested {
+                    tool_name: tool_name.clone(),
+                    args: args.clone(),
+                    reason: reason.clone(),
+                });
+                self.set_state(AgentState::WaitingApproval);
+
+                // 审批走策略链（非阻塞：立即裁决或创建会话）
+                let approval_ctx = ApprovalCtx {
+                    call_id: tool_call.id.clone(),
+                    tool_name: tool_name.clone(),
+                    args: args.clone(),
+                    reason: reason.clone(),
+                    cancel: cancel_token.clone(),
+                    approval_tx: approval_arc.clone(),
                 };
-                segments_arc.lock().expect("segments_arc lock poisoned")
-                    .push(StreamSegment::ToolCall(rec));
-            }
-            self.emit(AgentEvent::ToolCallStart { tool_name: tool_name.clone(), args: args.clone() });
-
-            let ctx = ToolContext { call_id: tool_call.id.clone(), plan_mode: self.agent.handler.action_mode(), handler: self.agent.handler.clone(), progress: None, main_conversation_id: self.agent.conversation_id.clone(), project_id: self.agent.project_id.clone(), cancel_token: Some(cancel_token.clone()) };
-            let decision = tool.pre_check(&ctx, &args);
-            let is_denied = matches!(decision, Decision::Deny(_));
-            let result = match decision {
-                Decision::Allow => {
-                    let exec = tool.execute(&ctx, &args);
-                    tokio::pin!(exec);
-                    tokio::select! {
-                        _ = cancel_token.cancelled() => {
-                            self.cancelled = true;
-                            Err("cancelled by user".into())
-                        }
-                        r = &mut exec => r,
-                    }
-                }
-                Decision::Ask => {
-                    let reason = format!("{} needs approval", tool_name);
-                    {
-                        let mut segs = segments_arc.lock().expect("segments_arc lock poisoned");
-                        if let Some(rec) = find_record(&mut segs, &tool_name, |r| r.status == ToolCallStatus::Running) {
-                            rec.status = ToolCallStatus::AwaitingApproval { reason: reason.clone() };
-                            rec.approval_reason = Some(reason.clone());
-                        }
-                    }
-                    self.emit(AgentEvent::ApprovalRequested {
-                        tool_name: tool_name.clone(),
-                        args: args.clone(),
-                        reason: reason.clone(),
-                    });
-
-                    // 审批走策略链（可替换；默认：弹窗让用户点）
-                    let approval_ctx = ApprovalCtx {
-                        tool_name: tool_name.clone(),
-                        args: args.clone(),
-                        reason: reason.clone(),
-                        cancel: cancel_token.clone(),
-                        approval_tx: approval_arc.clone(),
-                    };
-                    match self.approval_gate.request(&approval_ctx).await {
-                        Decision::Allow => {
-                            // 立即更新状态为 Running，让 UI 及时响应
-                            {
-                                let mut segs = segments_arc.lock().expect("segments_arc lock poisoned");
-                                if let Some(rec) = find_record(&mut segs, &tool_name, |r| matches!(r.status, ToolCallStatus::AwaitingApproval { .. })) {
-                                    rec.status = ToolCallStatus::Running;
-                                }
-                            }
-                            *approval_arc.lock().expect("approval_arc lock poisoned") = None;
-                            // 审批通过，进入执行：再次广播 ToolCallStart 让 UI 刷新
-                            self.emit(AgentEvent::ToolCallStart { tool_name: tool_name.clone(), args: args.clone() });
-                            let exec = tool.execute(&ctx, &args);
-                            tokio::pin!(exec);
-                            tokio::select! {
-                                _ = cancel_token.cancelled() => {
-                                    self.cancelled = true;
-                                    Err("cancelled by user".into())
-                                }
-                                r = &mut exec => r,
+                match self.approval_gate.start(&approval_ctx) {
+                    GateOutcome::Allow => {
+                        self.set_state(AgentState::Executing);
+                        // record → Running，UI 及时响应
+                        {
+                            let mut segs = segments_arc.lock().expect("segments_arc lock poisoned");
+                            if let Some(rec) = find_record(&mut segs, &tool_name, |r| matches!(r.status, ToolCallStatus::AwaitingApproval { .. })) {
+                                rec.status = ToolCallStatus::Running;
                             }
                         }
-                        Decision::Deny(_msg) if cancel_token.is_cancelled() => {
-                            self.cancelled = true;
-                            Err("cancelled by user".into())
-                        }
-                        Decision::Deny(msg) => Err(msg),
-                        Decision::Ask => Err("approval chain could not decide".into()),
+                        *approval_arc.lock().expect("approval_arc lock poisoned") = None;
+                        self.emit(AgentEvent::ToolCallStart { tool_name: tool_name.clone(), args: args.clone() });
+                        let result = self.execute_with_cancel(&tool, &ctx, &args).await;
+                        self.finalize_tool(&tool_call.id, &tool_name, result, false).await?;
+                        Ok(None)
                     }
-                }
-                Decision::Deny(msg) => Err(msg),
-            };
-
-            // 更新 tool record 状态（segments 内嵌记录，锁内直接改）
-            {
-                let mut segs = segments_arc.lock().expect("segments_arc lock poisoned");
-                if let Some(rec) = find_record(&mut segs, &tool_name, |r| {
-                    r.status == ToolCallStatus::Running || matches!(r.status, ToolCallStatus::AwaitingApproval { .. })
-                }) {
-                    rec.result = Some(match &result { Ok(tr) => tr.output.clone(), Err(e) => e.clone() });
-                    rec.status = match &result {
-                        Ok(_) => ToolCallStatus::Success,
-                        Err(e) if is_denied || e.starts_with("denied by user:") || e == "approval channel closed" => {
-                            ToolCallStatus::Denied(e.clone())
-                        }
-                        Err(e) => ToolCallStatus::Failed(e.clone()),
-                    };
+                    GateOutcome::Deny(msg) => {
+                        self.set_state(AgentState::Executing);
+                        self.finalize_tool(&tool_call.id, &tool_name, Err(msg), true).await?;
+                        Ok(None)
+                    }
+                    GateOutcome::Session { req, result_rx } => Ok(Some((req, result_rx))),
                 }
             }
-            *approval_arc.lock().expect("approval_arc lock poisoned") = None;
-            self.emit(AgentEvent::ToolCallEnd { tool_name: tool_name.clone(), result: result.clone() });
+        }
+    }
 
-            self.agent.hook_register.emit(&AgentEvent::PostToolUse { tool_name: tool_name.clone(), result: result.clone() });
-            let tool_message = Message {
-                role: LlmRole::Tool,
-                content: Some(match &result { Ok(tr) => tr.output.clone(), Err(e) => format!("error: {e}") }),
-                tool_call_id: Some(tool_call.id.clone()), tool_name: Some(tool_name),
-                timestamp: Some(chrono::Utc::now()),
-                ..Default::default()
-            };
-            self.agent.push_message(tool_message)?;
+    /// 审批结果注入：只存决策并进入 Executing（不在这里执行工具，
+    /// 避免阻塞驱动者的事件消费导致 UI 无反馈）。实际执行由 next_step 驱动 resolve_tool。
+    pub fn resolve_approval(&mut self, req: &PendingApproval, decision: Decision) -> anyhow::Result<()> {
+        self.pending_resume = Some(PendingResume {
+            req: req.clone(),
+            decision,
+        });
+        self.set_state(AgentState::Executing);
+        Ok(())
+    }
+
+    /// 执行审批通过/拒绝后的工具（record 已存在，不重复 push）。
+    async fn resolve_tool(&mut self, req: &PendingApproval, decision: Decision) -> anyhow::Result<()> {
+        let cancel_token = self.cancel_token.clone();
+        let tool_name = req.tool_name.clone();
+        let Some(tool) = self.agent.registry.get(&tool_name) else {
+            return Ok(());
+        };
+        let ctx = ToolContext { call_id: req.call_id.clone(), plan_mode: self.agent.handler.action_mode(), handler: self.agent.handler.clone(), progress: None, main_conversation_id: self.agent.conversation_id.clone(), project_id: self.agent.project_id.clone(), cancel_token: Some(cancel_token.clone()) };
+        match decision {
+            Decision::Allow => {
+                // record → Running + emit ToolCallStart
+                {
+                    let segs_arc = self.arcs().0;
+                    let mut segs = segs_arc.lock().expect("segments_arc lock poisoned");
+                    if let Some(rec) = find_record(&mut segs, &tool_name, |r| matches!(r.status, ToolCallStatus::AwaitingApproval { .. })) {
+                        rec.status = ToolCallStatus::Running;
+                    }
+                }
+                self.emit(AgentEvent::ToolCallStart { tool_name: tool_name.clone(), args: req.args.clone() });
+                let result = self.execute_with_cancel(&tool, &ctx, &req.args).await;
+                self.finalize_tool(&req.call_id, &tool_name, result, false).await?;
+            }
+            Decision::Deny(msg) => {
+                self.finalize_tool(&req.call_id, &tool_name, Err(msg), true).await?;
+            }
+            Decision::Ask => {}
         }
         Ok(())
     }
 
+    /// 单工具执行（含取消拦截）。
+    async fn execute_with_cancel(
+        &mut self,
+        tool: &Arc<dyn CheckableTool + Send + Sync>,
+        ctx: &ToolContext,
+        args: &serde_json::Value,
+    ) -> Result<ToolResult, String> {
+        let cancel_token = self.cancel_token.clone();
+        let exec = tool.execute(ctx, args);
+        tokio::pin!(exec);
+        tokio::select! {
+            _ = cancel_token.cancelled() => {
+                self.cancelled = true;
+                Err("cancelled by user".into())
+            }
+            r = &mut exec => r,
+        }
+    }
+
+    /// 工具结果回写（record 状态 + 事件 + tool 消息入史）。
+    async fn finalize_tool(
+        &mut self,
+        call_id: &str,
+        tool_name: &str,
+        result: Result<ToolResult, String>,
+        denied: bool,
+    ) -> anyhow::Result<()> {
+        let (segments_arc, approval_arc) = self.arcs();
+        // 更新 tool record 状态（segments 内嵌记录，锁内直接改）
+        {
+            let mut segs = segments_arc.lock().expect("segments_arc lock poisoned");
+            if let Some(rec) = find_record(&mut segs, tool_name, |r| {
+                r.status == ToolCallStatus::Running || matches!(r.status, ToolCallStatus::AwaitingApproval { .. })
+            }) {
+                rec.result = Some(match &result { Ok(tr) => tr.output.clone(), Err(e) => e.clone() });
+                rec.status = match &result {
+                    Ok(_) => ToolCallStatus::Success,
+                    Err(e) if denied || e.starts_with("denied by user:") || e == "approval channel closed" => {
+                        ToolCallStatus::Denied(e.clone())
+                    }
+                    Err(e) => ToolCallStatus::Failed(e.clone()),
+                };
+            }
+        }
+        *approval_arc.lock().expect("approval_arc lock poisoned") = None;
+        self.emit(AgentEvent::ToolCallEnd { tool_name: tool_name.into(), result: result.clone() });
+
+        self.agent.hook_register.emit(&AgentEvent::PostToolUse { tool_name: tool_name.into(), result: result.clone() });
+        let tool_message = Message {
+            role: LlmRole::Tool,
+            content: Some(match &result { Ok(tr) => tr.output.clone(), Err(e) => format!("error: {e}") }),
+            tool_call_id: Some(call_id.to_string()), tool_name: Some(tool_name.to_string()),
+            timestamp: Some(chrono::Utc::now()),
+            ..Default::default()
+        };
+        self.agent.push_message(tool_message)?;
+        Ok(())
+    }
+
     /// 收尾：touch conversation + Stop 事件 + 构建 Static 消息。
-    fn finish(&mut self) -> UiMessage {
+    pub fn finish(&mut self) -> UiMessage {
         let segments_arc = self.streaming_handle.as_ref().expect("create_streaming() must be called first").segments.clone();
         // ── 更新对话时间 ──
         crate::db::try_with_db(|conn| {
             if let Err(e) = self.agent.touch_conversation(conn) { tracing::error!(target:"db", error=%e, "touch conversation"); }
         });
+
+        // 终态：Error 已在流式错误处提前设置则保留，否则按取消/完成
+        if self.state != AgentState::Error {
+            self.set_state(if self.cancelled { AgentState::Cancelled } else { AgentState::Done });
+        }
 
         let stop_reason = if self.cancelled { "cancelled" } else { "completed" };
         self.agent.hook_register.emit(&AgentEvent::Stop { reason: stop_reason.into() });

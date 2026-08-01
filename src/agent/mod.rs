@@ -7,7 +7,7 @@ pub mod agent_run;
 pub mod approval;
 
 use anyhow::Context;
-pub use agent_run::AgentRun;
+pub use agent_run::{AgentRun, AgentState, Blocked, PendingApproval, PendingResume, StopReason};
 pub use approval::{ApprovalChain, ApprovalCtx, ApprovalGate, UserApprovalGate};
 pub use llm::{tool::ToolMeta, ToolCall};
 

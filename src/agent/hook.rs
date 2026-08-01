@@ -1,3 +1,4 @@
+use super::agent_run::AgentState;
 use super::ToolResult;
 
 // ── AgentEvent ───────────────────────────────────────────────────────────────
@@ -19,6 +20,10 @@ pub enum AgentEvent {
     /// 流式增量（UI 据此刷新）
     StreamDelta {
         kind: DeltaKind,
+    },
+    /// 运行状态变化（变体 A：UI 据此显示精确状态）
+    StateChanged {
+        state: AgentState,
     },
     /// 工具开始执行（含审批前的运行态）
     ToolCallStart {
