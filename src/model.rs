@@ -28,11 +28,13 @@ pub enum ToolCallStatus {
     AwaitingApproval {
         reason: String,
     },
+    Pending,
 }
 
 /// 单次工具调用记录
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ToolCallRecord {
+    pub id: String,
     pub tool_name: String,
     pub args: serde_json::Value,
     pub result: Option<String>,
@@ -379,10 +381,7 @@ pub enum UiMessage {
     Static(ChatMessage),
     /// 流式进行中的消息：segments 由 Agent 异步填充，
     /// UI 通过事件流（而非轮询 version）感知刷新。
-    Streaming {
-        segments: Arc<Mutex<Vec<StreamSegment>>>,
-        approval_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<bool>>>>,
-    },
+    Streaming(Arc<Mutex<Vec<StreamSegment>>>),
 }
 
 #[cfg(test)]

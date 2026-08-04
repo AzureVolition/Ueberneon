@@ -89,6 +89,7 @@ impl SettingsTab {
 /// 待审批的工具调用
 #[derive(Clone)]
 pub struct PendingApproval {
+    pub tool_call_id: String,
     pub tool_name: String,
     pub args: serde_json::Value,
     pub reason: String,
