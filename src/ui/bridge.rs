@@ -152,9 +152,25 @@ impl PhaseObserver for UiContext {
             .remove(&self.conversation_id);
     }
 
-    /// 取消/错误中止（agent 壳已随变换消费丢失）：移除占位、清理审批通道、上报错误。
+    /// 取消/错误中止（agent 壳已随变换消费丢失）：保留已流出的内容、清理审批通道、上报错误。
+    ///
+    /// 与 on_done 一致：把 Streaming 占位替换为静态消息（消费缓存的 segments，
+    /// 其中已实时写入本轮 stream 的文本），避免"内容只落 DB、前端丢失"的割裂。
     fn on_interrupt(&mut self, interrupt: &InterruptState) {
-        {
+        if let Some(segments) = self.segments.take() {
+            let ui_msg = build_static_message(&segments);
+            let mut all = self.runtimes.write();
+            if let Some(rt) = all.get_mut(&self.conversation_id) {
+                if let Some(pos) = rt
+                    .messages
+                    .iter()
+                    .position(|m| matches!(m, UiMessage::Streaming { .. }))
+                {
+                    rt.messages[pos] = ui_msg;
+                }
+            }
+        } else {
+            // 无 segments 缓存（异常路径）：移除可能的空占位
             let mut all = self.runtimes.write();
             if let Some(rt) = all.get_mut(&self.conversation_id) {
                 rt.messages.retain(|m| !matches!(m, UiMessage::Streaming { .. }));
