@@ -121,7 +121,17 @@ async fn read_stream(
 
         let chunk: SseChatResponse = match serde_json::from_str(data) {
             Ok(c) => c,
-            Err(_) => continue,
+            Err(e) => {
+                // 解析失败不中断流，但记录原始行（截断）便于诊断
+                let preview: String = data.chars().take(200).collect();
+                tracing::warn!(
+                    target: "llm",
+                    error = %e,
+                    data = %preview,
+                    "sse parse failed, skipping line"
+                );
+                continue;
+            }
         };
 
         // ── choices → delta 解析 ──

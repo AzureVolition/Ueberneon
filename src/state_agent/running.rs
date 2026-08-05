@@ -343,9 +343,17 @@ impl Agent<Running<Streaming>> {
             timestamp: Some(chrono::Utc::now()),
             ..Default::default()
         };
-        self.agent
-            .push_message(assistant_msg)
-            .map_err(|e| InterruptState::Error(format!("save message: {e}")))?;
+        // content / reasoning_content / tool_calls 全空（如流式中断未收到任何内容）→
+        // 无意义消息：不落库也不入内存历史，避免空消息混入后续请求历史。
+        // tool_calls 非空的工具调用回合即使无 content/reasoning 也必须保留（tool 配对）。
+        let is_empty_assistant = assistant_msg.content.as_deref().map_or(true, str::is_empty)
+            && assistant_msg.reasoning_content.as_deref().map_or(true, str::is_empty)
+            && assistant_msg.tool_calls.is_empty();
+        if !is_empty_assistant {
+            self.agent
+                .push_message(assistant_msg)
+                .map_err(|e| InterruptState::Error(format!("save message: {e}")))?;
+        }
 
         // token 用量持久化（复用 AgentCore::persist_usage）
         if let Some(u) = last_usage {

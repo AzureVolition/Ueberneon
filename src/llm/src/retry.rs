@@ -40,14 +40,15 @@ pub async fn send_with_retry(
             // 可重试的状态码 → 必须返回 Err 才能触发重试
             Ok(resp) if is_retryable(resp.status()) => {
                 let status = resp.status().as_u16();
-                let _body = resp.text().await; // 消费 body，释放连接
-                Err(ProviderError::HttpStatus(status))
+                let body = read_body_truncated(resp).await; // 消费 body，释放连接
+                Err(ProviderError::HttpStatus { status, body })
             }
 
-            // 不可重试的状态码
+            // 不可重试的状态码（如 400）→ 附上服务端错误详情，便于定位原因
             Ok(resp) => {
                 let status = resp.status().as_u16();
-                Err(ProviderError::HttpStatus(status))
+                let body = read_body_truncated(resp).await;
+                Err(ProviderError::HttpStatus { status, body })
             }
 
             // 连接错误 → 可重试
@@ -62,12 +63,24 @@ pub async fn send_with_retry(
 
     fetch
         .retry(backoff)
-        .when(|e| matches!(e, ProviderError::HttpStatus(s) if is_retryable_status(s)))
+        .when(|e| matches!(e, ProviderError::HttpStatus { status, .. } if is_retryable_status(status)))
         .when(|e| matches!(e, ProviderError::Network(_)))
         .notify(|err, dur| {
             tracing::warn!(target: "llm", error = %err, delay_ms = dur.as_millis(), "llm retry");
         })
         .await
+}
+
+/// 读取响应体并压缩为诊断用的截断文本（压缩换行 + 截断长度）。
+async fn read_body_truncated(resp: reqwest::Response) -> String {
+    const MAX_BODY_LEN: usize = 500;
+    let raw = resp.text().await.unwrap_or_default();
+    let compact: String = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() > MAX_BODY_LEN {
+        compact.chars().take(MAX_BODY_LEN).collect()
+    } else {
+        compact
+    }
 }
 
 fn is_retryable(status: StatusCode) -> bool {

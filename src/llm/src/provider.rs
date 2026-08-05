@@ -96,7 +96,12 @@ pub struct Usage {
 #[derive(Debug)]
 pub enum ProviderError {
     Config(String),
-    HttpStatus(u16),
+    /// HTTP 错误状态码，附带服务端响应体（截断后）——
+    /// 如 DeepSeek 400 的 `{"error": {"message": ...}}`，便于定位具体原因。
+    HttpStatus {
+        status: u16,
+        body: String,
+    },
     Network(reqwest::Error),
     StreamInterrupted(std::io::Error),
     Auth {
@@ -111,7 +116,13 @@ impl std::fmt::Display for ProviderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Config(msg) => write!(f, "config: {msg}"),
-            Self::HttpStatus(s) => write!(f, "HTTP {s}"),
+            Self::HttpStatus { status, body } => {
+                if body.is_empty() {
+                    write!(f, "HTTP {status}")
+                } else {
+                    write!(f, "HTTP {status}: {body}")
+                }
+            }
             Self::Network(e) => write!(f, "network: {e}"),
             Self::StreamInterrupted(e) => write!(f, "stream interrupted: {e}"),
             Self::Auth { provider, status, .. } => {
