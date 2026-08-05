@@ -217,8 +217,10 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
 
             if running && awaiting_response && !msgs.iter().any(|m| matches!(m, UiMessage::Streaming { .. })) {
                 div { class: "message-bubble message-assistant thinking",
-                    div { class: "thinking-dots",
-                        span { "." } span { "." } span { "." }
+                    div { class: "thinking-indicator",
+                        span { class: "thinking-signal" }
+                        span { class: "thinking-label", "thinking" }
+                        span { class: "thinking-cursor", "▍" }
                     }
                 }
             }

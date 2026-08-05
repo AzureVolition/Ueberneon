@@ -1549,28 +1549,49 @@ body {
   box-shadow: none;
 }
 
-.thinking-dots {
+.thinking-indicator {
   display: flex;
-  gap: var(--space-2xs);
-  padding: var(--space-xs) 0;
-  justify-content: center;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-2xs) 0;
+  min-height: 1.4em;
 }
 
-.thinking-dots span {
-  display: inline-block;
-  width: 6px;
-  height: 6px;
+/* thinking bubble: warm hairline border, no breathe - signals "about to stream" */
+.message-assistant.thinking {
+  border-left-color: var(--color-warm-rule);
+}
+
+/* breathing signal dot - the machine is working */
+.thinking-signal {
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
-  background: var(--color-accent-2);
-  animation: dot-pulse 1.4s var(--ease-soft) infinite;
+  background: var(--color-warm-cursor);
+  animation: think-signal 1.8s var(--ease-soft) infinite;
 }
 
-.thinking-dots span:nth-child(2) {
-  animation-delay: 0.2s;
+.thinking-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-micro);
+  color: var(--color-ink-3);
+  text-transform: none;
 }
 
-.thinking-dots span:nth-child(3) {
-  animation-delay: 0.4s;
+/* block cursor - same warm-gold stream as the streaming caret, one step "before" it */
+.thinking-cursor {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: 1;
+  color: var(--color-warm-cursor);
+  text-shadow: 0 0 8px var(--color-warm-glow);
+  animation: cursor-blink 0.9s step-end infinite;
+}
+
+@keyframes think-signal {
+  0%, 100% { opacity: 0.45; box-shadow: none; }
+  50%      { opacity: 1; box-shadow: 0 0 6px var(--color-warm-cursor), 0 0 14px var(--color-warm-glow); }
 }
 
 /* ═══════════════════════════════════════════════
@@ -2133,20 +2154,20 @@ body {
   50% { opacity: 0; }
 }
 
-@keyframes dot-pulse {
-  0%, 80%, 100% { opacity: 0.3; transform: translateY(0); }
-  40% { opacity: 1; transform: translateY(-3px); }
-}
-
 /* reduced motion */
 @media (prefers-reduced-motion: reduce) {
   .message-bubble {
     animation: none;
   }
 
-  .thinking-dots span {
+  .thinking-signal {
     animation: none;
-    opacity: 0.5;
+    opacity: 0.6;
+  }
+
+  .thinking-cursor {
+    animation: none;
+    opacity: 0.7;
   }
 
   .streaming .message-content::after {
