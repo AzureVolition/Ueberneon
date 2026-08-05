@@ -506,7 +506,10 @@ impl Agent<Running<Executing>> {
                 project_id: project_id.clone(),
                 cancel_token: Some(cancel.clone()),
             };
-            let decision = self.running.approval_gate.decide(&tool_name, &args).combine(tool.pre_check(&ctx, &args));
+            // gate 工具级门控（执行类工具 Ask / 只读放行）与工具自身 pre_check
+            // （命令级危险判定：rm -rf、force push、系统路径等）合并，Deny > Ask > Allow
+            let decision = self.running.approval_gate.decide(&tool_name, &args, tool.read_only())
+                .combine(tool.pre_check(&ctx, &args));
             // 放飞自我：Ask → Allow；Deny（权限策略 / plan mode 拦截）不受影响
             let decision = apply_agent_mode(decision, agent_mode);
             match decision {
@@ -894,7 +897,7 @@ fn apply_agent_mode(decision: Decision, agent_mode: AgentMode) -> Decision {
 mod tests {
     use super::*;
 
-    /// 组合矩阵：approval_gate 恒 Ask（UserApprovalGate）+ 工具 pre_check 三种结果，
+    /// 组合矩阵：gate 决策（Ask/Allow）+ 工具 pre_check 三种结果，
     /// combine 后经 apply_agent_mode(Unrestrained) 的最终决策。
     #[test]
     fn unrestrained_downgrades_ask_after_combine() {
@@ -935,5 +938,18 @@ mod tests {
             ));
             assert_eq!(apply_agent_mode(Decision::Allow, mode), Decision::Allow);
         }
+    }
+
+    /// Unrestrained 下 Deny 不被吞（权限策略 / plan mode 拦截等仍生效）。
+    #[test]
+    fn unrestrained_keeps_deny() {
+        assert!(matches!(
+            apply_agent_mode(Decision::Deny("blocked".into()), AgentMode::Unrestrained),
+            Decision::Deny(_)
+        ));
+        assert_eq!(
+            apply_agent_mode(Decision::Allow, AgentMode::Unrestrained),
+            Decision::Allow
+        );
     }
 }

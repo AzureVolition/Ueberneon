@@ -15,6 +15,7 @@ use crate::db::metadata::task::TaskStatus as DbTaskStatus;
 
 /// 标记计划中的一个任务为已完成。
 #[derive(ToolMetaImpl)]
+#[tool(read_only)]
 #[tool(argType = CompleteStepParams)]
 pub struct CompleteStep;
 

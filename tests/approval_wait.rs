@@ -166,6 +166,8 @@ async fn drive_to_executing(
     .expect("create conversation");
 
     let handler = AgentHandler::default();
+    // 测试工具名（bash / task）在执行类名单内,gate 恒 Ask → 触发审批等待,
+    // 与测试意图（审批管道注入 allow/deny/通道关闭/取消）一致,与 agent_mode 无关。
     let (running, _rx) = agent
         .accept_message(
             user_input(),
@@ -212,12 +214,12 @@ async fn allow_executes_tool() {
     let runs = Arc::new(AtomicUsize::new(0));
     let registry = Registry::new();
     registry.add(Box::new(FakeTool {
-        name: "fake_tool",
+        name: "bash",
         runs: runs.clone(),
     }));
     let provider = Box::new(FakeProvider {
         calls: Arc::new(AtomicUsize::new(0)),
-        tool_calls: vec![("call_1".into(), "fake_tool".into())],
+        tool_calls: vec![("call_1".into(), "bash".into())],
     });
     let cancel = CancellationToken::new();
 
@@ -250,12 +252,12 @@ async fn deny_rejects_tool() {
     let runs = Arc::new(AtomicUsize::new(0));
     let registry = Registry::new();
     registry.add(Box::new(FakeTool {
-        name: "fake_tool",
+        name: "bash",
         runs: runs.clone(),
     }));
     let provider = Box::new(FakeProvider {
         calls: Arc::new(AtomicUsize::new(0)),
-        tool_calls: vec![("call_1".into(), "fake_tool".into())],
+        tool_calls: vec![("call_1".into(), "bash".into())],
     });
     let cancel = CancellationToken::new();
 
@@ -287,12 +289,12 @@ async fn channel_close_auto_denies() {
     let runs = Arc::new(AtomicUsize::new(0));
     let registry = Registry::new();
     registry.add(Box::new(FakeTool {
-        name: "fake_tool",
+        name: "bash",
         runs: runs.clone(),
     }));
     let provider = Box::new(FakeProvider {
         calls: Arc::new(AtomicUsize::new(0)),
-        tool_calls: vec![("call_1".into(), "fake_tool".into())],
+        tool_calls: vec![("call_1".into(), "bash".into())],
     });
     let cancel = CancellationToken::new();
 
@@ -320,12 +322,12 @@ async fn cancel_aborts_wait() {
     let runs = Arc::new(AtomicUsize::new(0));
     let registry = Registry::new();
     registry.add(Box::new(FakeTool {
-        name: "fake_tool",
+        name: "bash",
         runs: runs.clone(),
     }));
     let provider = Box::new(FakeProvider {
         calls: Arc::new(AtomicUsize::new(0)),
-        tool_calls: vec![("call_1".into(), "fake_tool".into())],
+        tool_calls: vec![("call_1".into(), "bash".into())],
     });
     let cancel = CancellationToken::new();
 
@@ -358,18 +360,18 @@ async fn pre_approved_second_tool_runs_in_order() {
     let runs_b = Arc::new(AtomicUsize::new(0));
     let registry = Registry::new();
     registry.add(Box::new(FakeTool {
-        name: "fake_tool_a",
+        name: "bash",
         runs: runs_a.clone(),
     }));
     registry.add(Box::new(FakeTool {
-        name: "fake_tool_b",
+        name: "task",
         runs: runs_b.clone(),
     }));
     let provider = Box::new(FakeProvider {
         calls: Arc::new(AtomicUsize::new(0)),
         tool_calls: vec![
-            ("call_a".into(), "fake_tool_a".into()),
-            ("call_b".into(), "fake_tool_b".into()),
+            ("call_a".into(), "bash".into()),
+            ("call_b".into(), "task".into()),
         ],
     });
     let cancel = CancellationToken::new();
