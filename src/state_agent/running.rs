@@ -29,7 +29,7 @@ use llm::provider::ChunkStream;
 
 use super::approval::ApprovalGate;
 use super::hook::{AgentEvent, DeltaKind};
-use super::{Agent, AgentHandler, InterruptState, Static, ToolContext, ToolResult};
+use super::{Agent, AgentHandler, AgentMode, InterruptState, Static, ToolContext, ToolResult};
 use crate::model::{StreamSegment, StreamingState, TokenUsageRecord, ToolCallRecord, ToolCallStatus};
 use crate::permission::Decision;
 use crate::tools::internal::common::checkable_tool::CheckableTool;
@@ -483,6 +483,10 @@ impl Agent<Running<Executing>> {
         let tool_count = self.running.streaming.tool_id_list.len();
 
         // ── 阶段一：批量 pre_check，Ask 的全部置 AwaitingApproval（前端同时显示审批卡） ──
+        // 放飞自我（Unrestrained）：Ask 统一降级为 Allow（Deny 原样保留）。
+        // approval_gate（UserApprovalGate 恒 Ask）与工具 pre_check 任一返回 Ask 都会在
+        // combine 后体现，这里做最终兜底——一处覆盖全部审批来源，无需逐个工具分支。
+        let agent_mode = *self.running.handler.agent_mode.lock().expect("agent_mode lock poisoned");
         for i in 0..tool_count {
             if cancel.is_cancelled() {
                 self.running.set_state(AgentState::Cancelled);
@@ -502,7 +506,10 @@ impl Agent<Running<Executing>> {
                 project_id: project_id.clone(),
                 cancel_token: Some(cancel.clone()),
             };
-            match self.running.approval_gate.decide(&tool_name, &args).combine(tool.pre_check(&ctx, &args)) {
+            let decision = self.running.approval_gate.decide(&tool_name, &args).combine(tool.pre_check(&ctx, &args));
+            // 放飞自我：Ask → Allow；Deny（权限策略 / plan mode 拦截）不受影响
+            let decision = apply_agent_mode(decision, agent_mode);
+            match decision {
                 Decision::Allow => {} // 保持 Pending，主循环直接执行
                 Decision::Deny(msg) => {
                     self.set_record_status(&segments, &call_id, ToolCallStatus::Denied(msg.clone()));
@@ -861,5 +868,72 @@ fn push_reasoning(segments: &Arc<Mutex<Vec<StreamSegment>>>, text: &str) {
     match segs.last_mut() {
         Some(StreamSegment::Reasoning(t)) => t.push_str(text),
         _ => segs.push(StreamSegment::Reasoning(text.to_string())),
+    }
+}
+
+/// 按 agent_mode 调整合并后的权限决策（pre_check 汇合点兜底）。
+///
+/// Unrestrained（放飞自我）：`Ask → Allow`（从不询问），`Deny` 原样保留——
+/// 权限策略拒绝与 plan mode 写工具拦截不受影响；
+/// 其余模式（Ask / Cautious / Auto）：决策原样透传。
+///
+/// 调用位置在 `approval_gate.decide().combine(tool.pre_check())` 之后，
+/// 因此无论审批链（UserApprovalGate 恒 Ask）还是工具自身检查返回 Ask，
+/// 放飞自我模式下都会在此统一放行，无需逐个工具分支。
+fn apply_agent_mode(decision: Decision, agent_mode: AgentMode) -> Decision {
+    match agent_mode {
+        AgentMode::Unrestrained => match decision {
+            Decision::Ask => Decision::Allow,
+            other => other,
+        },
+        _ => decision,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 组合矩阵：approval_gate 恒 Ask（UserApprovalGate）+ 工具 pre_check 三种结果，
+    /// combine 后经 apply_agent_mode(Unrestrained) 的最终决策。
+    #[test]
+    fn unrestrained_downgrades_ask_after_combine() {
+        let gate = Decision::Ask; // UserApprovalGate 恒 Ask
+        // gate Ask + pre_check Allow → combine Ask → 降级 Allow
+        assert_eq!(
+            apply_agent_mode(gate.clone().combine(Decision::Allow), AgentMode::Unrestrained),
+            Decision::Allow
+        );
+        // gate Ask + pre_check Ask → combine Ask → 降级 Allow
+        assert_eq!(
+            apply_agent_mode(gate.clone().combine(Decision::Ask), AgentMode::Unrestrained),
+            Decision::Allow
+        );
+        // gate Ask + pre_check Deny → combine Deny（优先级 Deny > Ask）→ Deny 保留
+        assert!(matches!(
+            apply_agent_mode(
+                gate.clone().combine(Decision::Deny("blocked".into())),
+                AgentMode::Unrestrained
+            ),
+            Decision::Deny(_)
+        ));
+        // 双 Allow → Allow
+        assert_eq!(
+            apply_agent_mode(Decision::Allow.combine(Decision::Allow), AgentMode::Unrestrained),
+            Decision::Allow
+        );
+    }
+
+    /// 其余模式（Ask / Cautious / Auto）：Ask 原样保留（审批照常），Deny 保留，Allow 透传。
+    #[test]
+    fn other_modes_keep_ask() {
+        for mode in [AgentMode::Ask, AgentMode::Cautious, AgentMode::Auto] {
+            assert_eq!(apply_agent_mode(Decision::Ask, mode), Decision::Ask);
+            assert!(matches!(
+                apply_agent_mode(Decision::Deny("x".into()), mode),
+                Decision::Deny(_)
+            ));
+            assert_eq!(apply_agent_mode(Decision::Allow, mode), Decision::Allow);
+        }
     }
 }
