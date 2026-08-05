@@ -67,6 +67,7 @@ fn load_messages_from_db(conv_id: &str, md_to_html: fn(&str) -> String) -> Vec<C
                 // 工具调用记录内嵌进 segments（result 暂时为 None，由后续 Tool 消息回填）
                 for tc in &m.tool_calls {
                     segments.push(StreamSegment::ToolCall(ToolCallRecord {
+                        id: tc.id.clone(),
                         tool_name: tc.name.clone(),
                         args: serde_json::from_str(&tc.arguments).unwrap_or_default(),
                         result: None,
@@ -257,9 +258,10 @@ pub fn App() -> Element {
         String::new()
     });
 
-    let mut pending_approval = use_signal(|| Option::<PendingApproval>::None);
-    let approval_responder: Signal<Arc<Mutex<Option<tokio::sync::oneshot::Sender<bool>>>>> =
-        use_signal(|| Arc::new(Mutex::new(None)));
+    // 审批注入通道（按 conversation_id 键控，避免多对话并发串台）：
+    // bridge 在工具执行阶段写入 mpsc Sender，审批卡按钮经它发送 (tool_call_id, approved)
+    let approval_tx: Signal<std::collections::HashMap<String, tokio::sync::mpsc::Sender<(String, bool)>>> =
+        use_signal(std::collections::HashMap::new);
     let mut error_signal = use_signal(ErrorSignal::new);
     use_context_provider(|| error_signal);
 
@@ -676,12 +678,16 @@ pub fn App() -> Element {
                                     is_streaming,
                                     markdown_to_html: markdown_to_html,
                                 on_approve: {
-                                    let resp = approval_responder;
-                                    move |(allowed,): (bool,)| {
-                                        if let Some(tx) = resp.read().lock().unwrap_or_else(|e| e.into_inner()).take() {
-                                            let _ = tx.send(allowed);
+                                    let atx = approval_tx;
+                                    let cid = active_conversation_id;
+                                    move |(tool_call_id, allowed): (String, bool)| {
+                                        // 按当前对话取审批通道发送 (tool_call_id, approved)。
+                                        // onclick 是同步上下文，mpsc::Sender::send 是 async，
+                                        // 必须用 try_send（审批消息量小，32 容量不会满）
+                                        let conv_id = cid();
+                                        if let Some(tx) = atx.read().get(&conv_id).cloned() {
+                                            let _ = tx.try_send((tool_call_id, allowed));
                                         }
-                                        pending_approval.set(None);
                                     }
                                 },
                             }
@@ -745,6 +751,7 @@ pub fn App() -> Element {
                                                     conversation_id: cid2,
                                                     streaming_states: ss2,
                                                     error_signal: err_sig,
+                                                    approval_tx,
                                                 }).await;
                                             });
                                         }
@@ -886,8 +893,10 @@ pub fn App() -> Element {
                                 new_cid
                             } else {
                                 // 已有对话：确保 Agent 在缓存中，获取 handler
+                                // （缓存命中 → Ok(None)，沿用 runtime 里已有的 handler，
+                                //   其 current_plan 等状态跨 run 保留，不被覆盖）
                                 let mgr = AgentManager::get();
-                                if let Ok(handler) = mgr.init(&conv_id) {
+                                if let Ok(Some(handler)) = mgr.init(&conv_id) {
                                     runtimes.write().entry(conv_id.clone()).or_default().agent_handler = Some(handler);
                                 }
                                 conv_id
@@ -941,6 +950,7 @@ pub fn App() -> Element {
                                     conversation_id: cid,
                                     streaming_states: ss,
                                     error_signal: err_sig,
+                                    approval_tx,
                                 }).await;
                             });
                         }

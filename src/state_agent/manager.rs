@@ -10,7 +10,7 @@ use std::sync::{OnceLock, RwLock};
 
 use super::hook::HookRegister;
 use super::prompts::{PromptBuilder, PromptContext};
-use super::{Agent, AgentHandler};
+use super::{AgentCore, AgentHandler};
 use crate::db::metadata::agent_config::AgentConfigRow;
 use crate::tools::Registry;
 use crate::tools::register_builtins;
@@ -58,7 +58,7 @@ impl AgentConfig {
 
 /// 全局 Agent 管理器
 pub struct AgentManager {
-    agents: RwLock<HashMap<String, Agent>>,
+    agents: RwLock<HashMap<String, AgentCore>>,
 }
 
 impl AgentManager {
@@ -77,7 +77,7 @@ impl AgentManager {
         conversation_id: String,
         project_id: Option<String>,
         cfg: &AgentConfig,
-    ) -> Result<Agent, String> {
+    ) -> Result<(AgentCore, AgentHandler), String> {
         tracing::info!(
             target: "agent",
             conversation_id = %conversation_id,
@@ -139,7 +139,7 @@ impl AgentManager {
             env_info: PromptContext::default().env_info,
         };
         
-        let mut agent = Agent::new(
+        let mut agent = AgentCore::new(
             Box::new(provider),
             registry,
             hook_register,
@@ -161,8 +161,13 @@ impl AgentManager {
             .with_template(template)
             .build();
         agent.init_history(sp);
-        
-        Ok(agent)
+
+        // handler 是运行时控制句柄（action_mode / agent_mode / current_plan）：
+        // 不随 AgentCore 存储，由 manager 创建并交给前端/运行调用方，
+        // 进入 Running 后随状态变换流转
+        let handler = AgentHandler::default();
+
+        Ok((agent, handler))
     }
 
     /// 初始化或获取 Agent。
@@ -178,7 +183,9 @@ impl AgentManager {
     ) -> Result<(String, AgentHandler), String> {
         match conv_id {
             Some(id) => {
-                let handler = self.init(&id)?;
+                // 缓存命中（agent 已在缓存）→ Ok(None)，无新 handler；
+                // 新构建 → Ok(Some(handler))
+                let handler = self.init(&id)?.unwrap_or_else(AgentHandler::default);
                 Ok((id, handler))
             }
             None => {
@@ -201,20 +208,25 @@ impl AgentManager {
                         rusqlite::params![id, pid, parent_conversation_id, chrono::Local::now().to_rfc3339(), chrono::Local::now().to_rfc3339(), agent_config_id],
                     ) { tracing::error!(target:"db", error=%e, "insert conversation"); }
                 });
-                let agent =
+                let (agent, handler) =
                     Self::build_agent_inner(id.clone(), project_id, &agent_config)?;
-                let handler = agent.handler.clone();
                 self.agents.write().expect("agents lock poisoned").insert(id.clone(), agent);
                 Ok((id, handler))
             }
         }
     }
 
-    pub fn init(&self, id: &str) -> Result<AgentHandler, String> {
+    /// 初始化 Agent 并返回运行时控制句柄。
+    ///
+    /// - `Ok(None)`：agent 已在缓存（无需重建），无新 handler——调用方应沿用前端
+    ///   runtime 里已有的 handler（其 `current_plan` 等运行时状态跨 run 保留）
+    /// - `Ok(Some(handler))`：agent 不在缓存，已从 DB 重建并注册，返回新 handler
+    /// - `Err(String)`：重建失败 / 会话不存在
+    pub fn init(&self, id: &str) -> Result<Option<AgentHandler>, String> {
         {
             let agents = self.agents.read().expect("agents lock poisoned");
-            if let Some(agent) = agents.get(id) {
-                return Ok(agent.handler.clone());
+            if agents.contains_key(id) {
+                return Ok(None);
             }
         }
         // 从 DB 重建
@@ -239,11 +251,10 @@ impl AgentManager {
             .map(Self::read_agent_config)
             .unwrap_or_else(|| Err(format!("no agent config for conversation {id}")))?;
 
-        let mut agent = Self::build_agent_inner(id.to_string(), Some(conv.project_id), &agent_config)?;
+        let (mut agent, handler) = Self::build_agent_inner(id.to_string(), Some(conv.project_id), &agent_config)?;
         agent.messages.extend(msgs);
-        let handler = agent.handler.clone();
         self.agents.write().expect("agents lock poisoned").insert(id.to_string(), agent);
-        Ok(handler)
+        Ok(Some(handler))
     }
 
     /// 根据 agent_config_id 从 DB 读取配置并转为 AgentConfig
@@ -310,12 +321,12 @@ impl AgentManager {
     
 
     /// 从缓存移除并返回 Agent（ownership 转移，适合取出后异步执行）。
-    pub fn remove(&self, id: &str) -> Option<Agent> {
+    pub fn remove(&self, id: &str) -> Option<AgentCore> {
         self.agents.write().expect("agents lock poisoned").remove(id)
     }
 
     /// 将 Agent 注册回缓存。
-    pub fn register(&self, agent: Agent) {
+    pub fn register(&self, agent: AgentCore) {
         let id = agent.conversation_id.clone();
         self.agents.write().expect("agents lock poisoned").insert(id, agent);
     }
@@ -331,10 +342,5 @@ impl AgentManager {
         })?
         .is_some();
         Ok(found)
-    }
-
-    /// 读取缓存的 Agent handler（不取出所有权，适合只读场景）。
-    pub fn get_agent(&self, id: &str) -> Option<AgentHandler> {
-        self.agents.read().expect("agents lock poisoned").get(id).map(|a| a.handler.clone())
     }
 }

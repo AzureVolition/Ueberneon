@@ -1,4 +1,4 @@
-use super::agent_run::AgentState;
+use super::AgentState;
 use super::ToolResult;
 
 // ── AgentEvent ───────────────────────────────────────────────────────────────
@@ -25,6 +25,11 @@ pub enum AgentEvent {
     StateChanged {
         state: AgentState,
     },
+    /// 流式阶段收到一个工具调用（前端据此刷新，无需等 execute）
+    ToolCallQueued {
+        tool_name: String,
+        args: serde_json::Value,
+    },
     /// 工具开始执行（含审批前的运行态）
     ToolCallStart {
         tool_name: String,
@@ -35,6 +40,11 @@ pub enum AgentEvent {
         tool_name: String,
         args: serde_json::Value,
         reason: String,
+    },
+    /// 审批决策落地（allow/deny 已写入 record 后广播，UI 据此瞬时刷新审批卡）
+    ToolCallDecision {
+        call_id: String,
+        approved: bool,
     },
     /// 工具执行结束（含状态落定）
     ToolCallEnd {

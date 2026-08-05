@@ -12,7 +12,7 @@ pub fn ChatPanel(
     active_conv_id: Signal<String>,
     is_streaming: Signal<bool>,
     markdown_to_html: fn(&str) -> String,
-    on_approve: EventHandler<(bool,)>,
+    on_approve: EventHandler<(String, bool)>,
 ) -> Element {
     let cid = active_conv_id();
     let (msgs, _tick) = {
@@ -198,7 +198,7 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
                             }
                         }
                     }
-                    UiMessage::Streaming { segments, approval_tx, .. } => {
+                    UiMessage::Streaming { segments, .. } => {
                         let segs = segments.lock().expect("segments lock poisoned").clone();
                         let has_approval = segs.iter().any(|s| matches!(s, StreamSegment::ToolCall(tc) if matches!(tc.status, ToolCallStatus::AwaitingApproval { .. })));
                         let streaming_class = if has_approval {
@@ -206,16 +206,9 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
                         } else {
                             "message-bubble message-assistant streaming"
                         };
-                        // 审批处理
-                        let atx = approval_tx.clone();
-                        let on_stream_approve = move |(allowed,): (bool,)| {
-                            if let Some(tx) = atx.lock().expect("atx lock poisoned").take() {
-                                let _ = tx.send(allowed);
-                            }
-                        };
                         rsx! {
                             div { key: "{streaming_key}", class: "{streaming_class}",
-                                {render_segments(true, &segs, markdown_to_html, EventHandler::new(on_stream_approve), expanded_tc, "stream".into()).into_iter()}
+                                {render_segments(true, &segs, markdown_to_html, on_approve, expanded_tc, "stream".into()).into_iter()}
                             }
                         }
                     }
@@ -263,7 +256,7 @@ fn render_segments(
     streaming: bool,
     segments: &[StreamSegment],
     markdown_to_html: fn(&str) -> String,
-    on_approve: EventHandler<(bool,)>,
+    on_approve: EventHandler<(String, bool)>,
     expanded_tc: Signal<std::collections::HashSet<String>>,
     msg_key: String,
 ) -> Vec<Element> {
@@ -300,12 +293,15 @@ fn render_segments(
                         ToolCallStatus::Failed(_) => "failed",
                         ToolCallStatus::Denied(_) => "denied",
                         ToolCallStatus::AwaitingApproval { .. } => "needs approval",
+                        ToolCallStatus::Pending => "pending",
                     };
                     let is_approval =
                         matches!(&call.status, ToolCallStatus::AwaitingApproval { .. });
                     let approval_reason = call.approval_reason.clone().unwrap_or_default();
                     let tool_name = call.tool_name.clone();
                     let args_summary = tool_args_summary(&call.tool_name, &call.args);
+                    let call_id_allow = call.id.clone();
+                    let call_id_deny = call.id.clone();
                     let on_allow = on_approve;
                     let on_deny = on_approve;
 
@@ -318,8 +314,8 @@ fn render_segments(
                                     div { class: "approval-reason", "{approval_reason}" }
                                 }
                                 div { class: "approval-actions",
-                                    button { class: "approval-btn allow", onclick: move |_| on_allow.call((true,)), "allow" }
-                                    button { class: "approval-btn deny", onclick: move |_| on_deny.call((false,)), "deny" }
+                                    button { class: "approval-btn allow", onclick: move |_| on_allow.call((call_id_allow.clone(), true)), "allow" }
+                                    button { class: "approval-btn deny", onclick: move |_| on_deny.call((call_id_deny.clone(), false)), "deny" }
                                 }
                             }
                         }
@@ -398,6 +394,7 @@ fn status_class(status: &ToolCallStatus) -> &'static str {
         ToolCallStatus::Failed(_) => "status-failed",
         ToolCallStatus::Denied(_) => "status-failed",
         ToolCallStatus::AwaitingApproval { .. } => "status-approval",
+        ToolCallStatus::Pending => "status-pending",
     }
 }
 

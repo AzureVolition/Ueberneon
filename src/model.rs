@@ -17,7 +17,7 @@ pub enum Role {
 }
 
 /// 工具调用状态
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub enum ToolCallStatus {
     Running,
     Success,
@@ -371,7 +371,6 @@ pub enum Difficulty {
 #[derive(Clone)]
 pub struct StreamingState {
     pub segments: Arc<Mutex<Vec<StreamSegment>>>,
-    pub approval_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<bool>>>>,
 }
 
 /// UI 层的消息表示。运行时使用，不持久化。
@@ -381,7 +380,9 @@ pub enum UiMessage {
     Static(ChatMessage),
     /// 流式进行中的消息：segments 由 Agent 异步填充，
     /// UI 通过事件流（而非轮询 version）感知刷新。
-    Streaming(Arc<Mutex<Vec<StreamSegment>>>),
+    Streaming {
+        segments: Arc<Mutex<Vec<StreamSegment>>>,
+    },
 }
 
 #[cfg(test)]

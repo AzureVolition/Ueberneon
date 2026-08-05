@@ -1,64 +1,43 @@
-// ── ApprovalGate：审批策略接口（B2 形态） ──
+// ── ApprovalGate：审批策略接口 ──
 //
-// 从"阻塞等待用户"改为"非阻塞会话"：
-//   gate.start() 立即返回裁决（Allow/Deny）或创建会话（Session）；
-//   会话把 oneshot receiver 交给驱动者（bridge），由驱动者决定何时/如何等待用户，
-//   拿到结果后调 AgentRun::resolve_approval 恢复执行。
-// 这使审批成为真正的挂起点：可超时、可放弃、可序列化（为断点铺路）。
+// gate 只做决策，返回 permission::Decision（与 pre_check 返回类型兼容）：
+//   Allow → 直接执行；Deny(msg) → 拒绝；Ask → 交给 execute 的审批管道（等 UI 注入）。
+// 审批管道（mpsc (tool_call_id, approved) + 子线程转发）完全由 execute 管理，
+// gate 不参与。
+//
+// 链式组合（ApprovalChain）：按序执行，Deny 短路、Ask 直达、全 Allow 放行。
+// 场景差异只体现在链的组成：
+//   主对话（交互）→ ApprovalChain::new([UserApprovalGate])
+//   子 Agent（非交互）→ ApprovalChain::new([AutoDenyApprovalGate])
 
-use std::sync::{Arc, Mutex};
+use crate::permission::Decision;
 
-use tokio_util::sync::CancellationToken;
-
-use super::PendingApproval;
-
-/// 审批上下文（Ask 分支构造，注入给每个策略）
-pub struct ApprovalCtx {
-    pub call_id: String,
-    pub tool_name: String,
-    pub args: serde_json::Value,
-    pub reason: String,
-    pub cancel: CancellationToken,
-    /// 用户审批通道：Some(sender) 时 UI 显示审批卡，用户点选后经 oneshot 回传
-    pub approval_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<bool>>>>,
-}
-
-/// 审批裁决：要么立即定，要么创建会话交驱动者
-pub enum GateOutcome {
-    Allow,
-    Deny(String),
-    /// 需要人工：会话已建立，UI 显示审批卡，驱动者等 result_rx
-    Session {
-        req: PendingApproval,
-        result_rx: tokio::sync::oneshot::Receiver<bool>,
-    },
-}
-
-/// 审批策略接口（非阻塞：立即返回裁决或会话，不自己 await 用户）
+/// 审批策略接口（纯决策，不管理审批管道）
 pub trait ApprovalGate: Send + Sync {
-    fn start(&self, ctx: &ApprovalCtx) -> GateOutcome;
+    fn decide(&self, tool_name: &str, args: &serde_json::Value) -> Decision;
 }
 
-/// 用户弹窗审批：建立会话，UI 点选后经 oneshot 回传
+/// 交互场景：Ask 一律交给 execute 的审批管道（UI 审批卡注入 (tool_call_id, approved)）
 pub struct UserApprovalGate;
 
 impl ApprovalGate for UserApprovalGate {
-    fn start(&self, ctx: &ApprovalCtx) -> GateOutcome {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        *ctx.approval_tx.lock().expect("approval_tx lock poisoned") = Some(tx);
-        GateOutcome::Session {
-            req: PendingApproval {
-                call_id: ctx.call_id.clone(),
-                tool_name: ctx.tool_name.clone(),
-                args: ctx.args.clone(),
-                reason: ctx.reason.clone(),
-            },
-            result_rx: rx,
-        }
+    fn decide(&self, _tool_name: &str, _args: &serde_json::Value) -> Decision {
+        Decision::Ask
     }
 }
 
-/// 策略链：按序执行，Deny 短路，Session 直达驱动者
+/// 非交互场景（子 Agent 便捷路径等）：Ask 一律自动拒绝，不等待。
+pub struct AutoDenyApprovalGate;
+
+impl ApprovalGate for AutoDenyApprovalGate {
+    fn decide(&self, tool_name: &str, _args: &serde_json::Value) -> Decision {
+        Decision::Deny(format!(
+            "{tool_name} needs approval, but no interactive approval is available"
+        ))
+    }
+}
+
+/// 策略链：按序执行，Deny 短路，Ask 直达，全 Allow 放行
 pub struct ApprovalChain {
     gates: Vec<Box<dyn ApprovalGate>>,
 }
@@ -70,16 +49,14 @@ impl ApprovalChain {
 }
 
 impl ApprovalGate for ApprovalChain {
-    fn start(&self, ctx: &ApprovalCtx) -> GateOutcome {
+    fn decide(&self, tool_name: &str, args: &serde_json::Value) -> Decision {
         for gate in &self.gates {
-            match gate.start(ctx) {
-                GateOutcome::Deny(msg) => return GateOutcome::Deny(msg),
-                GateOutcome::Session { req, result_rx } => {
-                    return GateOutcome::Session { req, result_rx };
-                }
-                GateOutcome::Allow => {}
+            match gate.decide(tool_name, args) {
+                Decision::Deny(msg) => return Decision::Deny(msg),
+                Decision::Ask => return Decision::Ask,
+                Decision::Allow => {}
             }
         }
-        GateOutcome::Allow
+        Decision::Allow
     }
 }

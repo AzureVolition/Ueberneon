@@ -3,14 +3,14 @@ pub mod main_agent;
 pub mod action_plan;
 pub mod manager;
 pub mod prompts;
-pub mod agent_run;
 pub mod approval;
-pub mod state_agent;
 pub mod running;
+pub mod context;
 
 use anyhow::Context;
-pub use agent_run::{AgentRun, AgentState, Blocked, PendingApproval, PendingResume, StopReason};
-pub use approval::{ApprovalChain, ApprovalCtx, ApprovalGate, UserApprovalGate};
+pub use approval::{ApprovalChain, ApprovalGate, AutoDenyApprovalGate, UserApprovalGate};
+pub use running::{AgentState, Executing, Running, StreamResult, Streaming};
+pub use context::{AgentContext, PhaseObserver};
 pub use llm::{tool::ToolMeta, ToolCall};
 
 // ── Tool trait ──────────────────────────────────────────────────────────────
@@ -242,7 +242,10 @@ use std::sync::{Arc, Mutex, RwLock};
 use crate::tools::Registry;
 use crate::model::{ChatMessage, Plan, PlanStatus, StepStatus, StreamSegment, ToolCallRecord, ToolCallStatus};
 use hook::HookRegister;
+use hook::AgentEvent;
 use llm::{Message, Provider, Role as LlmRole};
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 /// Agent 运行时控制句柄，前端持有以实时调整 Agent 行为。
 #[derive(Clone)]
@@ -501,15 +504,15 @@ fn flatten_and_write(
 
 /// Agent —— 拥有 provider 和 registry，通过 mpsc channel 输出流式事件。
 /// 自己管理消息历史 + 本地持久化，与 UI 层解耦。
-pub struct Agent {
+///
+/// 状态机重构后作为跨轮核心（配置 + 消息历史），由 `Agent<T>` 持有。
+pub struct AgentCore {
     /// LLM provider（所有权）
     pub provider: Box<dyn Provider>,
     /// 工具注册表
     pub registry: Arc<Registry>,
     /// 事件钩子注册表
     pub hook_register: HookRegister,
-    /// 运行时控制句柄（含 action_mode / agent_mode / current_plan）
-    pub handler: AgentHandler,
     /// 工具执行的工作目录（即项目路径）
     pub project_path: PathBuf,
     /// 项目 ID（用于持久化）
@@ -526,9 +529,11 @@ pub struct Agent {
     pub context_window: u32,
     /// Agent 类型
     pub agent_type: String,
+    /// 最近一次 LLM 交互的 token 用量（每次流式结束后写入，跨轮保留，供 UI 收尾读取）
+    pub last_usage: Option<crate::model::TokenUsageRecord>,
 }
 
-impl Agent {
+impl AgentCore {
     /// 创建 Agent，获得 provider 和 registry 的所有权。
     pub fn new(
         provider: Box<dyn Provider>,
@@ -542,17 +547,10 @@ impl Agent {
         context_window: u32,
         agent_type: String,
     ) -> Self {
-        let handler = AgentHandler {
-            agent_mode: Arc::new(Mutex::new(AgentMode::default())),
-            action_mode: Arc::new(RwLock::new(ActionMode::default())),
-            current_plan: Arc::new(Mutex::new(None)),
-            plan_version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-        };        
         Self {
             provider,
             registry: Arc::new(registry),
             hook_register,
-            handler,
             project_path,
             project_id,
             conversation_id,
@@ -561,6 +559,7 @@ impl Agent {
             max_tokens,
             context_window,
             agent_type,
+            last_usage: None,
         }
     }
     
@@ -628,6 +627,7 @@ impl Agent {
                     }
                     for tc in &m.tool_calls {
                         segs.push(StreamSegment::ToolCall(ToolCallRecord {
+                            id: tc.id.clone(),
                             tool_name: tc.name.clone(),
                             args: serde_json::from_str(&tc.arguments).unwrap_or_default(),
                             result: None,
@@ -652,65 +652,115 @@ impl Agent {
 }
 
 
+// ── 状态类型 Agent（新状态机） ──────────────────────────────────────────────
+//
+// 用类型系统表达运行阶段，每个阶段持有不同的 running 状态：
+//   Agent<Static>              配置态，可接受用户消息
+//     │ accept_message(input) → Result<(Agent<Running<Streaming>>, 事件rx), InterruptState>
+//     ▼
+//   Agent<Running<Streaming>>  流式接收 LLM 输出，收集全部 tool_call（一并推给前端）
+//     │ stream_message() → Result<Option<Agent<Running<Executing>>>, InterruptState>
+//     │   Ok(None) = 无工具调用，正常完成；Ok(Some) = 有工具待执行
+//     ▼
+//   Agent<Running<Executing>>  按顺序执行工具；Ask 工具经 (tool_call_id, bool) 管道等审批
+//     │ execute() → Result<Agent<Static>, InterruptState>
+//     ▼
+//   Agent<Static>              回到配置态，可再次 accept_message（多轮循环）
+//
+// 每个状态变换返回 `Result<Agent<Next>, InterruptState>`：Err 表示中止循环，
+// 由 `run()` 按 Cancelled / Error 分别收尾（InterruptState 单独处理）。
+// 跨轮状态（provider/registry/handler/消息历史/落库）统一收敛在 AgentCore，
+// 状态变换只替换 running，消息落库等能力直接复用 AgentCore，不写重复代码。
+
+/// 配置态标记：Agent 可接受用户消息。
+pub struct Static;
+
+/// 循环中止信号。每个状态变换出错时返回，调用方需区分处理：
+/// - `Cancelled`：用户主动取消，静默终止（不视为失败）
+/// - `Error`：异常/流错误，需要上报
+#[derive(Debug)]
 pub enum InterruptState {
     Cancelled,
     Error(String),
 }
 
+/// 状态类型 Agent：`running` 是当前运行阶段，`agent` 是跨轮核心。
 pub struct Agent<T> {
-
     pub running: T,
-    /// LLM provider（所有权）
-    pub provider: Box<dyn Provider>,
-    /// 工具注册表
-    //pub registry: Arc<Registry>,
-    pub tools: Vec<String>,
-
-    /// 工具执行的工作目录（即项目路径）
-    pub project_path: PathBuf,
-    /// 项目 ID（用于持久化）
-    pub project_id: Option<String>,
-    /// 对话 ID（用于持久化）
-    pub conversation_id: String,
-    /// LLM 消息历史（Agent 自己管理）
-    pub messages: Vec<Message>,
-    /// 推理温度
-    pub temperature: f64,
-    /// 最大 token 数
-    pub max_tokens: u32,
-    /// 上下文窗口上限
-    pub context_window: u32,
-    /// Agent 类型
-    pub agent_type: String,
+    pub agent: AgentCore,
 }
 
 impl Agent<Static> {
-    pub fn accept_message(&mut self, user_input: String) -> Result<Agent<Running<Streaming>>, InterruptState> {
+    /// 接受用户输入，进入流式阶段（只在对话开始时调用一次）。
+    ///
+    /// 输入消息逐条落库并追加到历史（复用 `AgentCore::push_message`），
+    /// 随后请求 LLM 流。返回 `(流式 Agent, 事件接收端)`，事件端由驱动者订阅。
+    /// 工具循环的续跑由 `execute` 在 Running 之间直接完成，不再回到配置态。
+    ///
+    /// `handler` 是运行时控制句柄（action_mode / agent_mode / current_plan），
+    /// 由调用方（前端/manager）持有并注入，进入 Running 后随状态变换流转。
+    pub async fn accept_message(
+        mut self,
+        input: Vec<Message>,
+        cancel_token: CancellationToken,
+        handler: AgentHandler,
+        approval_gate: Box<dyn ApprovalGate>,
+    ) -> Result<(Agent<Running<Streaming>>, mpsc::UnboundedReceiver<AgentEvent>), InterruptState> {
+        // 用户输入入史 + 落库（复用 AgentCore::push_message）
+        for msg in &input {
+            self.agent
+                .push_message(msg.clone())
+                .map_err(|e| InterruptState::Error(format!("save message: {e}")))?;
+        }
+        let prompt = input
+            .iter()
+            .filter_map(|m| m.content.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        self.agent
+            .hook_register
+            .emit(&AgentEvent::UserPromptSubmit { prompt });
 
-        
-        let req = Request {
-            messages: self.agent.messages.clone(),
-            tools: self.agent.registry.schemas(),
-            temperature: self.agent.temperature,
-            max_tokens: self.agent.max_tokens.unwrap_or(65536),
-        };
+        // 请求 LLM 流（跨轮核心复用，供 accept_message / execute 续跑共用）
+        let stream = self.agent.request_stream().await?;
 
+        // 第一轮进入运行态：创建新的 streaming_handle（后续工具循环续跑由 execute
+        // 在 Running 之间传递同一个 streaming_handle，不再经过 Static）
+        let (running, rx) = Running::init(Streaming::init(stream), cancel_token, handler, approval_gate);
+        Ok((Agent { running, agent: self.agent }, rx))
+    }
 
-        let (run, rx) = Running<Streaming>::init(&req);
-        let running_agent = Agent {
-            running: run,
-            provider: self.provider,
-            tools: self.tools,
-            project_path: self.project_path,
-            project_id: self.project_id,
-            conversation_id: self.conversation_id,
-            messages: self.messages,
-            temperature: self.temperature,
-            max_tokens: self.max_tokens,
-            context_window: self.context_window,
-            agent_type: self.agent_type,
-        };
-
-        Ok(running_agent)
+    /// 完整 agent 循环：stream ↔ execute 交替，直到正常完成或 `InterruptState` 中止。
+    ///
+    /// 用状态类型变换驱动：
+    /// `accept_message → stream_message → execute → stream_message → …`（工具循环
+    /// 在 Running 之间流转，直到 `Done` 或无工具）。驱动逻辑由
+    /// [`AgentContext`](crate::state_agent::context::AgentContext) 白盒执行：事件消费
+    /// future 与状态变换同任务 select 并发（回调可能写 Dioxus Signal，非 Send，
+    /// 故不要求 Send），主循环只做状态变换。
+    ///
+    /// - `handler`：运行时控制句柄（action_mode / agent_mode / current_plan），
+    ///   注入后随 Running 状态变换流转。
+    /// - `approval_gate`：Ask 工具的审批策略（交互场景 `InteractiveApprovalGate` 走
+    ///   管道等 UI；子 Agent 等非交互场景 `AutoDenyApprovalGate` 自动拒绝）。
+    /// - `on_event`：AgentEvent 逐条转发（UI 据此 tick 重渲染），与状态变换同任务
+    ///   select 并发（回调可能写 Dioxus Signal，非 Send，故不要求 Send）。
+    ///
+    /// `Err(InterruptState)` 为中止信号：`Cancelled`（取消，静默）与 `Error`（异常，上报）分别处理。
+    pub async fn run<G>(
+        self,
+        input: Vec<Message>,
+        cancel_token: CancellationToken,
+        handler: AgentHandler,
+        approval_gate: Box<dyn ApprovalGate>,
+        on_event: G,
+    ) -> Result<Self, InterruptState>
+    where
+        G: FnMut(&AgentEvent),
+    {
+        let mut ctx = crate::state_agent::context::AgentContext::new(self, ());
+        ctx.run(input, cancel_token, handler, approval_gate, on_event)
+            .await?;
+        Ok(ctx.take_agent().expect("agent must be restored after run"))
     }
 }

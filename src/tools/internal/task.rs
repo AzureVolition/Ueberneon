@@ -138,7 +138,7 @@ impl Tool for Task {
 
         // 3. 通过 AgentManager 创建子 Agent
         let mgr = AgentManager::get();
-        let (sub_conv_id, _handler) = mgr
+        let (sub_conv_id, handler) = mgr
             .init_or_get(
                 None,                              // 新建对话
                 ctx.project_id.clone(),
@@ -147,30 +147,50 @@ impl Tool for Task {
             )
             .map_err(|e| format!("创建子 Agent 失败: {e}"))?;
 
-        // 4. 取出子 Agent 所有权，包成 AgentRun 执行
+        // 4. 取出子 Agent 所有权，包成状态机 Agent<Static> 执行
         let sub_agent = mgr
             .remove(&sub_conv_id)
             .ok_or_else(|| "子 Agent 未找到".to_string())?;
         let cancel_token = ctx.cancel_token.clone().unwrap_or_else(CancellationToken::new);
-        let (mut sub_run, _rx) = crate::agent::AgentRun::new(sub_agent, cancel_token);
-
-        sub_run.create_streaming();
-
-        let result = sub_run
-            .accept_message(prompt.to_string())
-            .await;
-
-        // 5. 提取输出
-        let output = match result {
-            Ok(ui_msg) => match ui_msg {
-                crate::model::UiMessage::Static(msg) => msg.content,
-                crate::model::UiMessage::Streaming { .. } => "streaming not expected".to_string(),
-            },
-            Err(e) => format!("子 Agent 执行失败: {e}"),
+        let agent = crate::state_agent::Agent {
+            running: crate::state_agent::Static,
+            agent: sub_agent,
         };
 
-        // 子 Agent 执行完毕，Run 与 Agent 一并释放（不注册回缓存）
-        drop(sub_run);
+        // 5. 便捷路径执行：子 Agent 无审批 UI，Ask 一律自动拒绝
+        let input = vec![llm::Message {
+            role: llm::Role::User,
+            content: Some(prompt.to_string()),
+            timestamp: Some(chrono::Utc::now()),
+            ..Default::default()
+        }];
+        let result = agent
+            .run(
+                input,
+                cancel_token,
+                handler,
+                Box::new(crate::state_agent::ApprovalChain::new(vec![
+                    Box::new(crate::state_agent::AutoDenyApprovalGate),
+                ])),
+                |_ev| {},
+            )
+            .await;
+
+        // 6. 提取输出
+        let output = match result {
+            Ok(agent) => {
+                let text = agent.agent.last_assistant_output();
+                if text.is_empty() {
+                    "子 Agent 执行完毕（无文本输出）".to_string()
+                } else {
+                    text
+                }
+            }
+            Err(crate::state_agent::InterruptState::Cancelled) => "子 Agent 执行被取消".to_string(),
+            Err(crate::state_agent::InterruptState::Error(e)) => format!("子 Agent 执行失败: {e}"),
+        };
+
+        // 子 Agent 执行完毕，Agent 一并释放（不注册回缓存）；Err 时 Agent 壳已随变换消费丢失
 
         Ok(ToolResult::ok(output))
     }
