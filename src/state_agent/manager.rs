@@ -8,7 +8,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
 
-use super::hook::HookRegister;
 use super::prompts::{PromptBuilder, PromptContext};
 use super::{AgentCore, AgentHandler};
 use crate::db::metadata::agent_config::AgentConfigRow;
@@ -126,8 +125,6 @@ impl AgentManager {
             }
         }
 
-        let hook_register = HookRegister::new();
-
         // 构建 PromptContext（必须在 Agent::new 之前，因为 registry / project_path 会被 move）
         let ctx = PromptContext {
             workspace_path: project_path.display().to_string(),
@@ -142,7 +139,6 @@ impl AgentManager {
         let mut agent = AgentCore::new(
             Box::new(provider),
             registry,
-            hook_register,
             project_path,
             project_id,
             conversation_id,

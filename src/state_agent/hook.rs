@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::AgentState;
 use super::ToolResult;
 
@@ -161,26 +163,199 @@ impl Hook for CustomizedHook {
 
 // ── HookRegister ─────────────────────────────────────────────────────────────
 
+/// 待注入的提示词：hook 经 `push_prompt` 提交，AgentCore 在请求 LLM 前
+/// `drain_prompts` 收集注入 messages。`source` 标记来源，供按需撤回
+/// （如 stall 催促在 CompleteStep 成功时被 `remove_prompts("stall")` 撤回）。
+pub struct PendingPrompt {
+    pub message: llm::Message,
+    pub source: &'static str,
+}
+
+/// 已注册的 hook 条目。
+pub enum HookEntry {
+    /// 匿名 hook（`register` 注册，不可单独注销）
+    Anonymous(Box<dyn Hook>),
+    /// 带 id 的 hook（`register_with_id` 注册，`unregister(id)` 可移除）
+    Identified {
+        id: &'static str,
+        hook: Box<dyn Hook>,
+    },
+}
+
 pub struct HookRegister {
-    hooks: Vec<Box<dyn Hook>>,
+    hooks: Vec<HookEntry>,
+    /// 待注入提示词缓冲（hook 内部可变写入，AgentCore 请求前 drain）
+    pub(crate) pending_prompts: Arc<std::sync::Mutex<Vec<PendingPrompt>>>,
 }
 
 impl HookRegister {
     pub fn new() -> Self {
         Self {
             hooks: Vec::new(),
+            pending_prompts: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
+    /// 注册 hook（不携带 id，无法单独注销）。
     pub fn register(&mut self, hook: impl Hook + 'static) {
-        self.hooks.push(Box::new(hook));
+        self.hooks.push(HookEntry::Anonymous(Box::new(hook)));
+    }
+
+    /// 注册带 id 的 hook（`unregister(id)` 可单独移除）。
+    pub fn register_with_id(&mut self, id: &'static str, hook: impl Hook + 'static) {
+        self.hooks
+            .push(HookEntry::Identified { id, hook: Box::new(hook) });
+    }
+
+    /// 按 id 移除 hook（幂等；不误删其他 hook）。
+    pub fn unregister(&mut self, id: &'static str) {
+        self.hooks.retain(|e| {
+            !matches!(e, HookEntry::Identified { id: eid, .. } if *eid == id)
+        });
+    }
+
+    /// 是否已注册指定 id 的 hook。
+    pub fn has(&self, id: &'static str) -> bool {
+        self.hooks.iter().any(|e| matches!(e, HookEntry::Identified { id: eid, .. } if *eid == id))
     }
 
     /// 向所有已注册的 hook 分发事件。
     pub fn emit(&self, event: &AgentEvent) {
-        for hook in &self.hooks {
-            hook.on_event(event);
+        for entry in &self.hooks {
+            match entry {
+                HookEntry::Anonymous(hook) | HookEntry::Identified { hook, .. } => {
+                    hook.on_event(event)
+                }
+            }
         }
+    }
+
+    /// hook 注入提示词（如 stall 催促、策略提示等；多 hook 可各自注入）。
+    pub fn push_prompt(&self, source: &'static str, message: llm::Message) {
+        self.pending_prompts
+            .lock()
+            .expect("pending_prompts lock poisoned")
+            .push(PendingPrompt { message, source });
+    }
+
+    /// 按来源移除待注入提示词（如 CompleteStep 成功后撤回 stall 催促）。
+    pub fn remove_prompts(&self, source: &'static str) {
+        self.pending_prompts
+            .lock()
+            .expect("pending_prompts lock poisoned")
+            .retain(|p| p.source != source);
+    }
+
+    /// 收集并清空所有待注入提示词（AgentCore 在请求 LLM 前调用）。
+    pub fn drain_prompts(&self) -> Vec<llm::Message> {
+        std::mem::take(&mut *self.pending_prompts.lock().expect("pending_prompts lock poisoned"))
+            .into_iter()
+            .map(|p| p.message)
+            .collect()
+    }
+}
+
+// ── 业务 hook：计划停滞跟踪（stall 计数与催促注入） ─────────────────────────
+//
+// callback 逻辑以具名类型实现 `Hook` trait（而非匿名闭包），定义于 hook 模块：
+//   StallTracker      每轮 execute 开始（StateChanged{Executing}）stall_count += 1，
+//                     >= 3 时向 HookRegister 注入 stall 催促提示词并重置
+//   CompleteStepReset CompleteStep 执行成功（PostToolUse + is_ok）stall_count = 0
+//                     并撤回待注入的 stall 催促（本轮推进压过"累计 >=3 待催促"）
+// 二者直接持有运行时 handler 的 clone（注册时由 running.rs 传入，见
+// HookRegister::register_stall_hooks）。
+
+/// 轮开始跟踪：StateChanged{Executing}（仅工具轮）→ stall_count += 1；
+/// >= 3 时注入 stall 催促提示词并重置（避免重复催促）。
+pub struct StallTracker {
+    pub handler: super::AgentHandler,
+    pub prompts: Arc<std::sync::Mutex<Vec<PendingPrompt>>>,
+    pub nudge: llm::Message,
+}
+
+impl Hook for StallTracker {
+    fn on_event(&self, ev: &AgentEvent) {
+        if let AgentEvent::StateChanged { state } = ev
+            && *state == super::AgentState::Executing
+            && let Some(plan) =
+                self.handler.current_plan.lock().expect("current_plan lock poisoned").as_mut()
+        {
+            plan.stall_count += 1;
+            if plan.stall_count >= 3 {
+                self.prompts.lock().expect("pending_prompts lock poisoned")
+                    .push(PendingPrompt { message: self.nudge.clone(), source: "stall" });
+                plan.stall_count = 0;
+            }
+        }
+    }
+}
+
+/// CompleteStep 成功重置：stall_count = 0 并撤回 stall 催促
+/// （否则连续 2 轮停滞后第 3 轮完成会误触发一次催促）。
+pub struct CompleteStepReset {
+    pub handler: super::AgentHandler,
+    pub prompts: Arc<std::sync::Mutex<Vec<PendingPrompt>>>,
+}
+
+impl Hook for CompleteStepReset {
+    fn on_event(&self, ev: &AgentEvent) {
+        // 仅 CompleteStep 执行成功时重置 stall_count（失败视为停滞更合理）；
+        // 撤回 stall 催促无条件执行——但若 current_plan 已被清空（最终
+        // CompleteStep 完成），整个守卫不成立，撤回由 unregister_stall_hooks 兜底
+        if let AgentEvent::PostToolUse { tool_name, result, .. } = ev
+            && tool_name == "CompleteStep"
+            && result.is_ok()
+            && let Some(plan) =
+                self.handler.current_plan.lock().expect("current_plan lock poisoned").as_mut()
+        {
+            plan.stall_count = 0;
+            self.prompts.lock().expect("pending_prompts lock poisoned")
+                .retain(|p| p.source != "stall");
+        }
+    }
+}
+
+// ── stall hooks 的集中注册/注销 ─────────────────────────────────────────────
+//
+// stall 检测只在 plan 活跃期有意义：CreatePlan 执行后（current_plan 变 Some）
+// 由 running.rs 注册，plan 结束（current_plan 清空）后注销。
+
+const STALL_TRACKER_ID: &str = "stall_tracker";
+const COMPLETE_STEP_RESET_ID: &str = "complete_step_reset";
+
+impl HookRegister {
+    /// 注册 plan 停滞跟踪 hook 对（幂等——已注册则跳过）。`handler` 为当前运行时
+    /// 句柄（hook 直接持有其 clone，计划推进/停滞计数写入 current_plan）。
+    pub fn register_stall_hooks(&mut self, handler: &super::AgentHandler) {
+        if self.has(STALL_TRACKER_ID) {
+            return;
+        }
+        let nudge = llm::Message {
+            role: llm::Role::System,
+            content: Some(super::prompts::plan::STALL_NUDGE_SUFFIX.to_string()),
+            timestamp: Some(chrono::Utc::now()),
+            ..Default::default()
+        };
+        let prompts = self.pending_prompts.clone();
+        self.register_with_id(STALL_TRACKER_ID, StallTracker {
+            handler: handler.clone(),
+            prompts,
+            nudge,
+        });
+        let prompts = self.pending_prompts.clone();
+        self.register_with_id(COMPLETE_STEP_RESET_ID, CompleteStepReset {
+            handler: handler.clone(),
+            prompts,
+        });
+    }
+
+    /// 注销 plan 停滞跟踪 hook 对（幂等）。注销即 plan 结束，同时撤回尚未注入的
+    /// stall 催促（覆盖"最终 CompleteStep 清空 current_plan 早于 PostToolUse、
+    /// reset hook 无法撤回"的路径，避免残留催促注入到后续轮次）。
+    pub fn unregister_stall_hooks(&mut self) {
+        self.unregister(STALL_TRACKER_ID);
+        self.unregister(COMPLETE_STEP_RESET_ID);
+        self.remove_prompts("stall");
     }
 }
 

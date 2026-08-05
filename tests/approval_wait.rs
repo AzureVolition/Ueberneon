@@ -121,7 +121,6 @@ fn make_agent(
     let core = AgentCore::new(
         provider,
         registry,
-        ueberneon::state_agent::hook::HookRegister::new(),
         std::env::temp_dir(),
         None,
         format!("approval-test-{tag}-{}", std::process::id()),

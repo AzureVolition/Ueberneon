@@ -511,8 +511,6 @@ pub struct AgentCore {
     pub provider: Box<dyn Provider>,
     /// 工具注册表
     pub registry: Arc<Registry>,
-    /// 事件钩子注册表
-    pub hook_register: HookRegister,
     /// 工具执行的工作目录（即项目路径）
     pub project_path: PathBuf,
     /// 项目 ID（用于持久化）
@@ -535,10 +533,11 @@ pub struct AgentCore {
 
 impl AgentCore {
     /// 创建 Agent，获得 provider 和 registry 的所有权。
+    /// （hook_register 已移入 Running：由 Running::init 创建空表，stall hooks
+    ///  按 plan 生命周期在 execute 中动态注册/注销，见 running.rs）
     pub fn new(
         provider: Box<dyn Provider>,
         registry: Registry,
-        hook_register: HookRegister,
         project_path: PathBuf,
         project_id: Option<String>,
         conversation_id: String,
@@ -550,7 +549,6 @@ impl AgentCore {
         Self {
             provider,
             registry: Arc::new(registry),
-            hook_register,
             project_path,
             project_id,
             conversation_id,
@@ -717,16 +715,17 @@ impl Agent<Static> {
             .filter_map(|m| m.content.clone())
             .collect::<Vec<_>>()
             .join("\n");
-        self.agent
-            .hook_register
-            .emit(&AgentEvent::UserPromptSubmit { prompt });
 
         // 请求 LLM 流（跨轮核心复用，供 accept_message / execute 续跑共用）
         let stream = self.agent.request_stream().await?;
 
         // 第一轮进入运行态：创建新的 streaming_handle（后续工具循环续跑由 execute
-        // 在 Running 之间传递同一个 streaming_handle，不再经过 Static）
-        let (running, rx) = Running::init(Streaming::init(stream), cancel_token, handler, approval_gate);
+        // 在 Running 之间传递同一个 streaming_handle，不再经过 Static）。
+        // hook_register 由 Running::init 创建空表（stall hooks 按 plan 生命周期
+        // 动态注册，见 running.rs finalize_tool）
+        let (running, rx) = Running::init(Streaming::init(stream), cancel_token, handler.clone(), approval_gate);
+        // 用户输入提示事件送 hook_register（构建后；stall hooks 此时未注册无影响）
+        running.hook_register.emit(&AgentEvent::UserPromptSubmit { prompt });
         Ok((Agent { running, agent: self.agent }, rx))
     }
 

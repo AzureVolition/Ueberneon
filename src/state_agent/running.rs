@@ -92,6 +92,8 @@ pub struct Running<S> {
     pub approval_tx: Option<mpsc::Sender<(String, bool)>>,
     /// 事件通道（执行节点 emit，UI/调用方订阅）
     events: mpsc::UnboundedSender<AgentEvent>,
+    /// 运行时 hook 注册表（跨阶段传递；stall hooks 由 plan 生命周期动态注册/注销）
+    pub hook_register: super::HookRegister,
 }
 
 impl<S> Running<S> {
@@ -119,6 +121,7 @@ impl<S> Running<S> {
             cancel_token: self.cancel_token,
             approval_tx: self.approval_tx,
             events: self.events,
+            hook_register: self.hook_register,
         }
     }
 }
@@ -145,6 +148,9 @@ impl Running<Streaming> {
             cancel_token,
             approval_tx: None,
             events: tx,
+            // 空注册表：stall hooks 由 plan 生命周期动态注册（CreatePlan 后），
+            // 非 plan 对话不注册（见 register_stall_hooks）
+            hook_register: super::HookRegister::new(),
         };
         (run, rx)
     }
@@ -415,6 +421,11 @@ impl Agent<Running<Executing>> {
         mut self,
     ) -> Result<Agent<Running<Streaming>>, InterruptState> {
         self.running.set_state(AgentState::Executing);
+        // 轮开始事件送 hook_register（stall 计数 hook 监听 Executing；
+        // events channel 的 StateChanged 走 Running::set_state，两者独立）
+        self.running
+            .hook_register
+            .emit(&AgentEvent::StateChanged { state: AgentState::Executing });
         let segments = self.running.streaming_handle.segments.clone();
         let cancel = self.running.cancel_token.clone();
         let plan_mode = self.running.handler.action_mode();
@@ -470,7 +481,6 @@ impl Agent<Running<Executing>> {
         });
 
         let tool_count = self.running.streaming.tool_id_list.len();
-        let mut completed_step = false;
 
         // ── 阶段一：批量 pre_check，Ask 的全部置 AwaitingApproval（前端同时显示审批卡） ──
         for i in 0..tool_count {
@@ -528,9 +538,6 @@ impl Agent<Running<Executing>> {
                     ToolCallStatus::Pending => {
                         // 从等待收敛而来时 running.state 停在 WaitingApproval，复位为执行中
                         self.running.set_state(AgentState::Executing);
-                        if tool_name == "CompleteStep" {
-                            completed_step = true;
-                        }
                         self.run_tool(&call_id, &tool_name, &args).await?;
                         break;
                     }
@@ -603,14 +610,17 @@ impl Agent<Running<Executing>> {
         }
 
         // 本轮工具执行完毕：plan stall 计数 + 续跑下一轮流式。
-        // Running → Running：streaming_handle / events / cancel_token 经 into_phase
-        // 原样传递，UI 绑定的 segments Arc 不变；工具结果已在 messages 中，无需新输入。
+        // Running → Running：streaming_handle / events / cancel_token / hook_register
+        // 经 into_phase 原样传递，UI 绑定的 segments Arc 不变；工具结果已在 messages 中。
         // 取消时不再发起下一轮 LLM 请求（token 已取消，避免浪费一次 API 调用）
         if cancel.is_cancelled() {
             self.running.set_state(AgentState::Cancelled);
             return Err(InterruptState::Cancelled);
         }
-        self.agent.round_end_stall(completed_step, &self.running.handler);
+        // hook 注入的提示词（如 stall 催促）收集进 messages（下一轮流式请求带上）
+        for msg in self.running.hook_register.drain_prompts() {
+            self.agent.messages.push(msg);
+        }
         let stream = self.agent.request_stream().await?;
         let streaming = Streaming::init(stream);
         let running = self.running.into_phase(streaming);
@@ -749,10 +759,12 @@ impl Agent<Running<Executing>> {
             tool_name: tool_name.into(),
             result: result.clone(),
         });
-        self.agent.hook_register.emit(&AgentEvent::PostToolUse {
-            tool_name: tool_name.into(),
-            result: result.clone(),
-        });
+        self.running
+            .hook_register
+            .emit(&AgentEvent::PostToolUse {
+                tool_name: tool_name.into(),
+                result: result.clone(),
+            });
 
         let tool_msg = Message {
             role: LlmRole::Tool,
@@ -768,6 +780,25 @@ impl Agent<Running<Executing>> {
         self.agent
             .push_message(tool_msg)
             .map_err(|e| InterruptState::Error(format!("save message: {e}")))?;
+
+        // plan 生命周期驱动 stall hooks 注册/注销：CreatePlan 执行后
+        // （current_plan 变 Some）注册；current_plan 清空（CompleteStep 完成等）注销。
+        // 幂等，成本一次锁；注销同时撤回未注入的 stall 催促（见 unregister_stall_hooks）。
+        let has_plan = self
+            .running
+            .handler
+            .current_plan
+            .lock()
+            .expect("current_plan lock poisoned")
+            .is_some();
+        if has_plan {
+            self.running
+                .hook_register
+                .register_stall_hooks(&self.running.handler);
+        } else {
+            self.running.hook_register.unregister_stall_hooks();
+        }
+
         Ok(())
     }
 }

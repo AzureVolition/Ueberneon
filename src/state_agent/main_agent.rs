@@ -4,7 +4,6 @@
 // 统一收敛在 AgentCore 上，新旧执行路径复用，不写重复代码。
 
 use super::AgentCore;
-use super::AgentHandler;
 use super::InterruptState;
 use llm::Role as LlmRole;
 
@@ -75,31 +74,6 @@ impl AgentCore {
             }
             Err(e) => {
                 tracing::warn!(target: "dashboard", error = %e, "db lock failed for accumulate_usage");
-            }
-        }
-    }
-
-    /// 一轮结束后的 plan stall 计数与催促。
-    /// `completed_step`：本轮是否调用了 CompleteStep（推进了计划）。
-    /// `handler`：运行时控制句柄（handler 在 Running 中流转，这里以参数传入）。
-    pub fn round_end_stall(&mut self, completed_step: bool, handler: &AgentHandler) {
-        let mut plan_guard = handler.current_plan.lock().expect("current_plan lock poisoned");
-        if let Some(ref mut plan) = *plan_guard {
-            if completed_step {
-                plan.stall_count = 0;
-            } else {
-                plan.stall_count += 1;
-                if plan.stall_count >= 3 {
-                    // 注入催促系统消息，让 LLM 看到催促
-                    let nudge = llm::Message {
-                        role: llm::Role::System,
-                        content: Some(super::prompts::plan::STALL_NUDGE_SUFFIX.to_string()),
-                        timestamp: Some(chrono::Utc::now()),
-                        ..Default::default()
-                    };
-                    self.messages.push(nudge);
-                    plan.stall_count = 0; // 重置避免重复催促
-                }
             }
         }
     }
