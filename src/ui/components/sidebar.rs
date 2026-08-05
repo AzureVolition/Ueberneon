@@ -1,7 +1,7 @@
 use dioxus::prelude::*;
 
-use crate::ui::state::*;
 use crate::ui::state::SettingsTab;
+use crate::ui::state::*;
 
 /// 侧边栏 —— 项目列表 / 对话列表双视图
 #[component]
@@ -32,13 +32,13 @@ pub fn Sidebar(
     let view = sidebar_view.read().clone();
 
     let COLOR_SWATCHES: [(&str, &str, &str); 7] = [
-        ("cyan",   "oklch(72% 0.20 200)",   "cyan"),
-        ("pink",   "oklch(68% 0.22 330)",   "pink"),
-        ("green",  "oklch(66% 0.18 145)",   "green"),
-        ("orange", "oklch(70% 0.18 50)",    "orange"),
-        ("violet", "oklch(65% 0.16 280)",   "violet"),
-        ("blue",   "oklch(60% 0.20 240)",   "blue"),
-        ("gold",   "oklch(72% 0.16 85)",    "gold"),
+        ("cyan", "oklch(72% 0.20 200)", "cyan"),
+        ("pink", "oklch(68% 0.22 330)", "pink"),
+        ("green", "oklch(66% 0.18 145)", "green"),
+        ("orange", "oklch(70% 0.18 50)", "orange"),
+        ("violet", "oklch(65% 0.16 280)", "violet"),
+        ("blue", "oklch(60% 0.20 240)", "blue"),
+        ("gold", "oklch(72% 0.16 85)", "gold"),
     ];
 
     // ── 项目右键菜单 ──
@@ -155,6 +155,7 @@ pub fn Sidebar(
                         SettingsTab::General,
                         SettingsTab::Appearance,
                         SettingsTab::Tools,
+                        SettingsTab::Skills,
                         SettingsTab::Sql,
                     ];
                     let ct = current_tab.clone();

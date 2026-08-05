@@ -2,15 +2,15 @@
 //
 // 支持 ** 递归匹配，结果排序后输出，最多返回 1000 条。
 
-use crate::agent::{GenericsTool, ToolContext, ToolResult};
-use std::path::PathBuf;
 #[cfg(test)]
-use crate::agent::{AgentHandler, ActionMode, ToolResultExt, Tool};
-use ueberneon_macros::ToolMetaImpl;
-use serde::Deserialize;
-use schemars::JsonSchema;
-use crate::tools::internal::common::checkable_tool::CheckableTool;
+use crate::agent::{ActionMode, AgentHandler, Tool, ToolResultExt};
+use crate::agent::{GenericsTool, ToolContext, ToolResult};
 use crate::permission::Decision;
+use crate::tools::internal::common::checkable_tool::CheckableTool;
+use schemars::JsonSchema;
+use serde::Deserialize;
+use std::path::PathBuf;
+use ueberneon_macros::ToolMetaImpl;
 
 /// glob — 按 glob 模式搜索文件路径。
 ///
@@ -37,12 +37,14 @@ const GLOB_MAX_RESULTS: usize = 1000;
 
 impl Glob {
     pub fn new(work_dir: PathBuf) -> Self {
-        Self {
-            work_dir,
-        }
+        Self { work_dir }
     }
 
-    async fn do_execute(&self, _ctx: &ToolContext, args: &GlobParams) -> Result<ToolResult, String> {
+    async fn do_execute(
+        &self,
+        _ctx: &ToolContext,
+        args: &GlobParams,
+    ) -> Result<ToolResult, String> {
         let pattern: &str = if args.pattern.is_empty() {
             return Err("glob: missing required argument 'pattern'".into());
         } else {
@@ -118,26 +120,27 @@ impl Glob {
 
 #[async_trait::async_trait]
 impl GenericsTool for Glob {
-    async fn generics_execute(&self, ctx: &ToolContext, args: &GlobParams) -> Result<ToolResult, String> {
+    async fn generics_execute(
+        &self,
+        ctx: &ToolContext,
+        args: &GlobParams,
+    ) -> Result<ToolResult, String> {
         self.do_execute(ctx, args).await
     }
 }
-
 
 #[async_trait::async_trait]
 impl CheckableTool for Glob {
     fn check(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> Decision {
         Decision::Allow
     }
-
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     use std::sync::atomic::{AtomicU64, Ordering};
-    
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -155,7 +158,7 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
-        cancel_token: None,
+            cancel_token: None,
         }
     }
 
@@ -169,15 +172,26 @@ mod tests {
 
         let pattern = format!("{}/**/*.rs", dir.to_str().unwrap());
         let tool = Glob::new(std::env::temp_dir());
-        let result = tool.execute(
-            &test_ctx(),
-            &serde_json::json!({"pattern": pattern}),
-        ).await;
+        let result = tool
+            .execute(&test_ctx(), &serde_json::json!({"pattern": pattern}))
+            .await;
 
         assert!(result.error().is_none(), "error: {:?}", result.error());
-        assert!(result.output().contains("a.rs"), "output: {}", result.output());
-        assert!(result.output().contains("c.rs"), "output: {}", result.output());
-        assert!(!result.output().contains("b.py"), "output: {}", result.output());
+        assert!(
+            result.output().contains("a.rs"),
+            "output: {}",
+            result.output()
+        );
+        assert!(
+            result.output().contains("c.rs"),
+            "output: {}",
+            result.output()
+        );
+        assert!(
+            !result.output().contains("b.py"),
+            "output: {}",
+            result.output()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -190,14 +204,21 @@ mod tests {
 
         let pattern = format!("{}/*.toml", dir.to_str().unwrap());
         let tool = Glob::new(std::env::temp_dir());
-        let result = tool.execute(
-            &test_ctx(),
-            &serde_json::json!({"pattern": pattern}),
-        ).await;
+        let result = tool
+            .execute(&test_ctx(), &serde_json::json!({"pattern": pattern}))
+            .await;
 
         assert!(result.error().is_none());
-        assert!(result.output().contains("Cargo.toml"), "output: {}", result.output());
-        assert!(!result.output().contains("README.md"), "output: {}", result.output());
+        assert!(
+            result.output().contains("Cargo.toml"),
+            "output: {}",
+            result.output()
+        );
+        assert!(
+            !result.output().contains("README.md"),
+            "output: {}",
+            result.output()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -208,13 +229,16 @@ mod tests {
 
         let pattern = format!("{}/*.xyz", dir.to_str().unwrap());
         let tool = Glob::new(std::env::temp_dir());
-        let result = tool.execute(
-            &test_ctx(),
-            &serde_json::json!({"pattern": pattern}),
-        ).await;
+        let result = tool
+            .execute(&test_ctx(), &serde_json::json!({"pattern": pattern}))
+            .await;
 
         assert!(result.error().is_none());
-        assert!(result.output().contains("no matches"), "output: {}", result.output());
+        assert!(
+            result.output().contains("no matches"),
+            "output: {}",
+            result.output()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -222,10 +246,9 @@ mod tests {
     async fn invalid_pattern() {
         let tool = Glob::new(std::env::temp_dir());
         // 使用含无效字符的 pattern
-        let result = tool.execute(
-            &test_ctx(),
-            &serde_json::json!({"pattern": "[\0"}),
-        ).await;
+        let result = tool
+            .execute(&test_ctx(), &serde_json::json!({"pattern": "[\0"}))
+            .await;
         // 应该报错而非崩溃
         assert!(result.error().is_some() || result.output().contains("no matches"));
     }
@@ -241,7 +264,9 @@ mod tests {
     #[tokio::test]
     async fn empty_pattern() {
         let tool = Glob::new(std::env::temp_dir());
-        let result = tool.execute(&test_ctx(), &serde_json::json!({"pattern": ""})).await;
+        let result = tool
+            .execute(&test_ctx(), &serde_json::json!({"pattern": ""}))
+            .await;
         assert!(result.error().is_some());
     }
 }

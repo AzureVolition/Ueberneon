@@ -6,23 +6,25 @@
 // 支持沙箱隔离（macOS Seatbelt / Linux bubblewrap）和环境变量安全处理。
 
 #[cfg_attr(not(test), allow(unused_imports))]
-use crate::agent::{ActionMode, AgentMode, Tool, GenericsTool, ToolContext, ToolResult, ToolResultExt};
+use crate::agent::{
+    ActionMode, AgentMode, GenericsTool, Tool, ToolContext, ToolResult, ToolResultExt,
+};
 use llm::tool::ToolMeta;
-use ueberneon_macros::ToolMetaImpl;
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
-use schemars::JsonSchema;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use ueberneon_macros::ToolMetaImpl;
 
 use super::common::env::EnvBuilder;
 use super::common::process::{ProcessOutput, ProcessRunner};
 use super::common::shell::Shell;
-use crate::tools::jobs::JobManager;
-use crate::tools::sandbox::SandboxSpec;
 use crate::permission::{Check, Decision, gate::PermissionChecked};
 use crate::tools::internal::common::checkable_tool::CheckableTool;
+use crate::tools::jobs::JobManager;
+use crate::tools::sandbox::SandboxSpec;
 
 /// bash — 在子进程中执行 shell 命令，返回合并后的 stdout+stderr。
 ///
@@ -54,11 +56,15 @@ pub struct BashParams {
     command: String,
     /// 是否以后台模式运行。
     #[serde(default)]
-    #[schemars(description = "Run detached: returns a job id immediately and keeps running across turns. Use bash_output to read output and kill_shell to terminate.")]
+    #[schemars(
+        description = "Run detached: returns a job id immediately and keeps running across turns. Use bash_output to read output and kill_shell to terminate."
+    )]
     run_in_background: bool,
     /// 后台任务结束后是否保留子进程组。
     #[serde(default)]
-    #[schemars(description = "After the shell command exits normally, keep any process-group members it intentionally left behind.")]
+    #[schemars(
+        description = "After the shell command exits normally, keep any process-group members it intentionally left behind."
+    )]
     preserve_background_processes: bool,
 }
 
@@ -93,7 +99,6 @@ impl Bash {
         builder.build()
     }
 
-    
     async fn do_execute(&self, ctx: &ToolContext, args: &BashParams) -> Result<ToolResult, String> {
         if args.command.trim().is_empty() {
             return Err("bash: 'command' must not be empty".into());
@@ -146,7 +151,7 @@ impl PermissionChecked for Bash {
 
 // #[async_trait::async_trait]
 // impl Tool for Bash {
-    
+
 //     async fn execute(&self, _ctx: &ToolContext, args: &Value) -> Result<ToolResult, String> {
 //         // 1. 解析参数
 //         let params: BashParams = match serde_json::from_value(args.clone()) {
@@ -159,7 +164,11 @@ impl PermissionChecked for Bash {
 
 #[async_trait::async_trait]
 impl GenericsTool for Bash {
-    async fn generics_execute(&self, _ctx: &ToolContext, args: &BashParams) -> Result<ToolResult, String> {
+    async fn generics_execute(
+        &self,
+        _ctx: &ToolContext,
+        args: &BashParams,
+    ) -> Result<ToolResult, String> {
         self.do_execute(_ctx, args).await
     }
 }
@@ -167,7 +176,11 @@ impl GenericsTool for Bash {
 #[async_trait::async_trait]
 impl CheckableTool for Bash {
     fn check(&self, ctx: &ToolContext, args: &Value) -> Decision {
-        let agent_mode = *ctx.handler.agent_mode.lock().expect("agent_mode lock poisoned");
+        let agent_mode = *ctx
+            .handler
+            .agent_mode
+            .lock()
+            .expect("agent_mode lock poisoned");
 
         // Unrestrained 模式：放行所有命令
         if agent_mode == AgentMode::Unrestrained {
@@ -178,7 +191,9 @@ impl CheckableTool for Bash {
 
         // 已知只读命令直接放行（不需要审批）
         if !command.is_empty() && crate::permission::checks::is_read_only_bash(command) {
-            if let Some(reason) = Self::check_plan_mode(command) && ActionMode::Plan == ctx.plan_mode {
+            if let Some(reason) = Self::check_plan_mode(command)
+                && ActionMode::Plan == ctx.plan_mode
+            {
                 return Decision::Deny(reason);
             }
             return Decision::Allow;
@@ -190,14 +205,23 @@ impl CheckableTool for Bash {
             other => other,
         }
     }
-
 }
 
 impl Bash {
     /// plan mode 下 bash 的允许命令前缀白名单。
     const PLAN_MODE_ALLOWED_PREFIXES: &[&str] = &[
-        "ls", "cat", "head", "tail", "wc", "find", "grep", "git log",
-        "git diff", "git show", "git status", "git branch",
+        "ls",
+        "cat",
+        "head",
+        "tail",
+        "wc",
+        "find",
+        "grep",
+        "git log",
+        "git diff",
+        "git show",
+        "git status",
+        "git branch",
     ];
 
     fn check_plan_mode(command: &str) -> Option<String> {
@@ -222,7 +246,12 @@ impl Bash {
             let detail = if output.combined.is_empty() {
                 "(no output)".to_string()
             } else {
-                let preview: String = output.combined.lines().take(5).collect::<Vec<_>>().join("\n");
+                let preview: String = output
+                    .combined
+                    .lines()
+                    .take(5)
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 format!("output:\n{preview}")
             };
             let msg = if output.timed_out {
@@ -231,15 +260,15 @@ impl Bash {
                     output.exit_code
                 )
             } else {
-                format!(
-                    "command exited with code {}\n{detail}",
-                    output.exit_code
-                )
+                format!("command exited with code {}\n{detail}", output.exit_code)
             };
             return Err(msg);
         }
 
-        Ok(ToolResult { output: output.combined, truncated: output.truncated })
+        Ok(ToolResult {
+            output: output.combined,
+            truncated: output.truncated,
+        })
     }
 }
 
@@ -247,7 +276,6 @@ impl Bash {
 mod tests {
     use super::*;
     use crate::agent::AgentHandler;
-    
 
     fn test_job_manager() -> Arc<JobManager> {
         Arc::new(JobManager::new())
@@ -278,12 +306,20 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
-        cancel_token: None,
+            cancel_token: None,
         };
 
         let result = bash.execute(&ctx, &args).await;
-        assert!(result.error().is_none(), "unexpected error: {:?}", result.error());
-        assert!(result.output().contains("hello"), "output: {}", result.output());
+        assert!(
+            result.error().is_none(),
+            "unexpected error: {:?}",
+            result.error()
+        );
+        assert!(
+            result.output().contains("hello"),
+            "output: {}",
+            result.output()
+        );
         assert!(!result.is_err());
     }
 
@@ -298,11 +334,15 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
-        cancel_token: None,
+            cancel_token: None,
         };
 
         let result = bash.execute(&ctx, &args).await;
-        assert!(result.output().contains("to_stderr"), "output: {}", result.output());
+        assert!(
+            result.output().contains("to_stderr"),
+            "output: {}",
+            result.output()
+        );
     }
 
     #[tokio::test]
@@ -316,11 +356,14 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
-        cancel_token: None,
+            cancel_token: None,
         };
 
         let result = bash.execute(&ctx, &args).await;
-        assert!(result.error().is_some(), "should have error for non-zero exit");
+        assert!(
+            result.error().is_some(),
+            "should have error for non-zero exit"
+        );
         assert!(result.error().unwrap().contains("42"));
     }
 
@@ -335,7 +378,7 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
-        cancel_token: None,
+            cancel_token: None,
         };
 
         let result = bash.execute(&ctx, &args).await;
@@ -353,13 +396,25 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
-        cancel_token: None,
+            cancel_token: None,
         };
 
         let result = bash.execute(&ctx, &args).await;
-        assert!(result.error().is_none(), "unexpected error: {:?}", result.error());
-        assert!(result.output().contains("bg-"), "output: {}", result.output());
-        assert!(result.output().contains("bash_output"), "output: {}", result.output());
+        assert!(
+            result.error().is_none(),
+            "unexpected error: {:?}",
+            result.error()
+        );
+        assert!(
+            result.output().contains("bg-"),
+            "output: {}",
+            result.output()
+        );
+        assert!(
+            result.output().contains("bash_output"),
+            "output: {}",
+            result.output()
+        );
     }
 
     #[tokio::test]
@@ -373,7 +428,7 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
-        cancel_token: None,
+            cancel_token: None,
         };
 
         let result = bash.execute(&ctx, &args).await;
@@ -391,7 +446,7 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
-        cancel_token: None,
+            cancel_token: None,
         };
 
         let result = bash.execute(&ctx, &args).await;

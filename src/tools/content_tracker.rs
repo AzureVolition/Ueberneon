@@ -126,7 +126,10 @@ impl FileObserveTracker {
     pub fn record_edit(&self, path: &str, old_string: &str, new_string: &str) {
         let sig = Self::edit_signature(path, old_string, new_string);
 
-        let mut history = self.edit_history.write().expect("edit_history lock poisoned");
+        let mut history = self
+            .edit_history
+            .write()
+            .expect("edit_history lock poisoned");
         let mut set = self.edit_set.write().expect("edit_set lock poisoned");
 
         // 如果已达上限，淘汰最旧的
@@ -151,14 +154,26 @@ impl FileObserveTracker {
 
     /// 返回已记录的编辑历史数量。
     pub fn edit_history_count(&self) -> usize {
-        self.edit_history.read().expect("edit_history lock poisoned").len()
+        self.edit_history
+            .read()
+            .expect("edit_history lock poisoned")
+            .len()
     }
 
     /// 清空所有状态（测试用）。
     pub fn clear(&self) {
-        self.observed.write().expect("observed lock poisoned").clear();
-        self.edit_history.write().expect("edit_history lock poisoned").clear();
-        self.edit_set.write().expect("edit_set lock poisoned").clear();
+        self.observed
+            .write()
+            .expect("observed lock poisoned")
+            .clear();
+        self.edit_history
+            .write()
+            .expect("edit_history lock poisoned")
+            .clear();
+        self.edit_set
+            .write()
+            .expect("edit_set lock poisoned")
+            .clear();
     }
 }
 
@@ -262,7 +277,10 @@ mod tests {
         assert!(t.check_loop("f0.rs", "old", "new0").is_ok());
         // 最新的记录应该还在
         let last = format!("new{}", MAX_EDIT_HISTORY + 49);
-        assert!(t.check_loop(&format!("f{}.rs", MAX_EDIT_HISTORY + 49), "old", &last).is_err());
+        assert!(
+            t.check_loop(&format!("f{}.rs", MAX_EDIT_HISTORY + 49), "old", &last)
+                .is_err()
+        );
     }
 
     #[test]
@@ -288,7 +306,10 @@ mod tests {
 
         // 2. 第一次编辑 → 通过
         assert!(t.check_anchor("lib.rs", "fn old_func() {}").is_ok());
-        assert!(t.check_loop("lib.rs", "fn old_func() {}", "fn new_func() {}").is_ok());
+        assert!(
+            t.check_loop("lib.rs", "fn old_func() {}", "fn new_func() {}")
+                .is_ok()
+        );
         t.record_edit("lib.rs", "fn old_func() {}", "fn new_func() {}");
         t.record_write("lib.rs", "fn new_func() {}");
 
@@ -297,7 +318,10 @@ mod tests {
 
         // 4. 第二次编辑 → 通过
         assert!(t.check_anchor("lib.rs", "fn new_func() {}").is_ok());
-        assert!(t.check_loop("lib.rs", "fn new_func() {}", "fn final_func() {}").is_ok());
+        assert!(
+            t.check_loop("lib.rs", "fn new_func() {}", "fn final_func() {}")
+                .is_ok()
+        );
         t.record_edit("lib.rs", "fn new_func() {}", "fn final_func() {}");
         t.record_write("lib.rs", "fn final_func() {}");
 

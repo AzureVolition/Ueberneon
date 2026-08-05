@@ -19,10 +19,8 @@ pub fn Dropdown(
     value: String,
     onchange: EventHandler<String>,
     options: Vec<DropdownOption>,
-    #[props(optional)]
-    placeholder: Option<String>,
-    #[props(optional)]
-    searchable: Option<bool>,
+    #[props(optional)] placeholder: Option<String>,
+    #[props(optional)] searchable: Option<bool>,
 ) -> Element {
     let mut is_open = use_signal(|| false);
     let mut search_query = use_signal(String::new);
@@ -41,7 +39,10 @@ pub fn Dropdown(
 
     let filtered_options: Vec<&DropdownOption> = if searchable && !search_query.read().is_empty() {
         let q = search_query.read().to_lowercase();
-        options.iter().filter(|o| o.label.to_lowercase().contains(&q)).collect()
+        options
+            .iter()
+            .filter(|o| o.label.to_lowercase().contains(&q))
+            .collect()
     } else {
         options.iter().collect()
     };

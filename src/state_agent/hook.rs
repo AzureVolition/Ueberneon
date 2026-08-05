@@ -16,17 +16,11 @@ pub enum DeltaKind {
 
 pub enum AgentEvent {
     /// 用户提交输入后、进入 LLM 前
-    UserPromptSubmit {
-        prompt: String,
-    },
+    UserPromptSubmit { prompt: String },
     /// 流式增量（UI 据此刷新）
-    StreamDelta {
-        kind: DeltaKind,
-    },
+    StreamDelta { kind: DeltaKind },
     /// 运行状态变化（变体 A：UI 据此显示精确状态）
-    StateChanged {
-        state: AgentState,
-    },
+    StateChanged { state: AgentState },
     /// 流式阶段收到一个工具调用（前端据此刷新，无需等 execute）
     ToolCallQueued {
         tool_name: String,
@@ -44,19 +38,14 @@ pub enum AgentEvent {
         reason: String,
     },
     /// 审批决策落地（allow/deny 已写入 record 后广播，UI 据此瞬时刷新审批卡）
-    ToolCallDecision {
-        call_id: String,
-        approved: bool,
-    },
+    ToolCallDecision { call_id: String, approved: bool },
     /// 工具执行结束（含状态落定）
     ToolCallEnd {
         tool_name: String,
         result: Result<ToolResult, String>,
     },
     /// 执行出错
-    Error {
-        message: String,
-    },
+    Error { message: String },
     /// 工具执行前
     PreToolUse {
         tool_name: String,
@@ -68,9 +57,7 @@ pub enum AgentEvent {
         result: Result<ToolResult, String>,
     },
     /// 循环即将退出时
-    Stop {
-        reason: String,
-    },
+    Stop { reason: String },
 }
 
 impl From<&str> for AgentEvent {
@@ -203,20 +190,23 @@ impl HookRegister {
 
     /// 注册带 id 的 hook（`unregister(id)` 可单独移除）。
     pub fn register_with_id(&mut self, id: &'static str, hook: impl Hook + 'static) {
-        self.hooks
-            .push(HookEntry::Identified { id, hook: Box::new(hook) });
+        self.hooks.push(HookEntry::Identified {
+            id,
+            hook: Box::new(hook),
+        });
     }
 
     /// 按 id 移除 hook（幂等；不误删其他 hook）。
     pub fn unregister(&mut self, id: &'static str) {
-        self.hooks.retain(|e| {
-            !matches!(e, HookEntry::Identified { id: eid, .. } if *eid == id)
-        });
+        self.hooks
+            .retain(|e| !matches!(e, HookEntry::Identified { id: eid, .. } if *eid == id));
     }
 
     /// 是否已注册指定 id 的 hook。
     pub fn has(&self, id: &'static str) -> bool {
-        self.hooks.iter().any(|e| matches!(e, HookEntry::Identified { id: eid, .. } if *eid == id))
+        self.hooks
+            .iter()
+            .any(|e| matches!(e, HookEntry::Identified { id: eid, .. } if *eid == id))
     }
 
     /// 向所有已注册的 hook 分发事件。
@@ -248,10 +238,15 @@ impl HookRegister {
 
     /// 收集并清空所有待注入提示词（AgentCore 在请求 LLM 前调用）。
     pub fn drain_prompts(&self) -> Vec<llm::Message> {
-        std::mem::take(&mut *self.pending_prompts.lock().expect("pending_prompts lock poisoned"))
-            .into_iter()
-            .map(|p| p.message)
-            .collect()
+        std::mem::take(
+            &mut *self
+                .pending_prompts
+                .lock()
+                .expect("pending_prompts lock poisoned"),
+        )
+        .into_iter()
+        .map(|p| p.message)
+        .collect()
     }
 }
 
@@ -277,13 +272,22 @@ impl Hook for StallTracker {
     fn on_event(&self, ev: &AgentEvent) {
         if let AgentEvent::StateChanged { state } = ev
             && *state == super::AgentState::Executing
-            && let Some(plan) =
-                self.handler.current_plan.lock().expect("current_plan lock poisoned").as_mut()
+            && let Some(plan) = self
+                .handler
+                .current_plan
+                .lock()
+                .expect("current_plan lock poisoned")
+                .as_mut()
         {
             plan.stall_count += 1;
             if plan.stall_count >= 3 {
-                self.prompts.lock().expect("pending_prompts lock poisoned")
-                    .push(PendingPrompt { message: self.nudge.clone(), source: "stall" });
+                self.prompts
+                    .lock()
+                    .expect("pending_prompts lock poisoned")
+                    .push(PendingPrompt {
+                        message: self.nudge.clone(),
+                        source: "stall",
+                    });
                 plan.stall_count = 0;
             }
         }
@@ -302,14 +306,22 @@ impl Hook for CompleteStepReset {
         // 仅 CompleteStep 执行成功时重置 stall_count（失败视为停滞更合理）；
         // 撤回 stall 催促无条件执行——但若 current_plan 已被清空（最终
         // CompleteStep 完成），整个守卫不成立，撤回由 unregister_stall_hooks 兜底
-        if let AgentEvent::PostToolUse { tool_name, result, .. } = ev
+        if let AgentEvent::PostToolUse {
+            tool_name, result, ..
+        } = ev
             && tool_name == "CompleteStep"
             && result.is_ok()
-            && let Some(plan) =
-                self.handler.current_plan.lock().expect("current_plan lock poisoned").as_mut()
+            && let Some(plan) = self
+                .handler
+                .current_plan
+                .lock()
+                .expect("current_plan lock poisoned")
+                .as_mut()
         {
             plan.stall_count = 0;
-            self.prompts.lock().expect("pending_prompts lock poisoned")
+            self.prompts
+                .lock()
+                .expect("pending_prompts lock poisoned")
                 .retain(|p| p.source != "stall");
         }
     }
@@ -337,16 +349,22 @@ impl HookRegister {
             ..Default::default()
         };
         let prompts = self.pending_prompts.clone();
-        self.register_with_id(STALL_TRACKER_ID, StallTracker {
-            handler: handler.clone(),
-            prompts,
-            nudge,
-        });
+        self.register_with_id(
+            STALL_TRACKER_ID,
+            StallTracker {
+                handler: handler.clone(),
+                prompts,
+                nudge,
+            },
+        );
         let prompts = self.pending_prompts.clone();
-        self.register_with_id(COMPLETE_STEP_RESET_ID, CompleteStepReset {
-            handler: handler.clone(),
-            prompts,
-        });
+        self.register_with_id(
+            COMPLETE_STEP_RESET_ID,
+            CompleteStepReset {
+                handler: handler.clone(),
+                prompts,
+            },
+        );
     }
 
     /// 注销 plan 停滞跟踪 hook 对（幂等）。注销即 plan 结束，同时撤回尚未注入的
@@ -399,19 +417,58 @@ mod tests {
         use std::mem::discriminant;
 
         let cases: &[(&str, AgentEvent)] = &[
-            ("prompt", AgentEvent::UserPromptSubmit { prompt: String::new() }),
-            ("user_prompt_submit", AgentEvent::UserPromptSubmit { prompt: String::new() }),
-            ("pretool", AgentEvent::PreToolUse { tool_name: String::new(), args: serde_json::Value::Null }),
-            ("pre_tool_use", AgentEvent::PreToolUse { tool_name: String::new(), args: serde_json::Value::Null }),
-            ("posttool", AgentEvent::PostToolUse {
-                tool_name: String::new(),
-                result: Ok(ToolResult { output: String::new(), truncated: false }),
-            }),
-            ("post_tool_use", AgentEvent::PostToolUse {
-                tool_name: String::new(),
-                result: Ok(ToolResult { output: String::new(), truncated: false }),
-            }),
-            ("stop", AgentEvent::Stop { reason: String::new() }),
+            (
+                "prompt",
+                AgentEvent::UserPromptSubmit {
+                    prompt: String::new(),
+                },
+            ),
+            (
+                "user_prompt_submit",
+                AgentEvent::UserPromptSubmit {
+                    prompt: String::new(),
+                },
+            ),
+            (
+                "pretool",
+                AgentEvent::PreToolUse {
+                    tool_name: String::new(),
+                    args: serde_json::Value::Null,
+                },
+            ),
+            (
+                "pre_tool_use",
+                AgentEvent::PreToolUse {
+                    tool_name: String::new(),
+                    args: serde_json::Value::Null,
+                },
+            ),
+            (
+                "posttool",
+                AgentEvent::PostToolUse {
+                    tool_name: String::new(),
+                    result: Ok(ToolResult {
+                        output: String::new(),
+                        truncated: false,
+                    }),
+                },
+            ),
+            (
+                "post_tool_use",
+                AgentEvent::PostToolUse {
+                    tool_name: String::new(),
+                    result: Ok(ToolResult {
+                        output: String::new(),
+                        truncated: false,
+                    }),
+                },
+            ),
+            (
+                "stop",
+                AgentEvent::Stop {
+                    reason: String::new(),
+                },
+            ),
         ];
 
         for (input, expected) in cases {

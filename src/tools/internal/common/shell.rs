@@ -50,8 +50,14 @@ impl Shell {
         match self {
             Shell::Bash => ("bash".into(), vec!["-c".into(), script.to_string()]),
             Shell::Sh => ("sh".into(), vec!["-c".into(), script.to_string()]),
-            Shell::Pwsh => ("pwsh".into(), vec!["-NoProfile".into(), "-Command".into(), script.to_string()]),
-            Shell::Powershell => ("powershell.exe".into(), vec!["-NoProfile".into(), "-Command".into(), script.to_string()]),
+            Shell::Pwsh => (
+                "pwsh".into(),
+                vec!["-NoProfile".into(), "-Command".into(), script.to_string()],
+            ),
+            Shell::Powershell => (
+                "powershell.exe".into(),
+                vec!["-NoProfile".into(), "-Command".into(), script.to_string()],
+            ),
         }
     }
 
@@ -64,13 +70,17 @@ impl Shell {
 
     /// 检查某个命令是否在 PATH 中可用。
     fn has_command(name: &str) -> bool {
-        Command::new(if cfg!(target_os = "windows") { "where" } else { "which" })
-            .arg(name)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+        Command::new(if cfg!(target_os = "windows") {
+            "where"
+        } else {
+            "which"
+        })
+        .arg(name)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
     }
 }
 
@@ -83,7 +93,10 @@ mod tests {
         let shell = Shell::detect();
         // 在任何类 Unix 系统上，至少能找到 sh
         // 大多数 CI / macOS 能探测到 bash
-        assert!(matches!(shell, Shell::Bash | Shell::Sh | Shell::Pwsh | Shell::Powershell));
+        assert!(matches!(
+            shell,
+            Shell::Bash | Shell::Sh | Shell::Pwsh | Shell::Powershell
+        ));
     }
 
     #[test]

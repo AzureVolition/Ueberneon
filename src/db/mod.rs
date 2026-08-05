@@ -21,7 +21,9 @@ pub const DEFAULT_PROJECT_ID: &str = "ueberneon-default";
 /// 数据库文件路径：~/.ueberneon/data.db
 fn db_path() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    std::path::PathBuf::from(home).join(".ueberneon").join("data.db")
+    std::path::PathBuf::from(home)
+        .join(".ueberneon")
+        .join("data.db")
 }
 
 /// 初始化数据库。
@@ -61,7 +63,6 @@ pub fn init_db() -> anyhow::Result<Connection> {
 
 /// 建表 + 种子数据（接收 &Connection，不持有所有权）
 fn rebuild_schema(conn: &Connection) -> anyhow::Result<()> {
-
     // 外键约束
     conn.execute_batch("PRAGMA foreign_keys=ON;")?;
 
@@ -242,27 +243,60 @@ fn rebuild_schema(conn: &Connection) -> anyhow::Result<()> {
 
         CREATE INDEX IF NOT EXISTS idx_tasks_parent
             ON tasks(parent_task_id);
-        "
+        ",
     )?;
 
     // migration: add status column for existing databases (ignore error if exists)
-    let _ = conn.execute("ALTER TABLE conversations ADD COLUMN status TEXT NOT NULL DEFAULT 'active'", []);
+    let _ = conn.execute(
+        "ALTER TABLE conversations ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
+        [],
+    );
 
     // migration: add description column for existing databases (ignore error if exists)
-    let _ = conn.execute("ALTER TABLE agent_configs ADD COLUMN description TEXT NOT NULL DEFAULT ''", []);
+    let _ = conn.execute(
+        "ALTER TABLE agent_configs ADD COLUMN description TEXT NOT NULL DEFAULT ''",
+        [],
+    );
 
     // migration: token usage tracking columns for conversations
-    let _ = conn.execute("ALTER TABLE conversations ADD COLUMN total_prompt_tokens INTEGER NOT NULL DEFAULT 0", []);
-    let _ = conn.execute("ALTER TABLE conversations ADD COLUMN total_completion_tokens INTEGER NOT NULL DEFAULT 0", []);
-    let _ = conn.execute("ALTER TABLE conversations ADD COLUMN total_reasoning_tokens INTEGER NOT NULL DEFAULT 0", []);
-    let _ = conn.execute("ALTER TABLE conversations ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0", []);
-    let _ = conn.execute("ALTER TABLE conversations ADD COLUMN request_count INTEGER NOT NULL DEFAULT 0", []);
-    let _ = conn.execute("ALTER TABLE conversations ADD COLUMN cache_hit_tokens INTEGER NOT NULL DEFAULT 0", []);
-    let _ = conn.execute("ALTER TABLE conversations ADD COLUMN cache_miss_tokens INTEGER NOT NULL DEFAULT 0", []);
-    let _ = conn.execute("ALTER TABLE conversations ADD COLUMN last_usage_at TEXT", []);
+    let _ = conn.execute(
+        "ALTER TABLE conversations ADD COLUMN total_prompt_tokens INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE conversations ADD COLUMN total_completion_tokens INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE conversations ADD COLUMN total_reasoning_tokens INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE conversations ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE conversations ADD COLUMN request_count INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE conversations ADD COLUMN cache_hit_tokens INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE conversations ADD COLUMN cache_miss_tokens INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE conversations ADD COLUMN last_usage_at TEXT",
+        [],
+    );
 
     // migration: context_window for agent_configs
-    let _ = conn.execute("ALTER TABLE agent_configs ADD COLUMN context_window INTEGER", []);
+    let _ = conn.execute(
+        "ALTER TABLE agent_configs ADD COLUMN context_window INTEGER",
+        [],
+    );
 
     // ── 默认项目 ──────────────────────────────────────────────────────────
     // 确保 "ueberneon" 默认项目始终存在
@@ -272,7 +306,11 @@ fn rebuild_schema(conn: &Connection) -> anyhow::Result<()> {
         rusqlite::params![
             DEFAULT_PROJECT_ID,
             "ueberneon",
-            db_path().parent().context("db_path has no parent directory")?.to_string_lossy().to_string(),
+            db_path()
+                .parent()
+                .context("db_path has no parent directory")?
+                .to_string_lossy()
+                .to_string(),
             chrono::Local::now().to_rfc3339(),
         ],
     )?;
@@ -288,7 +326,7 @@ fn rebuild_schema(conn: &Connection) -> anyhow::Result<()> {
         // 插入预设模型列表
         if !preset.models.is_empty() {
             let mut stmt = conn.prepare(
-                "INSERT OR IGNORE INTO provider_models (provider_id, model_name) VALUES (?1, ?2)"
+                "INSERT OR IGNORE INTO provider_models (provider_id, model_name) VALUES (?1, ?2)",
             )?;
             for model in preset.models {
                 stmt.execute(rusqlite::params![preset.id, model])?;
@@ -302,8 +340,33 @@ fn rebuild_schema(conn: &Connection) -> anyhow::Result<()> {
     // ── 默认工具组（幂等插入）──
     seed_default_tool_groups(&conn)?;
 
+    // ── 技能状态表（磁盘为真相，DB 只存状态）──
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS skill_states (
+            name        TEXT PRIMARY KEY,
+            status      TEXT NOT NULL DEFAULT 'enabled',
+            usage_count INTEGER NOT NULL DEFAULT 0,
+            last_run_at TEXT,
+            updated_at  TEXT NOT NULL
+        );",
+    )?;
+    // 迁移：旧 skills 注册表 → skill_states（只保留状态字段），随后删除旧表
+    let has_old: i64 = conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='skills'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_old > 0 {
+        conn.execute(
+            "INSERT OR IGNORE INTO skill_states (name, status, usage_count, last_run_at, updated_at)
+             SELECT name, status, usage_count, last_run_at, updated_at FROM skills",
+            [],
+        )?;
+        conn.execute("DROP TABLE skills", [])?;
+    }
+
     // ── 内置 Explore SubAgent ─────────────────────────────────────────────
-    
+
     // 幂等插入 explore 子 agent（只读文件搜索专家）
     // provider 信息由用户在 Sub Agents 页面中配置
     conn.execute(
@@ -323,8 +386,6 @@ fn rebuild_schema(conn: &Connection) -> anyhow::Result<()> {
         ],
     )?;
 
-    
-
     Ok(())
 }
 
@@ -333,9 +394,7 @@ static DB: OnceLock<Mutex<Connection>> = OnceLock::new();
 
 /// 获取全局 DB 连接。首次调用时自动执行 init_db() 初始化。
 pub fn get_db() -> &'static Mutex<Connection> {
-    DB.get_or_init(|| {
-        Mutex::new(init_db().expect("failed to initialize database"))
-    })
+    DB.get_or_init(|| Mutex::new(init_db().expect("failed to initialize database")))
 }
 
 /// 在闭包内使用 DB 连接，闭包结束后自动释放锁。
@@ -349,9 +408,7 @@ pub fn with_db<T>(f: impl FnOnce(&Connection) -> T) -> T {
 }
 
 /// 与 [`with_db`] 相同，但返回 `Result` —— 锁被 poison 时返回 `Err(...)`。
-pub fn with_db_result<T, E>(
-    f: impl FnOnce(&Connection) -> Result<T, E>,
-) -> Result<T, String>
+pub fn with_db_result<T, E>(f: impl FnOnce(&Connection) -> Result<T, E>) -> Result<T, String>
 where
     E: std::fmt::Display,
 {
@@ -382,7 +439,11 @@ fn sync_builtin_tools(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
             id,
             meta.name,
             meta.description,
-            if meta.schema.is_empty() { "{}" } else { meta.schema },
+            if meta.schema.is_empty() {
+                "{}"
+            } else {
+                meta.schema
+            },
             meta.read_only as i32,
             &now,
         ])?;
@@ -424,9 +485,15 @@ fn seed_default_tool_groups(conn: &rusqlite::Connection) -> rusqlite::Result<()>
     )?;
     // 工具到组的关联（幂等）
     let groups: &[(&str, &[&str])] = &[
-        ("grp-file",    &["ReadFile", "WriteFile", "EditFile", "MultiEdit", "Ls"]),
-        ("grp-search",  &["Grep", "Glob", "CodeIndex"]),
-        ("grp-shell",   &["Bash", "BashOutput", "KillShell", "ReadOnlyBash"]),
+        (
+            "grp-file",
+            &["ReadFile", "WriteFile", "EditFile", "MultiEdit", "Ls"],
+        ),
+        ("grp-search", &["Grep", "Glob", "CodeIndex"]),
+        (
+            "grp-shell",
+            &["Bash", "BashOutput", "KillShell", "ReadOnlyBash"],
+        ),
         ("grp-network", &["WebFetch"]),
     ];
     let mut stmt = conn.prepare(
@@ -443,7 +510,7 @@ fn seed_default_tool_groups(conn: &rusqlite::Connection) -> rusqlite::Result<()>
 }
 
 /// 删除所有表并重新初始化（开发用）
-pub fn drop_all_tables() -> anyhow::Result<() > {
+pub fn drop_all_tables() -> anyhow::Result<()> {
     with_db(|conn| -> anyhow::Result<()> {
         conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
         let tables: Vec<String> = {
@@ -474,7 +541,9 @@ mod tests {
 
         // 临时覆盖 HOME 环境变量
         let original_home = std::env::var("HOME").ok();
-        unsafe { std::env::set_var("HOME", tmp.to_str().unwrap()); }
+        unsafe {
+            std::env::set_var("HOME", tmp.to_str().unwrap());
+        }
 
         let conn = init_db().expect("init_db should succeed");
         let db_file = tmp.join(".ueberneon").join("data.db");
@@ -489,7 +558,10 @@ mod tests {
             .filter_map(|r| r.ok())
             .collect();
         assert!(tables.contains(&"projects".to_string()), "projects table");
-        assert!(tables.contains(&"conversations".to_string()), "conversations table");
+        assert!(
+            tables.contains(&"conversations".to_string()),
+            "conversations table"
+        );
         assert!(tables.contains(&"messages".to_string()), "messages table");
 
         // 验证默认项目已插入
@@ -506,7 +578,9 @@ mod tests {
         drop(conn);
         std::fs::remove_dir_all(&tmp).unwrap();
         if let Some(home) = original_home {
-            unsafe { std::env::set_var("HOME", home); }
+            unsafe {
+                std::env::set_var("HOME", home);
+            }
         }
     }
 }

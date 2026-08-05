@@ -21,7 +21,11 @@ pub trait CheckableTool: Tool {
 
     /// 完整执行入口 = check() → run()。
     /// Decision::Ask 会返回错误（交互式审批需由 Agent 层通过 pre_check + execute 分流处理）。
-    async fn checked_execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> Result<ToolResult, String> {
+    async fn checked_execute(
+        &self,
+        ctx: &ToolContext,
+        args: &serde_json::Value,
+    ) -> Result<ToolResult, String> {
         match self.check(ctx, args) {
             Decision::Allow => {}
             Decision::Ask => {

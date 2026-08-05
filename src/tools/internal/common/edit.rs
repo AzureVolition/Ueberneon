@@ -21,7 +21,12 @@ pub struct EditResult {
 /// 1. **精确匹配**：计数并检查唯一性
 /// 2. **CRLF 归一化**：若内容使用 `\r\n` 但 old_string 使用 `\n`，自动转换后重试
 /// 3. **模糊匹配**：剥离 read_file 行号前缀（`  42→`）→ trim 尾部空白 → 展开 tab
-pub fn apply_edit(content: &str, old_string: &str, new_string: &str, replace_all: bool) -> EditResult {
+pub fn apply_edit(
+    content: &str,
+    old_string: &str,
+    new_string: &str,
+    replace_all: bool,
+) -> EditResult {
     // —— 第一关：精确匹配 ——
     let exact_old = normalize_line_endings_for_match(content, old_string);
     let exact_matches = count_occurrences(content, &exact_old);
@@ -68,7 +73,12 @@ pub fn apply_edit(content: &str, old_string: &str, new_string: &str, replace_all
 }
 
 /// 对内容分词匹配。处理 blank 行、读文件前缀剥离、trim、tab 展开。
-fn apply_fuzzy_fallback(content: &str, old_string: &str, new_string: &str, replace_all: bool) -> EditResult {
+fn apply_fuzzy_fallback(
+    content: &str,
+    old_string: &str,
+    new_string: &str,
+    replace_all: bool,
+) -> EditResult {
     let content_lines: Vec<&str> = content.lines().collect();
     let old_lines: Vec<String> = normalize_lines_for_fuzzy(old_string);
 
@@ -203,7 +213,10 @@ fn strip_read_file_prefix(line: &str) -> String {
     // 查找 → 符号
     if let Some(pos) = trimmed.find('→') {
         let prefix = &trimmed[..pos];
-        if prefix.chars().all(|c| c.is_ascii_digit() || c.is_whitespace()) {
+        if prefix
+            .chars()
+            .all(|c| c.is_ascii_digit() || c.is_whitespace())
+        {
             return trimmed[pos + '→'.len_utf8()..].to_string();
         }
     }
@@ -273,14 +286,17 @@ pub fn old_string_not_found_error(path: &str, old_string: &str, content: &str) -
     if let Some((line, text)) = hint {
         msg.push_str(&format!(" (nearest line {}: {:?})", line, text));
     }
-    msg.push_str(
-        ";\n  re-read the file to confirm its current content before retrying the edit",
-    );
+    msg.push_str(";\n  re-read the file to confirm its current content before retrying the edit");
     msg
 }
 
 /// 构建 old_string 不唯一的错误消息，列出匹配行。
-pub fn old_string_not_unique_error(path: &str, old_string: &str, content: &str, matches: usize) -> String {
+pub fn old_string_not_unique_error(
+    path: &str,
+    old_string: &str,
+    content: &str,
+    matches: usize,
+) -> String {
     let lines = match_line_summary(old_string, content, 5);
     format!(
         "old_string is not unique in {} ({} matches){};\n  add nearby unique code, not just repeated separator lines",
@@ -347,8 +363,6 @@ fn match_line_summary(old_string: &str, content: &str, max_lines: usize) -> Stri
     let line_strs: Vec<String> = lines.iter().map(|n| format!("line {}", n)).collect();
     format!(" (matching: {})", line_strs.join(", "))
 }
-
-
 
 #[cfg(test)]
 mod tests {

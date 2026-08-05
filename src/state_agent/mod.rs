@@ -1,43 +1,54 @@
+pub mod action_plan;
+pub mod approval;
+pub mod context;
 pub mod hook;
 pub mod main_agent;
-pub mod action_plan;
 pub mod manager;
 pub mod prompts;
-pub mod approval;
 pub mod running;
-pub mod context;
 
 use anyhow::Context;
 pub use approval::{ApprovalChain, ApprovalGate, AutoDenyApprovalGate, UserApprovalGate};
-pub use running::{AgentState, Executing, Running, StreamResult, Streaming};
 pub use context::{AgentContext, PhaseObserver};
-pub use llm::{tool::ToolMeta, ToolCall};
+pub use llm::{ToolCall, tool::ToolMeta};
+pub use running::{AgentState, Executing, Running, StreamResult, Streaming};
 
 // ── Tool trait ──────────────────────────────────────────────────────────────
 
 #[async_trait::async_trait]
 pub trait Tool: ToolMeta {
     /// 执行工具，接收模型生成的 raw JSON args
-    async fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> Result<ToolResult, String>;
+    async fn execute(
+        &self,
+        ctx: &ToolContext,
+        args: &serde_json::Value,
+    ) -> Result<ToolResult, String>;
 }
 
 #[async_trait::async_trait]
-pub trait GenericsType: ToolMeta + Send + Sync 
-{
+pub trait GenericsType: ToolMeta + Send + Sync {
     type ArgType: serde::de::DeserializeOwned + Send + Sync;
 }
 
 #[async_trait::async_trait]
-pub trait GenericsTool: GenericsType
-{
-    async fn generics_execute(&self, ctx: &ToolContext, args: &Self::ArgType) -> Result<ToolResult, String>;
+pub trait GenericsTool: GenericsType {
+    async fn generics_execute(
+        &self,
+        ctx: &ToolContext,
+        args: &Self::ArgType,
+    ) -> Result<ToolResult, String>;
 }
 
 #[async_trait::async_trait]
-impl <G> Tool for G
-    where  G: GenericsTool + Send + Sync ,
+impl<G> Tool for G
+where
+    G: GenericsTool + Send + Sync,
 {
-    async fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> Result<ToolResult, String> {
+    async fn execute(
+        &self,
+        ctx: &ToolContext,
+        args: &serde_json::Value,
+    ) -> Result<ToolResult, String> {
         let params: G::ArgType = match serde_json::from_value(args.clone()) {
             Ok(p) => p,
             Err(e) => return Err(format!("bash: invalid arguments: {e}")),
@@ -45,7 +56,6 @@ impl <G> Tool for G
         self.generics_execute(ctx, &params).await
     }
 }
-
 
 // ── ToolResult ───────────────────────────────────────────────────────────────
 
@@ -109,7 +119,6 @@ impl ToolResultExt for Result<ToolResult, String> {
     }
 }
 
-
 // ── PlanMode ──────────────────────────────────────────────────────────────
 
 /// Plan mode 枚举：控制工具在计划阶段的可执行性。
@@ -121,7 +130,6 @@ pub enum ActionMode {
     /// 计划模式：仅只读工具可执行，写工具被阻止
     Plan,
 }
-
 
 impl std::fmt::Display for ActionMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -162,8 +170,6 @@ pub enum AgentMode {
     Unrestrained,
 }
 
-
-
 impl std::fmt::Display for AgentMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -191,7 +197,7 @@ impl std::str::FromStr for AgentMode {
 
 // ── ToolContext ──────────────────────────────────────────────────────────────
 
-/// 执行上下文 
+/// 执行上下文
 pub struct ToolContext {
     /// 工具调用的唯一 ID（stream 中 LLM 返回的 tool_call_id）
     pub call_id: String,
@@ -237,13 +243,15 @@ impl std::fmt::Display for BlockedKind {
 
 // —— agent ————————————————————————————————————————————————————————————————————
 
+use crate::model::{
+    ChatMessage, Plan, PlanStatus, StepStatus, StreamSegment, ToolCallRecord, ToolCallStatus,
+};
+use crate::tools::Registry;
+use hook::AgentEvent;
+use hook::HookRegister;
+use llm::{Message, Provider, Role as LlmRole};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
-use crate::tools::Registry;
-use crate::model::{ChatMessage, Plan, PlanStatus, StepStatus, StreamSegment, ToolCallRecord, ToolCallStatus};
-use hook::HookRegister;
-use hook::AgentEvent;
-use llm::{Message, Provider, Role as LlmRole};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -272,7 +280,10 @@ impl AgentHandler {
     pub fn inherit_from(&mut self, parent: &AgentHandler) {
         let mode = *parent.agent_mode.lock().expect("agent_mode lock poisoned");
         *self.agent_mode.lock().expect("agent_mode lock poisoned") = mode;
-        let am = *parent.action_mode.read().expect("action_mode lock poisoned");
+        let am = *parent
+            .action_mode
+            .read()
+            .expect("action_mode lock poisoned");
         *self.action_mode.write().expect("action_mode lock poisoned") = am;
     }
 
@@ -297,7 +308,11 @@ impl AgentHandler {
     }
 
     pub fn current_plan_state(&self) -> Option<CurrentPlanState> {
-        let guard = self.current_plan.lock().expect("current_plan lock poisoned").clone();
+        let guard = self
+            .current_plan
+            .lock()
+            .expect("current_plan lock poisoned")
+            .clone();
         let action_mode_guard = self.action_mode.read().expect("action_mode lock poisoned");
         if guard.is_none() && *action_mode_guard == ActionMode::Regular {
             return None;
@@ -308,24 +323,17 @@ impl AgentHandler {
         if PlanStatus::NeedApproval == guard?.status {
             return Some(CurrentPlanState::Debate);
         }
-    
+
         Some(CurrentPlanState::Exculuding)
-        
     }
 
     /// 可以抽象出来的方法,未来可以弄成抽象Handler用以塞入提示词
     pub fn prompt_before_user_message(&self) -> Option<&str> {
         if let Some(action_mode) = self.current_plan_state() {
             match action_mode {
-                CurrentPlanState::Init => {
-                    Some(prompts::plan::PLAN_CREATE_PREFIX)
-                }
-                CurrentPlanState::Debate => {
-                    Some(prompts::plan::PLAN_MODIFY_PREFIX)
-                }
-                _ => {
-                    None
-                }
+                CurrentPlanState::Init => Some(prompts::plan::PLAN_CREATE_PREFIX),
+                CurrentPlanState::Debate => Some(prompts::plan::PLAN_MODIFY_PREFIX),
+                _ => None,
             }
         } else {
             None
@@ -336,7 +344,11 @@ impl AgentHandler {
         if let Some(action_mode) = self.current_plan_state() {
             match action_mode {
                 CurrentPlanState::Exculuding => {
-                    let plan = self.current_plan.lock().expect("current_plan lock poisoned").clone()?;
+                    let plan = self
+                        .current_plan
+                        .lock()
+                        .expect("current_plan lock poisoned")
+                        .clone()?;
                     Some(crate::agent::prompts::plan::execute_prompt(&plan))
                 }
                 _ => None,
@@ -347,12 +359,17 @@ impl AgentHandler {
     }
 
     pub fn can_finish(&self) -> Option<String> {
-        if let Some(plan) = self.current_plan.lock().expect("current_plan lock poisoned").as_ref() && plan.status == PlanStatus::InProgress {
+        if let Some(plan) = self
+            .current_plan
+            .lock()
+            .expect("current_plan lock poisoned")
+            .as_ref()
+            && plan.status == PlanStatus::InProgress
+        {
             Some("current plan is not finished".to_string())
-        }else {
+        } else {
             None
         }
-        
     }
 
     /// 审批通过当前计划：写入 DB（plan + tasks），构建 completion_queue，
@@ -360,7 +377,10 @@ impl AgentHandler {
     pub fn approve_plan(&self, project_id: &str, conversation_id: &str) -> Result<(), String> {
         let plan_clone;
         {
-            let mut guard = self.current_plan.lock().expect("current_plan lock poisoned");
+            let mut guard = self
+                .current_plan
+                .lock()
+                .expect("current_plan lock poisoned");
             let plan = match guard.as_mut() {
                 Some(p) => p,
                 None => return Err("no active plan to approve".to_string()),
@@ -380,29 +400,42 @@ impl AgentHandler {
         }
 
         // ── 写入数据库 ──
-        use crate::model::QueueItemStatus;
         use crate::db::metadata::plan::{self as plan_db, PlanStatus as DbPlanStatus};
+        use crate::model::QueueItemStatus;
 
         let plan_id = crate::db::with_db_result(|conn| {
             let pid = plan_db::create(
-                conn, project_id, conversation_id,
-                &plan_clone.goal, &plan_clone.description,
+                conn,
+                project_id,
+                conversation_id,
+                &plan_clone.goal,
+                &plan_clone.description,
                 DbPlanStatus::InProgress,
-            ).map_err(|e| format!("db error: {e}"))?;
+            )
+            .map_err(|e| format!("db error: {e}"))?;
 
-            plan_db::mark_started(conn, &pid)
-                .map_err(|e| format!("db error: {e}"))?;
+            plan_db::mark_started(conn, &pid).map_err(|e| format!("db error: {e}"))?;
 
             // 递归展平树写入 DB，同时构建队列
             let mut queue: Vec<crate::model::QueueItem> = Vec::new();
-            flatten_and_write(&plan_clone.children, conn, &pid, project_id, None, None, &mut queue, 0)
-                .map_err(|e| format!("db error: {e}"))?;
+            flatten_and_write(
+                &plan_clone.children,
+                conn,
+                &pid,
+                project_id,
+                None,
+                None,
+                &mut queue,
+                0,
+            )
+            .map_err(|e| format!("db error: {e}"))?;
 
             // 把队列写回 plan（通过 map，后面会 clone 出去）
             // 这里不能直接修改 plan，因为 conn 的闭包中不能持有 guard
             // 返回 queue 和 pid，后面再写回
             Ok::<_, String>((pid, queue))
-        }).map_err(|e| format!("db error: {e}"))?;
+        })
+        .map_err(|e| format!("db error: {e}"))?;
 
         let (plan_id, mut queue) = plan_id;
 
@@ -416,7 +449,10 @@ impl AgentHandler {
 
         // 把数据库 plan_id 和队列写回内存中的 plan
         {
-            let mut guard = self.current_plan.lock().expect("current_plan lock poisoned");
+            let mut guard = self
+                .current_plan
+                .lock()
+                .expect("current_plan lock poisoned");
             if let Some(ref mut p) = guard.as_mut() {
                 p.db_plan_id = Some(plan_id);
                 p.completion_queue = queue;
@@ -429,7 +465,10 @@ impl AgentHandler {
 
     /// 拒绝当前计划：清除内存中的 current_plan（不入库）。
     pub fn reject_plan(&self) -> Result<(), String> {
-        let guard = self.current_plan.lock().expect("current_plan lock poisoned");
+        let guard = self
+            .current_plan
+            .lock()
+            .expect("current_plan lock poisoned");
         if guard.is_none() {
             return Err("no active plan to reject".to_string());
         }
@@ -462,9 +501,16 @@ fn flatten_and_write(
             node.idx as i32
         };
         let task_id = task_db::create(
-            conn, plan_id, project_id, parent_db_id,
-            store_idx, &node.description, DbTaskStatus::Pending, None,
-        ).map_err(|e| format!("{}", e))?;
+            conn,
+            plan_id,
+            project_id,
+            parent_db_id,
+            store_idx,
+            &node.description,
+            DbTaskStatus::Pending,
+            None,
+        )
+        .map_err(|e| format!("{}", e))?;
 
         if node.children.is_empty() {
             // 叶子节点 → 创建队列批次
@@ -482,8 +528,14 @@ fn flatten_and_write(
         } else {
             // 非叶子节点 → 递归子节点
             flatten_and_write(
-                &node.children, conn, plan_id, project_id,
-                Some(task_id), Some(node.idx), queue, depth + 1,
+                &node.children,
+                conn,
+                plan_id,
+                project_id,
+                Some(task_id),
+                Some(node.idx),
+                queue,
+                depth + 1,
             )?;
 
             // 最后一个子节点的 batch 追加父节点
@@ -560,11 +612,12 @@ impl AgentCore {
             last_usage: None,
         }
     }
-    
+
     pub fn push_message(&mut self, msg: Message) -> anyhow::Result<()> {
         if let Ok(guard) = crate::db::get_db().lock() {
             self.save_message(&guard, &msg).context("save message")?;
-            self.touch_conversation(&guard).context("touch conversation")?;
+            self.touch_conversation(&guard)
+                .context("touch conversation")?;
         }
         self.messages.push(msg);
         Ok(())
@@ -649,7 +702,6 @@ impl AgentCore {
     }
 }
 
-
 // ── 状态类型 Agent（新状态机） ──────────────────────────────────────────────
 //
 // 用类型系统表达运行阶段，每个阶段持有不同的 running 状态：
@@ -703,7 +755,13 @@ impl Agent<Static> {
         cancel_token: CancellationToken,
         handler: AgentHandler,
         approval_gate: Box<dyn ApprovalGate>,
-    ) -> Result<(Agent<Running<Streaming>>, mpsc::UnboundedReceiver<AgentEvent>), InterruptState> {
+    ) -> Result<
+        (
+            Agent<Running<Streaming>>,
+            mpsc::UnboundedReceiver<AgentEvent>,
+        ),
+        InterruptState,
+    > {
         // 用户输入入史 + 落库（复用 AgentCore::push_message）
         for msg in &input {
             self.agent
@@ -723,10 +781,23 @@ impl Agent<Static> {
         // 在 Running 之间传递同一个 streaming_handle，不再经过 Static）。
         // hook_register 由 Running::init 创建空表（stall hooks 按 plan 生命周期
         // 动态注册，见 running.rs finalize_tool）
-        let (running, rx) = Running::init(Streaming::init(stream), cancel_token, handler.clone(), approval_gate);
+        let (running, rx) = Running::init(
+            Streaming::init(stream),
+            cancel_token,
+            handler.clone(),
+            approval_gate,
+        );
         // 用户输入提示事件送 hook_register（构建后；stall hooks 此时未注册无影响）
-        running.hook_register.emit(&AgentEvent::UserPromptSubmit { prompt });
-        Ok((Agent { running, agent: self.agent }, rx))
+        running
+            .hook_register
+            .emit(&AgentEvent::UserPromptSubmit { prompt });
+        Ok((
+            Agent {
+                running,
+                agent: self.agent,
+            },
+            rx,
+        ))
     }
 
     /// 完整 agent 循环：stream ↔ execute 交替，直到正常完成或 `InterruptState` 中止。

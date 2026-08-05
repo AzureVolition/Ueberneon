@@ -8,19 +8,19 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::agent::{ActionMode, GenericsTool, ToolContext, ToolResult};
-use llm::tool::ToolMeta;
 #[cfg(test)]
 use crate::agent::{AgentHandler, ToolResultExt};
-use ueberneon_macros::ToolMetaImpl;
+use llm::tool::ToolMeta;
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
-use schemars::JsonSchema;
+use ueberneon_macros::ToolMetaImpl;
 
+use crate::permission::{Check, Decision, gate::PermissionChecked};
 use crate::tools::content_tracker::FileObserveTracker;
+use crate::tools::diff::{self, Kind as DiffKind};
 use crate::tools::internal::common::checkable_tool::CheckableTool;
 use crate::tools::snapshot::SnapshotStore;
-use crate::tools::diff::{self, Kind as DiffKind};
-use crate::permission::{Check, Decision, gate::PermissionChecked};
 
 /// write_file — 创建新文件或覆盖已有文件。
 ///
@@ -58,7 +58,12 @@ pub struct WriteFileParams {
 }
 
 impl WriteFile {
-    pub fn new(work_dir: PathBuf, checkpoint: Arc<SnapshotStore>, checks: Vec<Box<dyn Check>>, tracker: Arc<FileObserveTracker>) -> Self {
+    pub fn new(
+        work_dir: PathBuf,
+        checkpoint: Arc<SnapshotStore>,
+        checks: Vec<Box<dyn Check>>,
+        tracker: Arc<FileObserveTracker>,
+    ) -> Self {
         Self {
             work_dir,
             checkpoint,
@@ -112,7 +117,11 @@ impl WriteFile {
     }
 
     /// 工具执行体：参数已由 `GenericsTool` 反序列化为强类型 `WriteFileParams`。
-    async fn do_execute(&self, _ctx: &ToolContext, args: &WriteFileParams) -> Result<ToolResult, String> {
+    async fn do_execute(
+        &self,
+        _ctx: &ToolContext,
+        args: &WriteFileParams,
+    ) -> Result<ToolResult, String> {
         // 1. 解析参数
         let path_str = &args.path;
         let content = &args.content;
@@ -176,7 +185,10 @@ impl WriteFile {
         // 9. 返回成功消息
         let summary = diff::change_summary(&file_change);
         let diff_text = &file_change.unified_diff;
-        Ok(ToolResult::ok(format!("wrote {}\n{}\n\n{}", path_str, summary, diff_text)))
+        Ok(ToolResult::ok(format!(
+            "wrote {}\n{}\n\n{}",
+            path_str, summary, diff_text
+        )))
     }
 }
 
@@ -210,7 +222,11 @@ impl PermissionChecked for WriteFile {
 
 #[async_trait::async_trait]
 impl GenericsTool for WriteFile {
-    async fn generics_execute(&self, _ctx: &ToolContext, args: &WriteFileParams) -> Result<ToolResult, String> {
+    async fn generics_execute(
+        &self,
+        _ctx: &ToolContext,
+        args: &WriteFileParams,
+    ) -> Result<ToolResult, String> {
         self.do_execute(_ctx, args).await
     }
 }
@@ -218,12 +234,21 @@ impl GenericsTool for WriteFile {
 #[async_trait::async_trait]
 impl CheckableTool for WriteFile {
     fn check(&self, ctx: &ToolContext, args: &Value) -> Decision {
-        match self.check_permission(self.name(), args, *ctx.handler.agent_mode.lock().expect("agent_mode lock poisoned")) {
+        match self.check_permission(
+            self.name(),
+            args,
+            *ctx.handler
+                .agent_mode
+                .lock()
+                .expect("agent_mode lock poisoned"),
+        ) {
             Decision::Allow => {}
             decision => return decision,
         }
         match ctx.plan_mode {
-            ActionMode::Plan => return Decision::Deny("write_file is not allowed in plan mode".into()),
+            ActionMode::Plan => {
+                return Decision::Deny("write_file is not allowed in plan mode".into());
+            }
             ActionMode::Regular => {}
         }
         Decision::Allow
@@ -234,7 +259,6 @@ impl CheckableTool for WriteFile {
 mod tests {
     use super::*;
     use crate::agent::Tool;
-    
 
     static TEST_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -252,7 +276,7 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
-        cancel_token: None,
+            cancel_token: None,
         }
     }
 
@@ -261,7 +285,12 @@ mod tests {
         let work_dir = temp_dir();
         std::fs::create_dir_all(&work_dir).unwrap();
         let checkpoint = Arc::new(SnapshotStore::new());
-        let tool = WriteFile::new(work_dir.clone(), checkpoint, vec![], Arc::new(FileObserveTracker::new()));
+        let tool = WriteFile::new(
+            work_dir.clone(),
+            checkpoint,
+            vec![],
+            Arc::new(FileObserveTracker::new()),
+        );
 
         let path = work_dir.join("new_file.txt");
         let args = serde_json::json!({
@@ -270,7 +299,11 @@ mod tests {
         });
         let result = tool.execute(&test_ctx(), &args).await;
         assert!(result.error().is_none(), "error: {:?}", result.error());
-        assert!(result.output().contains("wrote"), "output: {}", result.output());
+        assert!(
+            result.output().contains("wrote"),
+            "output: {}",
+            result.output()
+        );
 
         let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(content, "hello\nworld\n");
@@ -284,7 +317,12 @@ mod tests {
         let path = work_dir.join("existing.txt");
         std::fs::write(&path, b"old content").unwrap();
         let checkpoint = Arc::new(SnapshotStore::new());
-        let tool = WriteFile::new(work_dir, checkpoint, vec![], Arc::new(FileObserveTracker::new()));
+        let tool = WriteFile::new(
+            work_dir,
+            checkpoint,
+            vec![],
+            Arc::new(FileObserveTracker::new()),
+        );
 
         // Without overwrite flag — should be blocked
         let args = serde_json::json!({
@@ -313,7 +351,12 @@ mod tests {
         let work_dir = temp_dir();
         std::fs::create_dir_all(&work_dir).unwrap();
         let checkpoint = Arc::new(SnapshotStore::new());
-        let tool = WriteFile::new(work_dir.clone(), checkpoint, vec![], Arc::new(FileObserveTracker::new()));
+        let tool = WriteFile::new(
+            work_dir.clone(),
+            checkpoint,
+            vec![],
+            Arc::new(FileObserveTracker::new()),
+        );
 
         let nested = work_dir.join("subdir").join("nested").join("file.txt");
         let args = serde_json::json!({
@@ -331,7 +374,12 @@ mod tests {
         let work_dir = temp_dir();
         std::fs::create_dir_all(&work_dir).unwrap();
         let checkpoint = Arc::new(SnapshotStore::new());
-        let tool = WriteFile::new(work_dir, checkpoint, vec![], Arc::new(FileObserveTracker::new()));
+        let tool = WriteFile::new(
+            work_dir,
+            checkpoint,
+            vec![],
+            Arc::new(FileObserveTracker::new()),
+        );
 
         let args = serde_json::json!({
             "path": "/tmp/outside.txt",
@@ -349,7 +397,12 @@ mod tests {
         let path = work_dir.join("checkpoint_test.txt");
         std::fs::write(&path, b"original").unwrap();
         let checkpoint = Arc::new(SnapshotStore::new());
-        let tool = WriteFile::new(work_dir, checkpoint.clone(), vec![], Arc::new(FileObserveTracker::new()));
+        let tool = WriteFile::new(
+            work_dir,
+            checkpoint.clone(),
+            vec![],
+            Arc::new(FileObserveTracker::new()),
+        );
 
         let args = serde_json::json!({
             "path": path.to_str().unwrap(),

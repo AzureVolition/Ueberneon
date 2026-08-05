@@ -13,8 +13,8 @@ use llm::Message;
 
 use super::hook::AgentEvent;
 use super::{
-    Agent, AgentHandler, ApprovalGate, Executing, InterruptState, Running, Static,
-    StreamResult, Streaming,
+    Agent, AgentHandler, ApprovalGate, Executing, InterruptState, Running, Static, StreamResult,
+    Streaming,
 };
 
 /// 阶段观察者：在 AgentContext 白盒驱动的每个状态变换点被调用。

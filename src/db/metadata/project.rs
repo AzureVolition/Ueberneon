@@ -1,7 +1,7 @@
 // ── Project CRUD ──
 
 use chrono::{DateTime, Local};
-use rusqlite::{params, Connection, Result};
+use rusqlite::{Connection, Result, params};
 
 /// 数据库行 —— 不含嵌套的 conversations 列表
 #[derive(Debug, Clone)]
@@ -26,11 +26,7 @@ fn generate_id() -> String {
 }
 
 /// 创建项目，返回新 id
-pub fn create(
-    conn: &Connection,
-    name: &str,
-    path: &str,
-) -> Result<String> {
+pub fn create(conn: &Connection, name: &str, path: &str) -> Result<String> {
     let id = generate_id();
     let now = chrono::Local::now().to_rfc3339();
     conn.execute(
@@ -127,7 +123,6 @@ pub fn delete(conn: &Connection, id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     fn test_conn() -> Connection {
         let conn = Connection::open_in_memory().unwrap();

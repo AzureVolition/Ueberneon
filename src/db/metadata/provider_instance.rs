@@ -4,7 +4,7 @@
 // 每个实例引用 providers 表中的一条预设（provider_id），
 // 并保存用户自己的 alias 和 api_key。
 
-use rusqlite::{params, Connection, Result};
+use rusqlite::{Connection, Result, params};
 
 /// 数据库行
 #[derive(Debug, Clone)]
@@ -22,7 +22,14 @@ pub fn insert(conn: &Connection, row: &ProviderInstanceRow) -> Result<()> {
     conn.execute(
         "INSERT INTO provider_instances (id, provider_id, alias, api_key, sort_order, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![row.id, row.provider_id, row.alias, row.api_key, row.sort_order, row.created_at],
+        params![
+            row.id,
+            row.provider_id,
+            row.alias,
+            row.api_key,
+            row.sort_order,
+            row.created_at
+        ],
     )?;
     Ok(())
 }
@@ -37,7 +44,7 @@ pub fn delete(conn: &Connection, id: &str) -> Result<()> {
 pub fn get(conn: &Connection, id: &str) -> Result<Option<ProviderInstanceRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, provider_id, alias, api_key, sort_order, created_at
-         FROM provider_instances WHERE id = ?1"
+         FROM provider_instances WHERE id = ?1",
     )?;
     let mut rows = stmt.query_map(params![id], |row| {
         Ok(ProviderInstanceRow {
@@ -59,7 +66,7 @@ pub fn get(conn: &Connection, id: &str) -> Result<Option<ProviderInstanceRow>> {
 pub fn list_all(conn: &Connection) -> Result<Vec<ProviderInstanceRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, provider_id, alias, api_key, sort_order, created_at
-         FROM provider_instances ORDER BY sort_order ASC, created_at ASC"
+         FROM provider_instances ORDER BY sort_order ASC, created_at ASC",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(ProviderInstanceRow {

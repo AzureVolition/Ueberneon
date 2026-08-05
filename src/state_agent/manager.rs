@@ -3,7 +3,6 @@
 // 以 conversation_id 为 key，管理 Agent 的生命周期。
 // 使用 remove + register 模式避免锁跨 await 持有。
 
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
@@ -25,7 +24,7 @@ pub struct AgentConfig {
     pub system_prompt: String,
     pub temperature: f64,
     pub max_tokens: Option<u32>,
-    pub context_window: u32,       // 上下文窗口上限
+    pub context_window: u32, // 上下文窗口上限
     pub agent_type: String,
     pub enabled_tools: Vec<String>,
 }
@@ -35,8 +34,10 @@ impl AgentConfig {
     pub fn from_row(row: &AgentConfigRow) -> anyhow::Result<Self> {
         let decoded_key = if !row.api_key.is_empty() {
             use base64::Engine;
-            base64::engine::general_purpose::STANDARD.decode(row.api_key.as_bytes())
-                .ok().and_then(|v| String::from_utf8(v).ok())
+            base64::engine::general_purpose::STANDARD
+                .decode(row.api_key.as_bytes())
+                .ok()
+                .and_then(|v| String::from_utf8(v).ok())
                 .unwrap_or_default()
         } else {
             anyhow::bail!("api_key is empty")
@@ -48,7 +49,9 @@ impl AgentConfig {
             system_prompt: row.system_prompt.clone(),
             temperature: row.temperature,
             max_tokens: row.max_tokens,
-            context_window: row.context_window.unwrap_or(crate::model::DEFAULT_CONTEXT_WINDOW),
+            context_window: row
+                .context_window
+                .unwrap_or(crate::model::DEFAULT_CONTEXT_WINDOW),
             agent_type: row.agent_type.clone(),
             enabled_tools: serde_json::from_str(&row.tools).unwrap_or_default(),
         })
@@ -64,10 +67,8 @@ impl AgentManager {
     /// 获取全局单例
     pub fn get() -> &'static Self {
         static INSTANCE: OnceLock<AgentManager> = OnceLock::new();
-        INSTANCE.get_or_init(|| {
-            AgentManager {
-                agents: RwLock::new(HashMap::new()),
-            }
+        INSTANCE.get_or_init(|| AgentManager {
+            agents: RwLock::new(HashMap::new()),
         })
     }
 
@@ -101,8 +102,9 @@ impl AgentManager {
         .map_err(|e| format!("provider error: {e}"))?;
 
         let registry = Registry::new();
-        let pid = project_id.as_deref().unwrap_or(crate::db::DEFAULT_PROJECT_ID);
-        
+        let pid = project_id
+            .as_deref()
+            .unwrap_or(crate::db::DEFAULT_PROJECT_ID);
 
         let project_row = crate::db::with_db(|conn| {
             crate::db::metadata::project::get(conn, pid)
@@ -110,7 +112,14 @@ impl AgentManager {
                 .ok_or(format!("{} project not found", pid))
         })?;
 
-        let project_path = PathBuf::from(project_row.path);
+        let mut project_path = PathBuf::from(project_row.path);
+        // 默认项目的 agent 工作区收敛到 <原路径>/workdir，避免直接操作数据目录
+        if pid == crate::db::DEFAULT_PROJECT_ID
+            && project_path.file_name().and_then(|s| s.to_str()) != Some("workdir")
+        {
+            project_path.push("workdir");
+            let _ = std::fs::create_dir_all(&project_path);
+        }
         register_builtins(&registry, &project_path);
 
         // 如果配置了启用工具列表，移除未启用的工具
@@ -129,13 +138,15 @@ impl AgentManager {
         let ctx = PromptContext {
             workspace_path: project_path.display().to_string(),
             project_name: project_row.name.clone(),
-            tool_list: registry.schemas().iter()
+            tool_list: registry
+                .schemas()
+                .iter()
                 .map(|s| s.name.as_str())
                 .collect::<Vec<_>>()
                 .join(", "),
             env_info: PromptContext::default().env_info,
         };
-        
+
         let mut agent = AgentCore::new(
             Box::new(provider),
             registry,
@@ -148,9 +159,13 @@ impl AgentManager {
             cfg.agent_type.clone(),
         );
         // 优先使用传入的 system_prompt，否则使用 DB 配置中的
-        let template =  {
+        let template = {
             let s = cfg.system_prompt.trim().to_string();
-            if s.is_empty() { super::main_agent::defautlt_main_agent_prompt() } else { s}
+            if s.is_empty() {
+                super::main_agent::defautlt_main_agent_prompt()
+            } else {
+                s
+            }
         };
 
         let sp = PromptBuilder::init_for(&cfg.agent_type, &ctx)
@@ -198,7 +213,9 @@ impl AgentManager {
                 );
                 // 创建 conversation 数据库行
                 crate::db::with_db(|conn| {
-                    let pid = project_id.as_deref().unwrap_or(crate::db::DEFAULT_PROJECT_ID);
+                    let pid = project_id
+                        .as_deref()
+                        .unwrap_or(crate::db::DEFAULT_PROJECT_ID);
                     if let Err(e) = conn.execute(
                         "INSERT INTO conversations (id, project_id, parent_conversation_id, title, updated_at, created_at, agent_config_id) VALUES (?1, ?2, ?3, '', ?4, ?5, ?6)",
                         rusqlite::params![id, pid, parent_conversation_id, chrono::Local::now().to_rfc3339(), chrono::Local::now().to_rfc3339(), agent_config_id],
@@ -206,7 +223,10 @@ impl AgentManager {
                 });
                 let (agent, handler) =
                     Self::build_agent_inner(id.clone(), project_id, &agent_config)?;
-                self.agents.write().expect("agents lock poisoned").insert(id.clone(), agent);
+                self.agents
+                    .write()
+                    .expect("agents lock poisoned")
+                    .insert(id.clone(), agent);
                 Ok((id, handler))
             }
         }
@@ -236,20 +256,25 @@ impl AgentManager {
             let conv = crate::db::metadata::conversation::get(conn, &id)
                 .map_err(|e| format!("db error: {e}"))?
                 .ok_or(format!("conversation not found"))?;
-            let msgs = crate::db::metadata::message::list_as_llm_messages(conn, &id)
-                .unwrap_or_default();
+            let msgs =
+                crate::db::metadata::message::list_as_llm_messages(conn, &id).unwrap_or_default();
             Ok((conv, msgs))
         })?;
 
         // 读取 conversation 关联的 agent 配置
-        let agent_config = conv.agent_config_id
+        let agent_config = conv
+            .agent_config_id
             .as_deref()
             .map(Self::read_agent_config)
             .unwrap_or_else(|| Err(format!("no agent config for conversation {id}")))?;
 
-        let (mut agent, handler) = Self::build_agent_inner(id.to_string(), Some(conv.project_id), &agent_config)?;
+        let (mut agent, handler) =
+            Self::build_agent_inner(id.to_string(), Some(conv.project_id), &agent_config)?;
         agent.messages.extend(msgs);
-        self.agents.write().expect("agents lock poisoned").insert(id.to_string(), agent);
+        self.agents
+            .write()
+            .expect("agents lock poisoned")
+            .insert(id.to_string(), agent);
         Ok(Some(handler))
     }
 
@@ -275,19 +300,25 @@ impl AgentManager {
             if !default_inst_id.is_empty() && !default_model.is_empty() {
                 let (base_url, api_key) = crate::db::with_db(|conn| {
                     let inst = crate::db::metadata::provider_instance::get(conn, &default_inst_id)
-                        .ok().flatten();
+                        .ok()
+                        .flatten();
                     let (raw_key, prov_id) = match inst {
                         Some(ref i) => (i.api_key.clone(), i.provider_id.clone()),
                         None => (String::new(), String::new()),
                     };
                     let url = crate::db::metadata::provider::get(conn, &prov_id)
-                        .ok().flatten().map(|p| p.base_url).unwrap_or_default();
+                        .ok()
+                        .flatten()
+                        .map(|p| p.base_url)
+                        .unwrap_or_default();
                     (url, raw_key)
                 });
                 let decoded_key = if !api_key.is_empty() {
                     use base64::Engine;
-                    base64::engine::general_purpose::STANDARD.decode(api_key.as_bytes())
-                        .ok().and_then(|v| String::from_utf8(v).ok())
+                    base64::engine::general_purpose::STANDARD
+                        .decode(api_key.as_bytes())
+                        .ok()
+                        .and_then(|v| String::from_utf8(v).ok())
                         .unwrap_or_default()
                 } else {
                     String::new()
@@ -299,7 +330,9 @@ impl AgentManager {
                     system_prompt: row.system_prompt,
                     temperature: row.temperature,
                     max_tokens: row.max_tokens,
-                    context_window: row.context_window.unwrap_or(crate::model::DEFAULT_CONTEXT_WINDOW),
+                    context_window: row
+                        .context_window
+                        .unwrap_or(crate::model::DEFAULT_CONTEXT_WINDOW),
                     agent_type: row.agent_type,
                     enabled_tools: serde_json::from_str(&row.tools).unwrap_or_default(),
                 });
@@ -314,27 +347,35 @@ impl AgentManager {
         AgentConfig::from_row(&row).map_err(|e| format!("{e}"))
     }
 
-    
-
     /// 从缓存移除并返回 Agent（ownership 转移，适合取出后异步执行）。
     pub fn remove(&self, id: &str) -> Option<AgentCore> {
-        self.agents.write().expect("agents lock poisoned").remove(id)
+        self.agents
+            .write()
+            .expect("agents lock poisoned")
+            .remove(id)
     }
 
     /// 将 Agent 注册回缓存。
     pub fn register(&self, agent: AgentCore) {
         let id = agent.conversation_id.clone();
-        self.agents.write().expect("agents lock poisoned").insert(id, agent);
+        self.agents
+            .write()
+            .expect("agents lock poisoned")
+            .insert(id, agent);
     }
 
     /// 检查对话是否存在（缓存 or DB）。
     pub fn exists(&self, id: &str) -> Result<bool, String> {
-        if self.agents.read().expect("agents lock poisoned").contains_key(id) {
+        if self
+            .agents
+            .read()
+            .expect("agents lock poisoned")
+            .contains_key(id)
+        {
             return Ok(true);
         }
         let found = crate::db::with_db(|conn| {
-            crate::db::metadata::conversation::get(conn, id)
-                .map_err(|e| format!("db error: {e}"))
+            crate::db::metadata::conversation::get(conn, id).map_err(|e| format!("db error: {e}"))
         })?
         .is_some();
         Ok(found)

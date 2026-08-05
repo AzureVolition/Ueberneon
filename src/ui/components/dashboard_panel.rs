@@ -18,7 +18,11 @@ fn fmt_tokens(n: u32) -> String {
 /// 单条分解条形图
 #[component]
 fn BreakdownBar(label: String, value: u32, total: u32, class: String) -> Element {
-    let pct = if total > 0 { (value as f64 / total as f64) * 100.0 } else { 0.0 };
+    let pct = if total > 0 {
+        (value as f64 / total as f64) * 100.0
+    } else {
+        0.0
+    };
     rsx! {
         div { class: "dash-breakdown-row",
             span { class: "dash-breakdown-row__label", "{label}" }
@@ -48,11 +52,15 @@ pub fn DashboardPanel(
     let cache_total = usage.cache_hit_tokens + usage.cache_miss_tokens;
     let cache_rate = if cache_total > 0 {
         (usage.cache_hit_tokens as f64 / cache_total as f64) * 100.0
-    } else { 0.0 };
+    } else {
+        0.0
+    };
     let last_prompt = last_prompt_tokens.unwrap_or(0);
     let window_pct = if context_window > 0 {
         ((last_prompt as f64 / context_window as f64) * 100.0).min(100.0)
-    } else { 0.0 };
+    } else {
+        0.0
+    };
 
     rsx! {
         // 触发按钮 — 内联 pill，显示请求计数

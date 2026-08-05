@@ -28,12 +28,12 @@ pub fn decompose(command: &str) -> Option<Vec<String>> {
     #[allow(dead_code)]
     enum State {
         Normal,
-        SingleQuote,    // '...'
-        DoubleQuote,    // "..."
-        Backtick,       // `...`
-        DollarParen,    // $(...)
-        ProcSubst,      // <(...) 或 >(...)
-        Brace,          // {...}
+        SingleQuote, // '...'
+        DoubleQuote, // "..."
+        Backtick,    // `...`
+        DollarParen, // $(...)
+        ProcSubst,   // <(...) 或 >(...)
+        Brace,       // {...}
     }
     let mut stack: Vec<State> = Vec::new();
 
@@ -139,7 +139,9 @@ pub fn decompose(command: &str) -> Option<Vec<String>> {
             // ========== SingleQuote: 直到下一个 ' 为止全部字面量 ==========
             Some(&State::SingleQuote) => {
                 match b {
-                    b'\'' => { stack.pop(); }
+                    b'\'' => {
+                        stack.pop();
+                    }
                     _ => {}
                 }
                 i += 1;
@@ -148,8 +150,12 @@ pub fn decompose(command: &str) -> Option<Vec<String>> {
             // ========== DoubleQuote: 转义和特殊字符 ==========
             Some(&State::DoubleQuote) => {
                 match b {
-                    b'\\' => { escaped = true; }
-                    b'"' => { stack.pop(); }
+                    b'\\' => {
+                        escaped = true;
+                    }
+                    b'"' => {
+                        stack.pop();
+                    }
                     b'`' => {
                         // 反引号在双引号内保持命令替换语义
                         stack.push(State::Backtick);
@@ -166,8 +172,12 @@ pub fn decompose(command: &str) -> Option<Vec<String>> {
             // ========== Backtick: 直到下一个 ` 为止 ==========
             Some(&State::Backtick) => {
                 match b {
-                    b'\\' => { escaped = true; }
-                    b'`' => { stack.pop(); }
+                    b'\\' => {
+                        escaped = true;
+                    }
+                    b'`' => {
+                        stack.pop();
+                    }
                     b'$' if i + 1 < n && bytes[i + 1] == b'(' => {
                         stack.push(State::DollarParen);
                         i += 1;
@@ -183,11 +193,21 @@ pub fn decompose(command: &str) -> Option<Vec<String>> {
                     b'(' => {
                         stack.push(State::DollarParen);
                     }
-                    b')' => { stack.pop(); }
-                    b'\'' => { stack.push(State::SingleQuote); }
-                    b'"' => { stack.push(State::DoubleQuote); }
-                    b'`' => { stack.push(State::Backtick); }
-                    b'\\' => { escaped = true; }
+                    b')' => {
+                        stack.pop();
+                    }
+                    b'\'' => {
+                        stack.push(State::SingleQuote);
+                    }
+                    b'"' => {
+                        stack.push(State::DoubleQuote);
+                    }
+                    b'`' => {
+                        stack.push(State::Backtick);
+                    }
+                    b'\\' => {
+                        escaped = true;
+                    }
                     _ => {}
                 }
                 i += 1;
@@ -199,15 +219,25 @@ pub fn decompose(command: &str) -> Option<Vec<String>> {
                     b'(' => {
                         stack.push(State::ProcSubst);
                     }
-                    b')' => { stack.pop(); }
-                    b'\'' => { stack.push(State::SingleQuote); }
-                    b'"' => { stack.push(State::DoubleQuote); }
-                    b'`' => { stack.push(State::Backtick); }
+                    b')' => {
+                        stack.pop();
+                    }
+                    b'\'' => {
+                        stack.push(State::SingleQuote);
+                    }
+                    b'"' => {
+                        stack.push(State::DoubleQuote);
+                    }
+                    b'`' => {
+                        stack.push(State::Backtick);
+                    }
                     b'$' if i + 1 < n && bytes[i + 1] == b'(' => {
                         stack.push(State::DollarParen);
                         i += 1;
                     }
-                    b'\\' => { escaped = true; }
+                    b'\\' => {
+                        escaped = true;
+                    }
                     _ => {}
                 }
                 i += 1;
@@ -216,11 +246,21 @@ pub fn decompose(command: &str) -> Option<Vec<String>> {
             // ========== {...}: 跟踪括号嵌套深度 ==========
             Some(&State::Brace) => {
                 match b {
-                    b'{' => { stack.push(State::Brace); }
-                    b'}' => { stack.pop(); }
-                    b'\'' => { stack.push(State::SingleQuote); }
-                    b'"' => { stack.push(State::DoubleQuote); }
-                    b'`' => { stack.push(State::Backtick); }
+                    b'{' => {
+                        stack.push(State::Brace);
+                    }
+                    b'}' => {
+                        stack.pop();
+                    }
+                    b'\'' => {
+                        stack.push(State::SingleQuote);
+                    }
+                    b'"' => {
+                        stack.push(State::DoubleQuote);
+                    }
+                    b'`' => {
+                        stack.push(State::Backtick);
+                    }
                     b'$' if i + 1 < n && bytes[i + 1] == b'(' => {
                         stack.push(State::DollarParen);
                         i += 1;
@@ -233,7 +273,9 @@ pub fn decompose(command: &str) -> Option<Vec<String>> {
                         stack.push(State::ProcSubst);
                         i += 1;
                     }
-                    b'\\' => { escaped = true; }
+                    b'\\' => {
+                        escaped = true;
+                    }
                     _ => {}
                 }
                 i += 1;
@@ -352,7 +394,10 @@ mod tests {
     #[test]
     fn mixed_operators() {
         let result = decompose("cd src && cargo build && cargo test; echo done").unwrap();
-        assert_eq!(result, vec!["cd src", "cargo build", "cargo test", "echo done"]);
+        assert_eq!(
+            result,
+            vec!["cd src", "cargo build", "cargo test", "echo done"]
+        );
     }
 
     // ── 引号保护 ──
@@ -443,14 +488,20 @@ mod tests {
     #[test]
     fn build_and_test_with_subshell() {
         let result = decompose("cd /project && cargo build 2>&1 && cargo test 2>&1").unwrap();
-        assert_eq!(result, vec!["cd /project", "cargo build 2>&1", "cargo test 2>&1"]);
+        assert_eq!(
+            result,
+            vec!["cd /project", "cargo build 2>&1", "cargo test 2>&1"]
+        );
     }
 
     #[test]
     fn complex_with_redirect() {
         // 重定向 > file 不是操作符，不分割
         let result = decompose("echo 'start' && echo 'data' > output.txt; cat output.txt").unwrap();
-        assert_eq!(result, vec!["echo 'start'", "echo 'data' > output.txt", "cat output.txt"]);
+        assert_eq!(
+            result,
+            vec!["echo 'start'", "echo 'data' > output.txt", "cat output.txt"]
+        );
     }
 
     #[test]
@@ -470,13 +521,16 @@ mod tests {
         let cmd = "cd /home/user/project && git pull --rebase && cargo check && cargo test 2>&1 | tail -20";
         let result = decompose(cmd).unwrap();
         // | 是 shell 管道操作符，会在 2>&1 之后正确分割
-        assert_eq!(result, vec![
-            "cd /home/user/project",
-            "git pull --rebase",
-            "cargo check",
-            "cargo test 2>&1",
-            "tail -20",
-        ]);
+        assert_eq!(
+            result,
+            vec![
+                "cd /home/user/project",
+                "git pull --rebase",
+                "cargo check",
+                "cargo test 2>&1",
+                "tail -20",
+            ]
+        );
     }
 
     #[test]

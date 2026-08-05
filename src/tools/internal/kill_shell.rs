@@ -2,17 +2,17 @@
 //
 // 通过 JobManager 终止后台任务，先 SIGTERM 后 SIGKILL。
 
-use crate::agent::{GenericsTool, ToolContext, ToolResult};
 #[cfg(test)]
 use crate::agent::{ActionMode, AgentHandler, Tool, ToolResultExt};
-use ueberneon_macros::ToolMetaImpl;
-use serde::Deserialize;
+use crate::agent::{GenericsTool, ToolContext, ToolResult};
 use schemars::JsonSchema;
+use serde::Deserialize;
 use std::sync::Arc;
+use ueberneon_macros::ToolMetaImpl;
 
-use crate::tools::jobs::JobManager;
-use crate::tools::internal::common::checkable_tool::CheckableTool;
 use crate::permission::Decision;
+use crate::tools::internal::common::checkable_tool::CheckableTool;
+use crate::tools::jobs::JobManager;
 
 /// kill_shell — 终止通过 bash(run_in_background=true) 启动的后台任务。
 ///
@@ -34,20 +34,20 @@ pub struct KillShellParams {
 
 impl KillShell {
     pub fn new(job_manager: Arc<JobManager>) -> Self {
-        Self {
-            job_manager,
-        }
+        Self { job_manager }
     }
 
-    async fn do_execute(&self, _ctx: &ToolContext, args: &KillShellParams) -> Result<ToolResult, String> {
+    async fn do_execute(
+        &self,
+        _ctx: &ToolContext,
+        args: &KillShellParams,
+    ) -> Result<ToolResult, String> {
         let job_id = &args.job_id;
 
         let handle = match self.job_manager.get(job_id) {
             Some(h) => h,
             None => {
-                return Err(format!(
-                    "kill_shell: job '{job_id}' not found"
-                ));
+                return Err(format!("kill_shell: job '{job_id}' not found"));
             }
         };
 
@@ -59,14 +59,20 @@ impl KillShell {
         if remaining.is_empty() {
             Ok(ToolResult::ok(format!("job {job_id} terminated")))
         } else {
-            Ok(ToolResult::ok(format!("job {job_id} terminated\n\nRemaining output:\n{remaining}")))
+            Ok(ToolResult::ok(format!(
+                "job {job_id} terminated\n\nRemaining output:\n{remaining}"
+            )))
         }
     }
 }
 
 #[async_trait::async_trait]
 impl GenericsTool for KillShell {
-    async fn generics_execute(&self, ctx: &ToolContext, args: &KillShellParams) -> Result<ToolResult, String> {
+    async fn generics_execute(
+        &self,
+        ctx: &ToolContext,
+        args: &KillShellParams,
+    ) -> Result<ToolResult, String> {
         self.do_execute(ctx, args).await
     }
 }
@@ -76,7 +82,6 @@ impl CheckableTool for KillShell {
     fn check(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> Decision {
         Decision::Allow
     }
-
 }
 
 #[cfg(test)]
@@ -99,7 +104,7 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
-        cancel_token: None,
+            cancel_token: None,
         };
 
         let result = tool.execute(&ctx, &args).await;
@@ -123,7 +128,7 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
-        cancel_token: None,
+            cancel_token: None,
         };
 
         let result = tool.execute(&ctx, &args).await;

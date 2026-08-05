@@ -57,19 +57,23 @@ pub const PLAN_MODIFY_PREFIX: &str = r#"[Plan mode — planning workflow]
 
 /// Execute Mode 显示 — 从 completion_queue 重建树并渲染
 pub fn execute_prompt(plan: &crate::model::Plan) -> String {
-    use crate::model::{StepStatus, QueueItemStatus};
+    use crate::model::{QueueItemStatus, StepStatus};
 
     // 从队列收集所有实体
-    let all_entities: Vec<&crate::model::Entity> = plan.completion_queue.iter()
+    let all_entities: Vec<&crate::model::Entity> = plan
+        .completion_queue
+        .iter()
         .flat_map(|qi| qi.batch.iter())
         .collect();
 
     // 按 parent_idx 分组建树
-    let roots: Vec<&&crate::model::Entity> = all_entities.iter()
+    let roots: Vec<&&crate::model::Entity> = all_entities
+        .iter()
         .filter(|e| e.parent_idx.is_none())
         .collect();
     let children_of = |pid: u8| -> Vec<&&crate::model::Entity> {
-        let mut kids: Vec<&&crate::model::Entity> = all_entities.iter()
+        let mut kids: Vec<&&crate::model::Entity> = all_entities
+            .iter()
             .filter(|e| e.parent_idx == Some(pid))
             .collect();
         kids.sort_by_key(|e| e.idx);
@@ -79,7 +83,9 @@ pub fn execute_prompt(plan: &crate::model::Plan) -> String {
     let mut display = String::new();
 
     // 当前 Current 的 QueueItem
-    let current_entity = plan.completion_queue.iter()
+    let current_entity = plan
+        .completion_queue
+        .iter()
         .find(|qi| qi.status == QueueItemStatus::Current)
         .and_then(|qi| qi.batch.first());
 
@@ -88,10 +94,13 @@ pub fn execute_prompt(plan: &crate::model::Plan) -> String {
         None => "当前任务: 无（所有任务已完成或尚未开始）".to_string(),
     };
 
-    let next_pending = plan.completion_queue.iter()
+    let next_pending = plan
+        .completion_queue
+        .iter()
         .find(|qi| qi.status == QueueItemStatus::Pending)
         .and_then(|qi| qi.batch.first());
-    let current_idx = current_entity.map(|e| e.idx)
+    let current_idx = current_entity
+        .map(|e| e.idx)
         .or_else(|| next_pending.map(|e| e.idx))
         .unwrap_or(0);
 
@@ -99,8 +108,15 @@ pub fn execute_prompt(plan: &crate::model::Plan) -> String {
     for root in &roots {
         let kids = children_of(root.idx);
         let all_done = kids.iter().all(|k| k.step_status == StepStatus::Completed);
-        let root_icon = if all_done && !kids.is_empty() { "✅" } else { "📋" };
-        display.push_str(&format!("{} {} - {}\n", root_icon, root.idx, root.description));
+        let root_icon = if all_done && !kids.is_empty() {
+            "✅"
+        } else {
+            "📋"
+        };
+        display.push_str(&format!(
+            "{} {} - {}\n",
+            root_icon, root.idx, root.description
+        ));
 
         for child in &kids {
             let icon = match child.step_status {
@@ -110,7 +126,10 @@ pub fn execute_prompt(plan: &crate::model::Plan) -> String {
                 StepStatus::Bolcked => "  🚫",
                 StepStatus::Failed => "  ❌",
             };
-            display.push_str(&format!("{} task {} - {}\n", icon, child.idx, child.description));
+            display.push_str(&format!(
+                "{} task {} - {}\n",
+                icon, child.idx, child.description
+            ));
         }
     }
 
@@ -126,12 +145,18 @@ pub fn execute_prompt(plan: &crate::model::Plan) -> String {
                 StepStatus::Bolcked => "🚫",
                 StepStatus::Failed => "❌",
             };
-            display.push_str(&format!("{} task {} - {}\n", icon, entity.idx, entity.description));
+            display.push_str(&format!(
+                "{} task {} - {}\n",
+                icon, entity.idx, entity.description
+            ));
         }
     }
 
     let help_line = if let Some(e) = current_entity {
-        let parent_hint = e.parent_idx.map(|p| format!(", parent_idx={}", p)).unwrap_or_default();
+        let parent_hint = e
+            .parent_idx
+            .map(|p| format!(", parent_idx={}", p))
+            .unwrap_or_default();
         format!(
             "- 专注于完成当前任务 task {}（{}），完成后调用 **CompleteStep(idx={}{})**",
             e.idx, e.description, e.idx, parent_hint

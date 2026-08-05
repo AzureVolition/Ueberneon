@@ -120,15 +120,17 @@ impl JobManager {
                     id: job_id.clone(),
                     child: Mutex::new(None),
                     output_buf: Mutex::new(
-                        format!("bash: failed to spawn background command: {e}")
-                            .into_bytes(),
+                        format!("bash: failed to spawn background command: {e}").into_bytes(),
                     ),
                     read_offset: AtomicUsize::new(0),
                     finished: AtomicBool::new(true),
                     exit_code: AtomicUsize::new(usize::MAX),
                     started_at: Instant::now(),
                 });
-                self.jobs.write().expect("jobs lock poisoned").insert(job_id.clone(), handle);
+                self.jobs
+                    .write()
+                    .expect("jobs lock poisoned")
+                    .insert(job_id.clone(), handle);
                 return job_id;
             }
         };
@@ -163,12 +165,21 @@ impl JobManager {
 
     /// 获取 job handle。
     pub fn get(&self, job_id: &str) -> Option<Arc<JobHandle>> {
-        self.jobs.read().expect("jobs lock poisoned").get(job_id).cloned()
+        self.jobs
+            .read()
+            .expect("jobs lock poisoned")
+            .get(job_id)
+            .cloned()
     }
 
     /// 列出所有活跃的 job ID。
     pub fn list_ids(&self) -> Vec<String> {
-        self.jobs.read().expect("jobs lock poisoned").keys().cloned().collect()
+        self.jobs
+            .read()
+            .expect("jobs lock poisoned")
+            .keys()
+            .cloned()
+            .collect()
     }
 
     /// 清理已完成的 job（调用 kill 后或进程自然退出后）。
@@ -204,7 +215,8 @@ impl JobManager {
                     }
                     Ok(n) => {
                         if n > 0 {
-                            let mut buf = handle.output_buf.lock().expect("output_buf lock poisoned");
+                            let mut buf =
+                                handle.output_buf.lock().expect("output_buf lock poisoned");
                             buf.extend_from_slice(&out_buf[..n]);
                             did_read = true;
                         }
@@ -224,7 +236,8 @@ impl JobManager {
                     }
                     Ok(n) => {
                         if n > 0 {
-                            let mut buf = handle.output_buf.lock().expect("output_buf lock poisoned");
+                            let mut buf =
+                                handle.output_buf.lock().expect("output_buf lock poisoned");
                             buf.extend_from_slice(&err_buf[..n]);
                             did_read = true;
                         }
@@ -300,10 +313,7 @@ mod tests {
         let job_id = mgr
             .spawn(
                 "sh",
-                &[
-                    "-c".into(),
-                    "echo first; sleep 1; echo second".into(),
-                ],
+                &["-c".into(), "echo first; sleep 1; echo second".into()],
                 &std::env::current_dir().unwrap(),
             )
             .await;
@@ -324,11 +334,7 @@ mod tests {
     async fn kill_running_job() {
         let mgr = Arc::new(JobManager::new());
         let job_id = mgr
-            .spawn(
-                "sleep",
-                &["10".into()],
-                &std::env::current_dir().unwrap(),
-            )
+            .spawn("sleep", &["10".into()], &std::env::current_dir().unwrap())
             .await;
 
         let handle = mgr.get(&job_id).unwrap();
@@ -344,11 +350,7 @@ mod tests {
     async fn list_and_reap() {
         let mgr = Arc::new(JobManager::new());
         let j1 = mgr
-            .spawn(
-                "echo",
-                &["done".into()],
-                &std::env::current_dir().unwrap(),
-            )
+            .spawn("echo", &["done".into()], &std::env::current_dir().unwrap())
             .await;
 
         let ids = mgr.list_ids();

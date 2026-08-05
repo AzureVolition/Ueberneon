@@ -98,7 +98,10 @@ fn save_inner(s: &AppSettings) -> Result<(), String> {
     }
     let json = serde_json::to_string_pretty(s).map_err(|e| e.to_string())?;
     std::fs::write(&path, &json).map_err(|e| e.to_string())?;
-    tracing::debug!("[settings] saved: {}", json.lines().collect::<Vec<_>>().join(" "));
+    tracing::debug!(
+        "[settings] saved: {}",
+        json.lines().collect::<Vec<_>>().join(" ")
+    );
     Ok(())
 }
 

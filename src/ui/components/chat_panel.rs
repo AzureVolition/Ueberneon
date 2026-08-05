@@ -56,7 +56,9 @@ pub fn ChatPanel(
     // 注入滚动监听（仅首次挂载）
     let mut js_injected = use_signal(|| false);
     use_effect(move || {
-        if *js_injected.read() { return; }
+        if *js_injected.read() {
+            return;
+        }
         js_injected.set(true);
         let script = r#"
 (function(){
@@ -289,25 +291,24 @@ fn render_segments(
             }
             StreamSegment::ToolCall(call) => {
                 let sc = status_class(&call.status);
-                    let status_text = match &call.status {
-                        ToolCallStatus::Running => "running",
-                        ToolCallStatus::Success => "success",
-                        ToolCallStatus::Failed(_) => "failed",
-                        ToolCallStatus::Denied(_) => "denied",
-                        ToolCallStatus::AwaitingApproval { .. } => "needs approval",
-                        ToolCallStatus::Pending => "pending",
-                    };
-                    let is_approval =
-                        matches!(&call.status, ToolCallStatus::AwaitingApproval { .. });
-                    let approval_reason = call.approval_reason.clone().unwrap_or_default();
-                    let tool_name = call.tool_name.clone();
-                    let args_summary = tool_args_summary(&call.tool_name, &call.args);
-                    let call_id_allow = call.id.clone();
-                    let call_id_deny = call.id.clone();
-                    let on_allow = on_approve;
-                    let on_deny = on_approve;
+                let status_text = match &call.status {
+                    ToolCallStatus::Running => "running",
+                    ToolCallStatus::Success => "success",
+                    ToolCallStatus::Failed(_) => "failed",
+                    ToolCallStatus::Denied(_) => "denied",
+                    ToolCallStatus::AwaitingApproval { .. } => "needs approval",
+                    ToolCallStatus::Pending => "pending",
+                };
+                let is_approval = matches!(&call.status, ToolCallStatus::AwaitingApproval { .. });
+                let approval_reason = call.approval_reason.clone().unwrap_or_default();
+                let tool_name = call.tool_name.clone();
+                let args_summary = tool_args_summary(&call.tool_name, &call.args);
+                let call_id_allow = call.id.clone();
+                let call_id_deny = call.id.clone();
+                let on_allow = on_approve;
+                let on_deny = on_approve;
 
-                    buf.push(if is_approval {
+                buf.push(if is_approval {
                         rsx! {
                             div { class: "approval-card",
                                 div { class: "approval-header", span { class: "approval-title", "{tool_name} needs approval" } }

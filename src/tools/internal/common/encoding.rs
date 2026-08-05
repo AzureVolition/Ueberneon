@@ -202,8 +202,7 @@ fn utf16_decode(u: &[u16]) -> Vec<char> {
         if (0xD800..=0xDBFF).contains(&c) && i + 1 < u.len() {
             let c2 = u[i + 1];
             if (0xDC00..=0xDFFF).contains(&c2) {
-                let code_point =
-                    ((c as u32 - 0xD800) << 10) | (c2 as u32 - 0xDC00) | 0x1_0000;
+                let code_point = ((c as u32 - 0xD800) << 10) | (c2 as u32 - 0xDC00) | 0x1_0000;
                 // SAFETY: 根据 UTF-16 代理对规则，code_point 在 0x10000..=0x10FFFF 范围内
                 out.push(unsafe { char::from_u32_unchecked(code_point) });
                 i += 2;
@@ -242,7 +241,11 @@ fn encode_utf16(text: &str, big_endian: bool, with_bom: bool) -> Vec<u8> {
     let runes: Vec<char> = text.chars().collect();
     let code_units = utf16_encode(&runes);
 
-    let mut buf = Vec::with_capacity(if with_bom { 2 + code_units.len() * 2 } else { code_units.len() * 2 });
+    let mut buf = Vec::with_capacity(if with_bom {
+        2 + code_units.len() * 2
+    } else {
+        code_units.len() * 2
+    });
 
     if with_bom {
         if big_endian {

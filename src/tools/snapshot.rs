@@ -64,12 +64,19 @@ impl SnapshotStore {
 
     /// 获取某个文件的快照。
     pub fn get_snapshot(&self, path: &str) -> Option<(usize, String)> {
-        self.snapshots.read().expect("snapshots lock poisoned").get(path).cloned()
+        self.snapshots
+            .read()
+            .expect("snapshots lock poisoned")
+            .get(path)
+            .cloned()
     }
 
     /// 获取所有快照的数量。
     pub fn len(&self) -> usize {
-        self.snapshots.read().expect("snapshots lock poisoned").len()
+        self.snapshots
+            .read()
+            .expect("snapshots lock poisoned")
+            .len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -78,7 +85,10 @@ impl SnapshotStore {
 
     /// 清空所有快照。
     pub fn clear(&self) {
-        self.snapshots.write().expect("snapshots lock poisoned").clear();
+        self.snapshots
+            .write()
+            .expect("snapshots lock poisoned")
+            .clear();
     }
 }
 

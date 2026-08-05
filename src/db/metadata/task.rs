@@ -1,6 +1,6 @@
 // ── Task CRUD ──
 
-use rusqlite::{params, Connection, Result};
+use rusqlite::{Connection, Result, params};
 
 /// 任务状态枚举（对应数据库 tasks.status 的小写字符串）
 #[derive(Debug, Clone, PartialEq)]
@@ -183,9 +183,20 @@ mod tests {
     #[test]
     fn test_create_and_get() {
         let conn = test_conn();
-        conn.execute("INSERT INTO plans (id) VALUES ('plan-1')", []).unwrap();
+        conn.execute("INSERT INTO plans (id) VALUES ('plan-1')", [])
+            .unwrap();
 
-        let id = create(&conn, "plan-1", "proj-1", None, 1, "do something", TaskStatus::Pending, None).unwrap();
+        let id = create(
+            &conn,
+            "plan-1",
+            "proj-1",
+            None,
+            1,
+            "do something",
+            TaskStatus::Pending,
+            None,
+        )
+        .unwrap();
         assert!(id > 0);
 
         let row = get(&conn, id).unwrap().expect("should exist");
@@ -197,9 +208,30 @@ mod tests {
     #[test]
     fn test_list_by_plan() {
         let conn = test_conn();
-        conn.execute("INSERT INTO plans (id) VALUES ('plan-1')", []).unwrap();
-        create(&conn, "plan-1", "p1", None, 1, "step a", TaskStatus::Pending, None).unwrap();
-        create(&conn, "plan-1", "p1", None, 2, "step b", TaskStatus::Completed, None).unwrap();
+        conn.execute("INSERT INTO plans (id) VALUES ('plan-1')", [])
+            .unwrap();
+        create(
+            &conn,
+            "plan-1",
+            "p1",
+            None,
+            1,
+            "step a",
+            TaskStatus::Pending,
+            None,
+        )
+        .unwrap();
+        create(
+            &conn,
+            "plan-1",
+            "p1",
+            None,
+            2,
+            "step b",
+            TaskStatus::Completed,
+            None,
+        )
+        .unwrap();
         let rows = list_by_plan(&conn, "plan-1").unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[1].status, TaskStatus::Completed);
@@ -208,9 +240,30 @@ mod tests {
     #[test]
     fn test_parent_child() {
         let conn = test_conn();
-        conn.execute("INSERT INTO plans (id) VALUES ('plan-1')", []).unwrap();
-        let parent = create(&conn, "plan-1", "p1", None, 1, "parent", TaskStatus::InProgress, None).unwrap();
-        let child = create(&conn, "plan-1", "p1", Some(parent), 1, "child", TaskStatus::Pending, None).unwrap();
+        conn.execute("INSERT INTO plans (id) VALUES ('plan-1')", [])
+            .unwrap();
+        let parent = create(
+            &conn,
+            "plan-1",
+            "p1",
+            None,
+            1,
+            "parent",
+            TaskStatus::InProgress,
+            None,
+        )
+        .unwrap();
+        let child = create(
+            &conn,
+            "plan-1",
+            "p1",
+            Some(parent),
+            1,
+            "child",
+            TaskStatus::Pending,
+            None,
+        )
+        .unwrap();
 
         let children = list_children(&conn, parent).unwrap();
         assert_eq!(children.len(), 1);
@@ -220,8 +273,19 @@ mod tests {
     #[test]
     fn test_update_status() {
         let conn = test_conn();
-        conn.execute("INSERT INTO plans (id) VALUES ('plan-1')", []).unwrap();
-        let id = create(&conn, "plan-1", "p1", None, 1, "task", TaskStatus::Pending, None).unwrap();
+        conn.execute("INSERT INTO plans (id) VALUES ('plan-1')", [])
+            .unwrap();
+        let id = create(
+            &conn,
+            "plan-1",
+            "p1",
+            None,
+            1,
+            "task",
+            TaskStatus::Pending,
+            None,
+        )
+        .unwrap();
         update_status(&conn, id, TaskStatus::Completed).unwrap();
         let row = get(&conn, id).unwrap().unwrap();
         assert_eq!(row.status, TaskStatus::Completed);
@@ -230,8 +294,19 @@ mod tests {
     #[test]
     fn test_delete() {
         let conn = test_conn();
-        conn.execute("INSERT INTO plans (id) VALUES ('plan-1')", []).unwrap();
-        let id = create(&conn, "plan-1", "p1", None, 1, "task", TaskStatus::Pending, None).unwrap();
+        conn.execute("INSERT INTO plans (id) VALUES ('plan-1')", [])
+            .unwrap();
+        let id = create(
+            &conn,
+            "plan-1",
+            "p1",
+            None,
+            1,
+            "task",
+            TaskStatus::Pending,
+            None,
+        )
+        .unwrap();
         delete(&conn, id).unwrap();
         assert!(get(&conn, id).unwrap().is_none());
     }

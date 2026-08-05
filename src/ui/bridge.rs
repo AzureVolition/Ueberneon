@@ -15,12 +15,12 @@ use dioxus::prelude::*;
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 
+use crate::model::*;
 use crate::state_agent::manager::AgentManager;
 use crate::state_agent::{
     ActionMode, Agent, AgentContext, AgentHandler, AgentMode, Executing, InterruptState,
     PhaseObserver, Running, Static, Streaming,
 };
-use crate::model::*;
 use crate::ui::components::error::*;
 
 /// bridge 运行时上下文 —— 打包 run_agent_loop 的所有入参（app.rs 构造点）。
@@ -38,7 +38,8 @@ pub struct BridgeContext {
     pub error_signal: Signal<ErrorSignal>,
     /// 审批注入通道发送端（按 conversation_id 键控，避免多对话并发串台）：
     /// 工具进入 Executing 阶段时写入，UI 审批按钮经它发送 (tool_call_id, approved)
-    pub approval_tx: Signal<std::collections::HashMap<String, tokio::sync::mpsc::Sender<(String, bool)>>>,
+    pub approval_tx:
+        Signal<std::collections::HashMap<String, tokio::sync::mpsc::Sender<(String, bool)>>>,
 }
 
 /// UI 阶段观察者：由 AgentContext 在每个状态变换点调用，直接访问完整
@@ -51,7 +52,8 @@ struct UiContext {
     conversation_id: String,
     streaming_states: Arc<Mutex<std::collections::HashMap<String, UiMessage>>>,
     error_signal: Signal<ErrorSignal>,
-    approval_tx: Signal<std::collections::HashMap<String, tokio::sync::mpsc::Sender<(String, bool)>>>,
+    approval_tx:
+        Signal<std::collections::HashMap<String, tokio::sync::mpsc::Sender<(String, bool)>>>,
     /// 流式占位用的 segments Arc（on_streaming 缓存，on_done 替换占位时消费）
     segments: Option<Arc<Mutex<Vec<StreamSegment>>>>,
     /// DB 恢复的累计 token 用量（on_streaming 建占位时初始化 runtime）
@@ -74,18 +76,23 @@ impl PhaseObserver for UiContext {
             let db_usage = self.db_usage.clone();
             let db_requests = self.db_requests;
             let mut rts = self.runtimes.write();
-            let rt = rts.entry(self.conversation_id.clone()).or_insert_with(
-                || crate::ui::state::ConversationRuntime {
+            let rt = rts.entry(self.conversation_id.clone()).or_insert_with(|| {
+                crate::ui::state::ConversationRuntime {
                     accumulated_usage: db_usage,
                     request_count: db_requests,
                     ..Default::default()
-                },
-            );
-            if rt.messages.iter().any(|m| matches!(m, UiMessage::Streaming { .. })) {
+                }
+            });
+            if rt
+                .messages
+                .iter()
+                .any(|m| matches!(m, UiMessage::Streaming { .. }))
+            {
                 false
             } else {
-                rt.messages
-                    .push(UiMessage::Streaming { segments: segments.clone() });
+                rt.messages.push(UiMessage::Streaming {
+                    segments: segments.clone(),
+                });
                 true
             }
         };
@@ -93,7 +100,10 @@ impl PhaseObserver for UiContext {
             self.streaming_states
                 .lock()
                 .expect("streaming_states lock poisoned")
-                .insert(self.conversation_id.clone(), UiMessage::Streaming { segments });
+                .insert(
+                    self.conversation_id.clone(),
+                    UiMessage::Streaming { segments },
+                );
         }
     }
 
@@ -173,7 +183,8 @@ impl PhaseObserver for UiContext {
             // 无 segments 缓存（异常路径）：移除可能的空占位
             let mut all = self.runtimes.write();
             if let Some(rt) = all.get_mut(&self.conversation_id) {
-                rt.messages.retain(|m| !matches!(m, UiMessage::Streaming { .. }));
+                rt.messages
+                    .retain(|m| !matches!(m, UiMessage::Streaming { .. }));
             }
         }
         self.approval_tx.write().remove(&self.conversation_id);
@@ -305,9 +316,9 @@ pub async fn run_agent_loop(ctx: BridgeContext) {
             cancel_token,
             handler,
             // 主对话（交互）：Ask 一律走审批管道（UI 审批卡注入）
-            Box::new(crate::state_agent::ApprovalChain::new(vec![
-                Box::new(crate::state_agent::UserApprovalGate),
-            ])),
+            Box::new(crate::state_agent::ApprovalChain::new(vec![Box::new(
+                crate::state_agent::UserApprovalGate,
+            )])),
             on_event,
         )
         .await;

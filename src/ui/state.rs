@@ -1,7 +1,7 @@
 // ── UI 状态类型 ──
 
-pub use crate::model::*;
 use crate::agent::AgentMode;
+pub use crate::model::*;
 
 /// 对话运行时数据（per-conv，由 bridge 异步写入，UI 读取）
 #[derive(Clone)]
@@ -56,6 +56,7 @@ pub enum SettingsTab {
     General,
     Appearance,
     Tools,
+    Skills,
     Sql,
 }
 
@@ -68,6 +69,7 @@ impl SettingsTab {
             SettingsTab::General => "general",
             SettingsTab::Appearance => "appearance",
             SettingsTab::Tools => "tools",
+            SettingsTab::Skills => "skills",
             SettingsTab::Sql => "sql",
         }
     }
@@ -80,6 +82,7 @@ impl SettingsTab {
             SettingsTab::General => "◎",
             SettingsTab::Appearance => "◐",
             SettingsTab::Tools => "⊡",
+            SettingsTab::Skills => "◇",
             SettingsTab::Sql => "📋",
         }
     }

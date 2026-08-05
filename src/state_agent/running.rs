@@ -24,13 +24,15 @@ use futures::StreamExt;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use llm::{Chunk, Message, Role as LlmRole, ToolCall, Usage};
 use llm::provider::ChunkStream;
+use llm::{Chunk, Message, Role as LlmRole, ToolCall, Usage};
 
 use super::approval::ApprovalGate;
 use super::hook::{AgentEvent, DeltaKind};
 use super::{Agent, AgentHandler, AgentMode, InterruptState, Static, ToolContext, ToolResult};
-use crate::model::{StreamSegment, StreamingState, TokenUsageRecord, ToolCallRecord, ToolCallStatus};
+use crate::model::{
+    StreamSegment, StreamingState, TokenUsageRecord, ToolCallRecord, ToolCallStatus,
+};
 use crate::permission::Decision;
 use crate::tools::internal::common::checkable_tool::CheckableTool;
 
@@ -239,9 +241,7 @@ impl Agent<Running<Streaming>> {
     /// - `Ok(StreamResult::Continue)`：有工具待执行，进入 Executing 阶段
     /// - `Err(InterruptState::Cancelled)`：用户取消
     /// - `Err(InterruptState::Error(msg))`：流式异常
-    pub async fn stream_message(
-        mut self,
-    ) -> Result<StreamResult, InterruptState> {
+    pub async fn stream_message(mut self) -> Result<StreamResult, InterruptState> {
         self.running.round += 1;
         self.running.set_state(AgentState::Streaming);
         // 每轮独立用量：先清空跨轮残留，避免上一轮无 Usage chunk 时重复上报
@@ -277,13 +277,17 @@ impl Agent<Running<Streaming>> {
                         output.push_str(&t);
                         self.running.streaming.content.push_str(&t);
                         push_text(&segments, &t);
-                        let _ = events.send(AgentEvent::StreamDelta { kind: DeltaKind::Text });
+                        let _ = events.send(AgentEvent::StreamDelta {
+                            kind: DeltaKind::Text,
+                        });
                     }
                     StreamOrCancel::Chunk(Some(Ok(Chunk::Reasoning { text, .. }))) => {
                         reasoning.push_str(&text);
                         self.running.streaming.reason_content.push_str(&text);
                         push_reasoning(&segments, &text);
-                        let _ = events.send(AgentEvent::StreamDelta { kind: DeltaKind::Reasoning });
+                        let _ = events.send(AgentEvent::StreamDelta {
+                            kind: DeltaKind::Reasoning,
+                        });
                     }
                     StreamOrCancel::Chunk(Some(Ok(Chunk::ToolCallComplete(tc)))) => {
                         // 全部收集：tool_calls 入史、tool_id_list 供顺序执行、record push 前端
@@ -316,7 +320,10 @@ impl Agent<Running<Streaming>> {
                                 total_tokens: last.total_tokens + usage.total_tokens,
                                 cache_hit_tokens: last.cache_hit_tokens + usage.cache_hit_tokens,
                                 cache_miss_tokens: last.cache_miss_tokens + usage.cache_miss_tokens,
-                                finish_reason: format!("{}\n{}", last.finish_reason, usage.finish_reason),
+                                finish_reason: format!(
+                                    "{}\n{}",
+                                    last.finish_reason, usage.finish_reason
+                                ),
                             },
                             None => usage,
                         });
@@ -326,7 +333,9 @@ impl Agent<Running<Streaming>> {
                         let msg = format!("Stream error: {e}");
                         output.push_str(&msg);
                         push_text(&segments, &msg);
-                        let _ = events.send(AgentEvent::Error { message: msg.clone() });
+                        let _ = events.send(AgentEvent::Error {
+                            message: msg.clone(),
+                        });
                         abort = Some(InterruptState::Error(msg));
                         break;
                     }
@@ -337,8 +346,16 @@ impl Agent<Running<Streaming>> {
         // 流式结束（正常或提前终止均把已收内容入史 + 落库，复用 AgentCore::push_message）
         let assistant_msg = Message {
             role: LlmRole::Assistant,
-            content: if output.is_empty() { None } else { Some(output.clone()) },
-            reasoning_content: if reasoning.is_empty() { None } else { Some(reasoning.clone()) },
+            content: if output.is_empty() {
+                None
+            } else {
+                Some(output.clone())
+            },
+            reasoning_content: if reasoning.is_empty() {
+                None
+            } else {
+                Some(reasoning.clone())
+            },
             tool_calls: tool_calls.clone(),
             timestamp: Some(chrono::Utc::now()),
             ..Default::default()
@@ -347,7 +364,10 @@ impl Agent<Running<Streaming>> {
         // 无意义消息：不落库也不入内存历史，避免空消息混入后续请求历史。
         // tool_calls 非空的工具调用回合即使无 content/reasoning 也必须保留（tool 配对）。
         let is_empty_assistant = assistant_msg.content.as_deref().map_or(true, str::is_empty)
-            && assistant_msg.reasoning_content.as_deref().map_or(true, str::is_empty)
+            && assistant_msg
+                .reasoning_content
+                .as_deref()
+                .map_or(true, str::is_empty)
             && assistant_msg.tool_calls.is_empty();
         if !is_empty_assistant {
             self.agent
@@ -376,7 +396,9 @@ impl Agent<Running<Streaming>> {
                 InterruptState::Cancelled => self.running.state = AgentState::Cancelled,
                 InterruptState::Error(_) => self.running.state = AgentState::Error,
             }
-            self.emit(AgentEvent::StateChanged { state: self.running.state });
+            self.emit(AgentEvent::StateChanged {
+                state: self.running.state,
+            });
             return Err(interrupt);
         }
 
@@ -425,15 +447,13 @@ impl Agent<Running<Executing>> {
     /// 工具执行完毕不回到配置态，而是直接续跑下一轮流式：返回
     /// `Agent<Running<Streaming>>`（Running → Running 变换，streaming_handle /
     /// 事件通道经 `into_phase` 原样传递，UI 绑定的 segments Arc 全程不变）。
-    pub async fn execute(
-        mut self,
-    ) -> Result<Agent<Running<Streaming>>, InterruptState> {
+    pub async fn execute(mut self) -> Result<Agent<Running<Streaming>>, InterruptState> {
         self.running.set_state(AgentState::Executing);
         // 轮开始事件送 hook_register（stall 计数 hook 监听 Executing；
         // events channel 的 StateChanged 走 Running::set_state，两者独立）
-        self.running
-            .hook_register
-            .emit(&AgentEvent::StateChanged { state: AgentState::Executing });
+        self.running.hook_register.emit(&AgentEvent::StateChanged {
+            state: AgentState::Executing,
+        });
         let segments = self.running.streaming_handle.segments.clone();
         let cancel = self.running.cancel_token.clone();
         let plan_mode = self.running.handler.action_mode();
@@ -494,7 +514,12 @@ impl Agent<Running<Executing>> {
         // 放飞自我（Unrestrained）：Ask 统一降级为 Allow（Deny 原样保留）。
         // approval_gate（UserApprovalGate 恒 Ask）与工具 pre_check 任一返回 Ask 都会在
         // combine 后体现，这里做最终兜底——一处覆盖全部审批来源，无需逐个工具分支。
-        let agent_mode = *self.running.handler.agent_mode.lock().expect("agent_mode lock poisoned");
+        let agent_mode = *self
+            .running
+            .handler
+            .agent_mode
+            .lock()
+            .expect("agent_mode lock poisoned");
         for i in 0..tool_count {
             if cancel.is_cancelled() {
                 self.running.set_state(AgentState::Cancelled);
@@ -503,7 +528,9 @@ impl Agent<Running<Executing>> {
             let call_id = self.running.streaming.tool_id_list[i].clone();
             let (tool_name, args) = self.record_info(&segments, &call_id)?;
             let Some(tool) = self.agent.registry.get(&tool_name) else {
-                return Err(InterruptState::Error(format!("tool not registered: {tool_name}")));
+                return Err(InterruptState::Error(format!(
+                    "tool not registered: {tool_name}"
+                )));
             };
             let ctx = ToolContext {
                 call_id: call_id.clone(),
@@ -516,19 +543,36 @@ impl Agent<Running<Executing>> {
             };
             // gate 工具级门控（执行类工具 Ask / 只读放行）与工具自身 pre_check
             // （命令级危险判定：rm -rf、force push、系统路径等）合并，Deny > Ask > Allow
-            let decision = self.running.approval_gate.decide(&tool_name, &args, tool.read_only())
+            let decision = self
+                .running
+                .approval_gate
+                .decide(&tool_name, &args, tool.read_only())
                 .combine(tool.pre_check(&ctx, &args));
             // 放飞自我：Ask → Allow；Deny（权限策略 / plan mode 拦截）不受影响
             let decision = apply_agent_mode(decision, agent_mode);
             match decision {
                 Decision::Allow => {} // 保持 Pending，主循环直接执行
                 Decision::Deny(msg) => {
-                    self.set_record_status(&segments, &call_id, ToolCallStatus::Denied(msg.clone()));
+                    self.set_record_status(
+                        &segments,
+                        &call_id,
+                        ToolCallStatus::Denied(msg.clone()),
+                    );
                 }
                 Decision::Ask => {
                     let reason = format!("{tool_name} needs approval");
-                    self.set_record_status(&segments, &call_id, ToolCallStatus::AwaitingApproval { reason: reason.clone() });
-                    self.emit(AgentEvent::ApprovalRequested { tool_name, args, reason });
+                    self.set_record_status(
+                        &segments,
+                        &call_id,
+                        ToolCallStatus::AwaitingApproval {
+                            reason: reason.clone(),
+                        },
+                    );
+                    self.emit(AgentEvent::ApprovalRequested {
+                        tool_name,
+                        args,
+                        reason,
+                    });
                 }
             }
         }
@@ -561,7 +605,8 @@ impl Agent<Running<Executing>> {
                     }
                     // pre_check 拒绝 或 用户拒绝：拒绝落库
                     ToolCallStatus::Denied(msg) => {
-                        self.finalize_tool(&call_id, &tool_name, Err(msg), true).await?;
+                        self.finalize_tool(&call_id, &tool_name, Err(msg), true)
+                            .await?;
                         // 从等待收敛而来时 state 可能停在 WaitingApproval，复位为执行中
                         self.running.set_state(AgentState::Executing);
                         break;
@@ -673,7 +718,9 @@ impl Agent<Running<Executing>> {
         args: &serde_json::Value,
     ) -> Result<(), InterruptState> {
         let Some(tool) = self.agent.registry.get(tool_name) else {
-            return Err(InterruptState::Error(format!("tool not registered: {tool_name}")));
+            return Err(InterruptState::Error(format!(
+                "tool not registered: {tool_name}"
+            )));
         };
         let segments = self.running.streaming_handle.segments.clone();
         let ctx = ToolContext {
@@ -777,12 +824,10 @@ impl Agent<Running<Executing>> {
             tool_name: tool_name.into(),
             result: result.clone(),
         });
-        self.running
-            .hook_register
-            .emit(&AgentEvent::PostToolUse {
-                tool_name: tool_name.into(),
-                result: result.clone(),
-            });
+        self.running.hook_register.emit(&AgentEvent::PostToolUse {
+            tool_name: tool_name.into(),
+            result: result.clone(),
+        });
 
         let tool_msg = Message {
             role: LlmRole::Tool,
@@ -825,11 +870,7 @@ impl Agent<Running<Executing>> {
 
 /// 子线程用：把提前审批的决策写进 record 状态
 /// （allow → Pending 待执行，主线程看到直接执行；deny → Denied，拒绝落库）。
-fn set_record_decision(
-    segments: &Arc<Mutex<Vec<StreamSegment>>>,
-    call_id: &str,
-    approved: bool,
-) {
+fn set_record_decision(segments: &Arc<Mutex<Vec<StreamSegment>>>, call_id: &str, approved: bool) {
     let mut segs = segments.lock().expect("segments lock poisoned");
     if let Some(rec) = segs
         .iter_mut()
@@ -912,7 +953,10 @@ mod tests {
         let gate = Decision::Ask; // UserApprovalGate 恒 Ask
         // gate Ask + pre_check Allow → combine Ask → 降级 Allow
         assert_eq!(
-            apply_agent_mode(gate.clone().combine(Decision::Allow), AgentMode::Unrestrained),
+            apply_agent_mode(
+                gate.clone().combine(Decision::Allow),
+                AgentMode::Unrestrained
+            ),
             Decision::Allow
         );
         // gate Ask + pre_check Ask → combine Ask → 降级 Allow
@@ -930,7 +974,10 @@ mod tests {
         ));
         // 双 Allow → Allow
         assert_eq!(
-            apply_agent_mode(Decision::Allow.combine(Decision::Allow), AgentMode::Unrestrained),
+            apply_agent_mode(
+                Decision::Allow.combine(Decision::Allow),
+                AgentMode::Unrestrained
+            ),
             Decision::Allow
         );
     }

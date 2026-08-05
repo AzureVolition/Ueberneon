@@ -54,10 +54,8 @@ pub fn load_projects() -> Vec<Project> {
 pub fn save_projects(projects: &[Project]) -> Result<()> {
     ensure_data_dir()?;
     let path = projects_path();
-    let json = serde_json::to_string_pretty(projects)
-        .context("failed to serialize projects")?;
-    std::fs::write(&path, &json)
-        .with_context(|| format!("failed to write {}", path.display()))?;
+    let json = serde_json::to_string_pretty(projects).context("failed to serialize projects")?;
+    std::fs::write(&path, &json).with_context(|| format!("failed to write {}", path.display()))?;
     Ok(())
 }
 

@@ -4,7 +4,7 @@
 // tool_groups — 工具分组
 // tool_group_items — 工具与组的关联
 
-use rusqlite::{params, Connection, Result};
+use rusqlite::{Connection, Result, params};
 
 // ── 行结构 ────────────────────────────────────────────────────────────────
 
@@ -111,11 +111,7 @@ pub fn list_tools_paginated(
 }
 
 /// 统计工具总数（支持按组和搜索筛选）
-pub fn count_tools(
-    conn: &Connection,
-    group_id: Option<&str>,
-    search: Option<&str>,
-) -> Result<i64> {
+pub fn count_tools(conn: &Connection, group_id: Option<&str>, search: Option<&str>) -> Result<i64> {
     let mut sql = String::from("SELECT count(*) FROM tools t");
     let mut conditions: Vec<String> = Vec::new();
 
@@ -143,7 +139,8 @@ pub fn count_tools(
         param_values.push(Box::new(format!("%{}%", s)));
     }
 
-    let params_refs: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
+    let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+        param_values.iter().map(|p| p.as_ref()).collect();
     let count: i64 = stmt.query_row(params_refs.as_slice(), |row| row.get(0))?;
     Ok(count)
 }
@@ -152,7 +149,7 @@ pub fn count_tools(
 pub fn get_tool(conn: &Connection, id: &str) -> Result<Option<ToolRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, description, schema_json, read_only, source, mcp_server, created_at
-         FROM tools WHERE id = ?1"
+         FROM tools WHERE id = ?1",
     )?;
     let mut rows = stmt.query_map(params![id], |row| {
         Ok(ToolRow {
@@ -178,7 +175,7 @@ pub fn get_tool(conn: &Connection, id: &str) -> Result<Option<ToolRow>> {
 pub fn list_groups(conn: &Connection) -> Result<Vec<ToolGroupRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, description, sort_order, created_at
-         FROM tool_groups ORDER BY sort_order, name"
+         FROM tool_groups ORDER BY sort_order, name",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(ToolGroupRow {
@@ -200,7 +197,7 @@ pub fn list_groups(conn: &Connection) -> Result<Vec<ToolGroupRow>> {
 pub fn get_group(conn: &Connection, id: &str) -> Result<Option<ToolGroupRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, description, sort_order, created_at
-         FROM tool_groups WHERE id = ?1"
+         FROM tool_groups WHERE id = ?1",
     )?;
     let mut rows = stmt.query_map(params![id], |row| {
         Ok(ToolGroupRow {
@@ -222,7 +219,13 @@ pub fn insert_group(conn: &Connection, row: &ToolGroupRow) -> Result<()> {
     conn.execute(
         "INSERT INTO tool_groups (id, name, description, sort_order, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![row.id, row.name, row.description, row.sort_order, row.created_at],
+        params![
+            row.id,
+            row.name,
+            row.description,
+            row.sort_order,
+            row.created_at
+        ],
     )?;
     Ok(())
 }
@@ -312,7 +315,12 @@ pub fn count_tools_in_group(conn: &Connection, group_id: &str) -> Result<i64> {
 }
 
 /// 向组内添加一个工具
-pub fn add_tool_to_group(conn: &Connection, group_id: &str, tool_id: &str, sort_order: i32) -> Result<()> {
+pub fn add_tool_to_group(
+    conn: &Connection,
+    group_id: &str,
+    tool_id: &str,
+    sort_order: i32,
+) -> Result<()> {
     conn.execute(
         "INSERT OR IGNORE INTO tool_group_items (group_id, tool_id, sort_order)
          VALUES (?1, ?2, ?3)",
@@ -363,21 +371,40 @@ mod tests {
                 tool_id     TEXT NOT NULL REFERENCES tools(id) ON DELETE CASCADE,
                 sort_order  INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (group_id, tool_id)
-            );"
-        ).unwrap();
+            );",
+        )
+        .unwrap();
 
         let now = chrono::Local::now().to_rfc3339();
 
         // 插入测试工具
         let tools = vec![
-            ("tool-ReadFile", "ReadFile", "read file contents", 1, "builtin"),
+            (
+                "tool-ReadFile",
+                "ReadFile",
+                "read file contents",
+                1,
+                "builtin",
+            ),
             ("tool-WriteFile", "WriteFile", "write to file", 0, "builtin"),
-            ("tool-EditFile", "EditFile", "edit file content", 0, "builtin"),
+            (
+                "tool-EditFile",
+                "EditFile",
+                "edit file content",
+                0,
+                "builtin",
+            ),
             ("tool-Bash", "Bash", "execute shell command", 0, "builtin"),
             ("tool-Grep", "Grep", "search with regex", 1, "builtin"),
             ("tool-Glob", "Glob", "glob pattern matching", 1, "builtin"),
             ("tool-WebFetch", "WebFetch", "fetch url", 1, "builtin"),
-            ("tool-mcp-slide", "mcp__slide__create", "create slide deck", 0, "mcp"),
+            (
+                "tool-mcp-slide",
+                "mcp__slide__create",
+                "create slide deck",
+                0,
+                "mcp",
+            ),
         ];
         for (id, name, desc, read_only, source) in &tools {
             conn.execute(
@@ -399,7 +426,8 @@ mod tests {
                 "INSERT INTO tool_groups (id, name, description, sort_order, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![id, name, desc, sort, &now],
-            ).unwrap();
+            )
+            .unwrap();
         }
 
         // 插入工具组关联
@@ -416,7 +444,8 @@ mod tests {
             conn.execute(
                 "INSERT INTO tool_group_items (group_id, tool_id, sort_order) VALUES (?1, ?2, ?3)",
                 params![gid, tid, sort],
-            ).unwrap();
+            )
+            .unwrap();
         }
 
         conn
@@ -434,9 +463,17 @@ mod tests {
     fn test_list_tools_paginated_with_search() {
         let conn = setup_db();
         let rows = list_tools_paginated(&conn, None, Some("File"), 10, 0).unwrap();
-        assert_eq!(rows.len(), 3, "ReadFile + WriteFile + EditFile match 'File'");
+        assert_eq!(
+            rows.len(),
+            3,
+            "ReadFile + WriteFile + EditFile match 'File'"
+        );
         for r in &rows {
-            assert!(r.name.contains("File"), "name should contain 'File': {}", r.name);
+            assert!(
+                r.name.contains("File"),
+                "name should contain 'File': {}",
+                r.name
+            );
         }
     }
 
@@ -554,7 +591,9 @@ mod tests {
     #[test]
     fn test_get_tool() {
         let conn = setup_db();
-        let t = get_tool(&conn, "tool-Bash").unwrap().expect("Bash should exist");
+        let t = get_tool(&conn, "tool-Bash")
+            .unwrap()
+            .expect("Bash should exist");
         assert_eq!(t.name, "Bash");
         assert!(!t.read_only, "Bash is not read-only");
     }

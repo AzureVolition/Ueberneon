@@ -21,6 +21,16 @@
   --color-accent-2-tint: oklch(68% 0.22 330 / 0.06); /* neon pink surface tint */
   --color-accent-3:    oklch(58% 0.18 230);   /* deep blue — secondary */
 
+  /* ── Skills panel additions (2026-08-05) ── */
+  --color-accent-ink:      oklch(13% 0.02 265);   /* text on cyan/pink fills */
+  --color-accent-hover:    oklch(77% 0.20 200);   /* cyan fill hover */
+  --color-accent-press:    oklch(67% 0.20 200);   /* cyan fill press */
+  --color-accent-tint:     oklch(72% 0.20 200 / 0.07); /* selected surface */
+  --color-accent-tint-strong: oklch(72% 0.20 200 / 0.12); /* hover selected surface */
+  --color-danger-tint:     oklch(68% 0.22 330 / 0.08); /* danger hover surface */
+  --color-scrim:           oklch(10% 0.012 265 / 0.62); /* modal backdrop */
+  --color-shadow:          oklch(0% 0 0 / 0.55);   /* elevated chrome shadow */
+
   --color-glow:        oklch(72% 0.20 200 / 0.40);  /* dense cyan halo */
   --color-glow-2:      oklch(72% 0.20 200 / 0.12);  /* soft cyan glow */
 

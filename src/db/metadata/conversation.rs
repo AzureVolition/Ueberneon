@@ -1,7 +1,7 @@
 // ── Conversation CRUD ──
 
 use chrono::{DateTime, Local};
-use rusqlite::{params, Connection, Result};
+use rusqlite::{Connection, Result, params};
 
 /// 对话状态
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -184,7 +184,10 @@ pub fn update(conn: &Connection, row: &ConversationRow) -> Result<()> {
 
 /// 软删除对话
 pub fn delete(conn: &Connection, id: &str) -> Result<()> {
-    conn.execute("UPDATE conversations SET status='deleted' WHERE id=?1", params![id])?;
+    conn.execute(
+        "UPDATE conversations SET status='deleted' WHERE id=?1",
+        params![id],
+    )?;
     Ok(())
 }
 
@@ -223,10 +226,7 @@ pub fn accumulate_usage(
 }
 
 /// 读取某对话的累计 token 用量（用于加载已有对话时恢复 runtime 状态）
-pub fn get_usage(
-    conn: &Connection,
-    conv_id: &str,
-) -> Result<crate::model::TokenUsageRecord> {
+pub fn get_usage(conn: &Connection, conv_id: &str) -> Result<crate::model::TokenUsageRecord> {
     let mut stmt = conn.prepare(
         "SELECT total_prompt_tokens, total_completion_tokens, total_reasoning_tokens,
                 total_tokens, cache_hit_tokens, cache_miss_tokens, request_count
@@ -252,10 +252,7 @@ pub fn get_request_count(conn: &Connection, conv_id: &str) -> Result<u64> {
 }
 
 /// 列出某项目下所有对话（含子 Agent）及其 token 统计，供看板使用
-pub fn list_with_usage(
-    conn: &Connection,
-    project_id: &str,
-) -> Result<Vec<ConversationWithUsage>> {
+pub fn list_with_usage(conn: &Connection, project_id: &str) -> Result<Vec<ConversationWithUsage>> {
     let mut stmt = conn.prepare(
         "SELECT c.id, c.title, c.status, c.parent_conversation_id, c.updated_at,
                 c.total_prompt_tokens, c.total_completion_tokens, c.total_reasoning_tokens,
@@ -418,7 +415,9 @@ mod tests {
         let id = create(&conn, &pid, "x", None, None).unwrap();
         delete(&conn, &id).unwrap();
         // 软删除：get 仍返回行，但 status 为 deleted
-        let row = get(&conn, &id).unwrap().expect("row should still exist after soft delete");
+        let row = get(&conn, &id)
+            .unwrap()
+            .expect("row should still exist after soft delete");
         assert_eq!(row.status, ConversationStatus::Deleted);
     }
 }

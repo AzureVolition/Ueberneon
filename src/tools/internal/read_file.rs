@@ -7,23 +7,23 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::agent::{GenericsTool, ToolContext, ToolResult};
 #[cfg(test)]
-use crate::agent::{AgentHandler, ActionMode, ToolResultExt};
-use ueberneon_macros::ToolMetaImpl;
-use serde::Deserialize;
+use crate::agent::{ActionMode, AgentHandler, ToolResultExt};
+use crate::agent::{GenericsTool, ToolContext, ToolResult};
 use schemars::JsonSchema;
+use serde::Deserialize;
+use ueberneon_macros::ToolMetaImpl;
 
 use super::common::encoding;
+use crate::permission::Decision;
 use crate::tools::content_tracker::FileObserveTracker;
 use crate::tools::internal::common::checkable_tool::CheckableTool;
-use crate::permission::Decision;
 
 ///  read file tool
-///  Read a text file from the local filesystem. 
-///  Supports auto-detection of UTF-8, UTF-8 BOM, UTF-16 LE/BE (with and without BOM), 
-///  and GB18030 (Chinese national standard). 
-///  Use `offset` and `limit` to page through large files. 
+///  Read a text file from the local filesystem.
+///  Supports auto-detection of UTF-8, UTF-8 BOM, UTF-16 LE/BE (with and without BOM),
+///  and GB18030 (Chinese national standard).
+///  Use `offset` and `limit` to page through large files.
 ///  The returned content includes line numbers.
 #[derive(ToolMetaImpl)]
 #[tool(read_only)]
@@ -44,28 +44,37 @@ pub struct ReadFileParams {
     path: String,
     /// 起始行偏移（0-based）。
     #[serde(default)]
-    #[schemars(range(min = 0), description = "0-based line offset to start reading from (default 0)")]
+    #[schemars(
+        range(min = 0),
+        description = "0-based line offset to start reading from (default 0)"
+    )]
     offset: u64,
     /// 最大返回行数。
     #[serde(default)]
-    #[schemars(range(min = 1, max = 100_000), description = "Maximum lines to return (default 2000, max 100000)")]
+    #[schemars(
+        range(min = 1, max = 100_000),
+        description = "Maximum lines to return (default 2000, max 100000)"
+    )]
     limit: Option<u64>,
     /// 返回文件前 N 行。
     #[serde(default)]
-    #[schemars(range(min = 1), description = "If provided, returns only the first N lines of the file (overrides offset)")]
+    #[schemars(
+        range(min = 1),
+        description = "If provided, returns only the first N lines of the file (overrides offset)"
+    )]
     head: Option<u64>,
     /// 返回文件后 N 行。
     #[serde(default)]
-    #[schemars(range(min = 1), description = "If provided, returns only the last N lines of the file (overrides offset and head)")]
+    #[schemars(
+        range(min = 1),
+        description = "If provided, returns only the last N lines of the file (overrides offset and head)"
+    )]
     tail: Option<u64>,
 }
 
 impl ReadFile {
     pub fn new(work_dir: PathBuf, tracker: Arc<FileObserveTracker>) -> Self {
-        Self {
-            work_dir,
-            tracker,
-        }
+        Self { work_dir, tracker }
     }
 
     /// 解析文件路径：相对路径拼接到 work_dir 下，绝对路径必须在 work_dir 内
@@ -87,7 +96,11 @@ impl ReadFile {
     }
 
     /// 工具执行体：参数已由 `GenericsTool` 反序列化为强类型 `ReadFileParams`。
-    async fn do_execute(&self, _ctx: &ToolContext, args: &ReadFileParams) -> Result<ToolResult, String> {
+    async fn do_execute(
+        &self,
+        _ctx: &ToolContext,
+        args: &ReadFileParams,
+    ) -> Result<ToolResult, String> {
         let path_str = &args.path;
 
         let path = self.resolve_path(path_str)?;
@@ -124,7 +137,9 @@ impl ReadFile {
                 // 检查是否可能是 BOM-less UTF-16
                 let (detected, _) = encoding::detect(&data);
                 match detected {
-                    encoding::Kind::UTF16LENoBOM | encoding::Kind::UTF16BE | encoding::Kind::UTF16BENoBOM => {
+                    encoding::Kind::UTF16LENoBOM
+                    | encoding::Kind::UTF16BE
+                    | encoding::Kind::UTF16BENoBOM => {
                         // 合法文本格式，继续
                     }
                     encoding::Kind::LossyUTF8 => {
@@ -195,7 +210,10 @@ impl ReadFile {
         if end < total_lines {
             output.push_str(&format!(
                 "─── (showing lines {}-{} of {}, use offset={} to see more)\n",
-                start + 1, end, total_lines, end
+                start + 1,
+                end,
+                total_lines,
+                end
             ));
         }
 
@@ -208,7 +226,11 @@ impl ReadFile {
 
 #[async_trait::async_trait]
 impl GenericsTool for ReadFile {
-    async fn generics_execute(&self, _ctx: &ToolContext, args: &ReadFileParams) -> Result<ToolResult, String> {
+    async fn generics_execute(
+        &self,
+        _ctx: &ToolContext,
+        args: &ReadFileParams,
+    ) -> Result<ToolResult, String> {
         self.do_execute(_ctx, args).await
     }
 }
@@ -218,17 +240,16 @@ impl CheckableTool for ReadFile {
     fn check(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> Decision {
         Decision::Allow
     }
-
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::agent::Tool;
+    use crate::tools::content_tracker::FileObserveTracker;
     use std::io::Write;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
-    use crate::tools::content_tracker::FileObserveTracker;
 
     fn make_tracker() -> Arc<FileObserveTracker> {
         Arc::new(FileObserveTracker::new())
@@ -251,15 +272,20 @@ mod tests {
         let (path, _file) = create_temp_file(content);
         let tool = ReadFile::new(std::env::temp_dir(), make_tracker());
         let args = serde_json::json!({"path": path.to_str().unwrap()});
-        let result = tool.execute(&ToolContext {
-            call_id: "test".into(),
-            plan_mode: ActionMode::Regular,
-            handler: AgentHandler::default(),
-            progress: None,
-            main_conversation_id: String::new(),
-            project_id: None,
-        cancel_token: None,
-        }, &args).await;
+        let result = tool
+            .execute(
+                &ToolContext {
+                    call_id: "test".into(),
+                    plan_mode: ActionMode::Regular,
+                    handler: AgentHandler::default(),
+                    progress: None,
+                    main_conversation_id: String::new(),
+                    project_id: None,
+                    cancel_token: None,
+                },
+                &args,
+            )
+            .await;
         assert!(result.error().is_none());
         assert!(result.output().contains("hello"));
         assert!(result.output().contains("world"));
@@ -277,15 +303,20 @@ mod tests {
             "offset": 1,
             "limit": 2
         });
-        let result = tool.execute(&ToolContext {
-            call_id: "test".into(),
-            plan_mode: ActionMode::Regular,
-            handler: AgentHandler::default(),
-            progress: None,
-            main_conversation_id: String::new(),
-            project_id: None,
-        cancel_token: None,
-        }, &args).await;
+        let result = tool
+            .execute(
+                &ToolContext {
+                    call_id: "test".into(),
+                    plan_mode: ActionMode::Regular,
+                    handler: AgentHandler::default(),
+                    progress: None,
+                    main_conversation_id: String::new(),
+                    project_id: None,
+                    cancel_token: None,
+                },
+                &args,
+            )
+            .await;
         assert!(result.error().is_none());
         assert!(result.output().contains("line2"));
         assert!(result.output().contains("line3"));
@@ -302,15 +333,20 @@ mod tests {
             "path": path.to_str().unwrap(),
             "head": 2
         });
-        let result = tool.execute(&ToolContext {
-            call_id: "test".into(),
-            plan_mode: ActionMode::Regular,
-            handler: AgentHandler::default(),
-            progress: None,
-            main_conversation_id: String::new(),
-            project_id: None,
-        cancel_token: None,
-        }, &args).await;
+        let result = tool
+            .execute(
+                &ToolContext {
+                    call_id: "test".into(),
+                    plan_mode: ActionMode::Regular,
+                    handler: AgentHandler::default(),
+                    progress: None,
+                    main_conversation_id: String::new(),
+                    project_id: None,
+                    cancel_token: None,
+                },
+                &args,
+            )
+            .await;
         assert!(result.error().is_none());
         assert!(result.output().contains("line1"));
         assert!(result.output().contains("line2"));
@@ -327,15 +363,20 @@ mod tests {
             "path": path.to_str().unwrap(),
             "tail": 2
         });
-        let result = tool.execute(&ToolContext {
-            call_id: "test".into(),
-            plan_mode: ActionMode::Regular,
-            handler: AgentHandler::default(),
-            progress: None,
-            main_conversation_id: String::new(),
-            project_id: None,
-        cancel_token: None,
-        }, &args).await;
+        let result = tool
+            .execute(
+                &ToolContext {
+                    call_id: "test".into(),
+                    plan_mode: ActionMode::Regular,
+                    handler: AgentHandler::default(),
+                    progress: None,
+                    main_conversation_id: String::new(),
+                    project_id: None,
+                    cancel_token: None,
+                },
+                &args,
+            )
+            .await;
         assert!(result.error().is_none());
         assert!(!result.output().contains("line1"));
         assert!(!result.output().contains("line2"));
@@ -353,15 +394,20 @@ mod tests {
         let tool = ReadFile::new(dir, make_tracker());
         // 使用相对路径，resolve 后会拼到 work_dir 下
         let args = serde_json::json!({"path": "_test_git_repo/.git/config"});
-        let result = tool.execute(&ToolContext {
-            call_id: "test".into(),
-            plan_mode: ActionMode::Regular,
-            handler: AgentHandler::default(),
-            progress: None,
-            main_conversation_id: String::new(),
-            project_id: None,
-        cancel_token: None,
-        }, &args).await;
+        let result = tool
+            .execute(
+                &ToolContext {
+                    call_id: "test".into(),
+                    plan_mode: ActionMode::Regular,
+                    handler: AgentHandler::default(),
+                    progress: None,
+                    main_conversation_id: String::new(),
+                    project_id: None,
+                    cancel_token: None,
+                },
+                &args,
+            )
+            .await;
         let _ = std::fs::remove_dir_all(&repo_dir);
         assert!(result.is_err());
     }
@@ -370,15 +416,20 @@ mod tests {
     async fn missing_path() {
         let tool = ReadFile::new(std::env::temp_dir(), make_tracker());
         let args = serde_json::json!({});
-        let result = tool.execute(&ToolContext {
-            call_id: "test".into(),
-            plan_mode: ActionMode::Regular,
-            handler: AgentHandler::default(),
-            progress: None,
-            main_conversation_id: String::new(),
-            project_id: None,
-        cancel_token: None,
-        }, &args).await;
+        let result = tool
+            .execute(
+                &ToolContext {
+                    call_id: "test".into(),
+                    plan_mode: ActionMode::Regular,
+                    handler: AgentHandler::default(),
+                    progress: None,
+                    main_conversation_id: String::new(),
+                    project_id: None,
+                    cancel_token: None,
+                },
+                &args,
+            )
+            .await;
         assert!(result.error().is_some());
     }
 
@@ -387,15 +438,20 @@ mod tests {
         let (path, _file) = create_temp_file(b"");
         let tool = ReadFile::new(std::env::temp_dir(), make_tracker());
         let args = serde_json::json!({"path": path.to_str().unwrap()});
-        let result = tool.execute(&ToolContext {
-            call_id: "test".into(),
-            plan_mode: ActionMode::Regular,
-            handler: AgentHandler::default(),
-            progress: None,
-            main_conversation_id: String::new(),
-            project_id: None,
-        cancel_token: None,
-        }, &args).await;
+        let result = tool
+            .execute(
+                &ToolContext {
+                    call_id: "test".into(),
+                    plan_mode: ActionMode::Regular,
+                    handler: AgentHandler::default(),
+                    progress: None,
+                    main_conversation_id: String::new(),
+                    project_id: None,
+                    cancel_token: None,
+                },
+                &args,
+            )
+            .await;
         assert!(result.error().is_none());
         assert!(result.output().contains("empty"));
         let _ = std::fs::remove_file(&path);
@@ -405,25 +461,37 @@ mod tests {
     async fn read_utf16_le_file() {
         let content: Vec<u8> = vec![
             0xFF, 0xFE, // BOM
-            b'h', 0x00, b'e', 0x00, b'l', 0x00, b'l', 0x00, b'o', 0x00,
-            b'\n', 0x00,
-            b'w', 0x00, b'o', 0x00, b'r', 0x00, b'l', 0x00, b'd', 0x00,
+            b'h', 0x00, b'e', 0x00, b'l', 0x00, b'l', 0x00, b'o', 0x00, b'\n', 0x00, b'w', 0x00,
+            b'o', 0x00, b'r', 0x00, b'l', 0x00, b'd', 0x00,
         ];
         let (path, _file) = create_temp_file(&content);
         let tool = ReadFile::new(std::env::temp_dir(), make_tracker());
         let args = serde_json::json!({"path": path.to_str().unwrap()});
-        let result = tool.execute(&ToolContext {
-            call_id: "test".into(),
-            plan_mode: ActionMode::Regular,
-            handler: AgentHandler::default(),
-            progress: None,
-            main_conversation_id: String::new(),
-            project_id: None,
-        cancel_token: None,
-        }, &args).await;
+        let result = tool
+            .execute(
+                &ToolContext {
+                    call_id: "test".into(),
+                    plan_mode: ActionMode::Regular,
+                    handler: AgentHandler::default(),
+                    progress: None,
+                    main_conversation_id: String::new(),
+                    project_id: None,
+                    cancel_token: None,
+                },
+                &args,
+            )
+            .await;
         assert!(result.error().is_none(), "error: {:?}", result.error());
-        assert!(result.output().contains("hello"), "output: {}", result.output());
-        assert!(result.output().contains("world"), "output: {}", result.output());
+        assert!(
+            result.output().contains("hello"),
+            "output: {}",
+            result.output()
+        );
+        assert!(
+            result.output().contains("world"),
+            "output: {}",
+            result.output()
+        );
         let _ = std::fs::remove_file(&path);
     }
 }

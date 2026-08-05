@@ -75,13 +75,19 @@ impl SandboxSpec {
         let inner_cmd = Self::join_command(program, args);
 
         #[cfg(target_os = "macos")]
-        { self.wrap_macos(&inner_cmd) }
+        {
+            self.wrap_macos(&inner_cmd)
+        }
 
         #[cfg(target_os = "linux")]
-        { self.wrap_linux(&inner_cmd) }
+        {
+            self.wrap_linux(&inner_cmd)
+        }
 
         #[cfg(target_os = "windows")]
-        { self.wrap_windows(&inner_cmd) }
+        {
+            self.wrap_windows(&inner_cmd)
+        }
     }
 
     fn join_command(program: &str, args: &[String]) -> String {
@@ -95,10 +101,8 @@ impl SandboxSpec {
     #[cfg(target_os = "macos")]
     fn wrap_macos(&self, inner_cmd: &str) -> SandboxWrapped {
         let profile = self.build_macos_profile();
-        let profile_path = std::env::temp_dir().join(format!(
-            "racp_sandbox_{}.sb",
-            std::process::id()
-        ));
+        let profile_path =
+            std::env::temp_dir().join(format!("racp_sandbox_{}.sb", std::process::id()));
         if let Err(e) = std::fs::write(&profile_path, &profile) {
             tracing::warn!(
                 "sandbox: failed to write macOS profile to {}: {e}",
@@ -157,9 +161,12 @@ impl SandboxSpec {
         }
 
         argv.extend_from_slice(&[
-            "--dev".to_string(), "/dev".to_string(),
-            "--proc".to_string(), "/proc".to_string(),
-            "--tmpfs".to_string(), "/tmp".to_string(),
+            "--dev".to_string(),
+            "/dev".to_string(),
+            "--proc".to_string(),
+            "/proc".to_string(),
+            "--tmpfs".to_string(),
+            "/tmp".to_string(),
         ]);
 
         if !self.allow_network {

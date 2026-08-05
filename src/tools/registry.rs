@@ -5,10 +5,9 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
-use crate::tools::internal::common::checkable_tool::CheckableTool;
 use crate::agent::Tool;
+use crate::tools::internal::common::checkable_tool::CheckableTool;
 use llm::ToolSchema;
-
 
 // ── Registry ─────────────────────────────────────────────────────────────────
 
@@ -62,7 +61,9 @@ impl Registry {
     pub fn remove_prefix(&self, prefix: &str) -> usize {
         let mut inner = self.tools.write().expect("tools lock poisoned");
 
-        let to_remove: Vec<String> = inner.order.iter()
+        let to_remove: Vec<String> = inner
+            .order
+            .iter()
             .filter(|name| name.starts_with(prefix))
             .cloned()
             .collect();
@@ -81,7 +82,12 @@ impl Registry {
 
     /// 按名查找工具。
     pub fn get(&self, name: &str) -> Option<Arc<dyn CheckableTool + Send + Sync>> {
-        self.tools.read().expect("tools lock poisoned").map.get(name).cloned()
+        self.tools
+            .read()
+            .expect("tools lock poisoned")
+            .map
+            .get(name)
+            .cloned()
     }
 
     /// 已注册工具数量。
@@ -95,7 +101,11 @@ impl Registry {
 
     /// 返回工具名列表（插入顺序）。
     pub fn names(&self) -> Vec<String> {
-        self.tools.read().expect("tools lock poisoned").order.clone()
+        self.tools
+            .read()
+            .expect("tools lock poisoned")
+            .order
+            .clone()
     }
 
     /// 返回工具 Schema 列表（按名字母序排序）。

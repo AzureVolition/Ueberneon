@@ -5,6 +5,7 @@ pub mod plan;
 pub mod project;
 pub mod provider;
 pub mod provider_instance;
+pub mod skill;
 pub mod task;
 pub mod tool;
 
@@ -15,4 +16,5 @@ pub use plan::PlanRow;
 pub use project::ProjectRow;
 pub use provider::ProviderRow;
 pub use provider_instance::ProviderInstanceRow;
+pub use skill::SkillStateRow;
 pub use task::TaskRow;

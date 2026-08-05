@@ -177,13 +177,12 @@ pub fn is_read_only_bash(command: &str) -> bool {
 
     match first_cmd {
         // 安全的信息命令
-        "echo" | "printf" | "which" | "type" | "pwd" | "date"
-        | "env" | "uname" | "whoami" | "id" | "printenv" | "hostname"
-        | "true" | "false" | "yes" => return true,
+        "echo" | "printf" | "which" | "type" | "pwd" | "date" | "env" | "uname" | "whoami"
+        | "id" | "printenv" | "hostname" | "true" | "false" | "yes" => return true,
 
         // 只读文件浏览
-        "cat" | "head" | "tail" | "less" | "more" | "wc" | "nl"
-        | "od" | "xxd" | "tac" | "rev" | "cut" | "sort" | "uniq" => {
+        "cat" | "head" | "tail" | "less" | "more" | "wc" | "nl" | "od" | "xxd" | "tac" | "rev"
+        | "cut" | "sort" | "uniq" => {
             // sort 有 -o 参数会写文件
             if first_cmd == "sort" && has_flag(command, &["-o", "--output"]) {
                 return false;
@@ -192,12 +191,17 @@ pub fn is_read_only_bash(command: &str) -> bool {
         }
 
         // 目录/文件系统只读
-        "ls" | "tree" | "du" | "df" | "stat" | "realpath"
-        | "dirname" | "basename" | "readlink" | "file" => return true,
+        "ls" | "tree" | "du" | "df" | "stat" | "realpath" | "dirname" | "basename" | "readlink"
+        | "file" => return true,
 
         // find - 需检查没有 -exec/-delete 等写操作参数
         "find" => {
-            return !has_flag(command, &["-exec", "-execdir", "-delete", "-ok", "-okdir", "-fls", "-fprint"]);
+            return !has_flag(
+                command,
+                &[
+                    "-exec", "-execdir", "-delete", "-ok", "-okdir", "-fls", "-fprint",
+                ],
+            );
         }
 
         // git - 只读子命令
@@ -205,11 +209,24 @@ pub fn is_read_only_bash(command: &str) -> bool {
             let sub = extract_subcommand(command);
             matches!(
                 sub.as_str(),
-                "status" | "log" | "diff" | "show" | "branch"
-                    | "tag" | "remote" | "config" | "describe"
-                    | "rev-parse" | "rev-list" | "ls-files"
-                    | "ls-tree" | "stash" | "blame" | "shortlog"
-                    | "help" | "version"
+                "status"
+                    | "log"
+                    | "diff"
+                    | "show"
+                    | "branch"
+                    | "tag"
+                    | "remote"
+                    | "config"
+                    | "describe"
+                    | "rev-parse"
+                    | "rev-list"
+                    | "ls-files"
+                    | "ls-tree"
+                    | "stash"
+                    | "blame"
+                    | "shortlog"
+                    | "help"
+                    | "version"
             )
         }
 
@@ -218,8 +235,7 @@ pub fn is_read_only_bash(command: &str) -> bool {
             let sub = extract_subcommand(command);
             matches!(
                 sub.as_str(),
-                "version" | "env" | "list" | "vet" | "doc"
-                    | "help" | "mod" // go mod tidy 等会修改，但 go mod download 是只读的
+                "version" | "env" | "list" | "vet" | "doc" | "help" | "mod" // go mod tidy 等会修改，但 go mod download 是只读的
             )
         }
 
@@ -228,8 +244,16 @@ pub fn is_read_only_bash(command: &str) -> bool {
             let sub = extract_subcommand(command);
             matches!(
                 sub.as_str(),
-                "check" | "doc" | "tree" | "metadata" | "search"
-                    | "help" | "version" | "info" | "pkgid" | "report"
+                "check"
+                    | "doc"
+                    | "tree"
+                    | "metadata"
+                    | "search"
+                    | "help"
+                    | "version"
+                    | "info"
+                    | "pkgid"
+                    | "report"
             )
         }
 
@@ -247,21 +271,44 @@ pub fn is_read_only_bash(command: &str) -> bool {
             let sub = extract_subcommand(command);
             matches!(
                 sub.as_str(),
-                "ps" | "images" | "logs" | "inspect"
-                    | "stats" | "top" | "port" | "version"
-                    | "network" | "info" | "history" | "events"
+                "ps" | "images"
+                    | "logs"
+                    | "inspect"
+                    | "stats"
+                    | "top"
+                    | "port"
+                    | "version"
+                    | "network"
+                    | "info"
+                    | "history"
+                    | "events"
             )
         }
 
         // curl/wget - 只读（无 -d/--data/--upload 等写操作）
-        "curl" => {
-            !has_flag(command, &["-d", "--data", "--data-binary", "--data-raw",
-                "--upload", "-T", "-F", "--form", "-X PUT", "-X POST",
-                "-X DELETE", "--request PUT", "--request POST", "--request DELETE"])
-        }
-        "wget" => {
-            !has_flag(command, &["--post-data", "--post-file", "--upload-file", "-o"])
-        }
+        "curl" => !has_flag(
+            command,
+            &[
+                "-d",
+                "--data",
+                "--data-binary",
+                "--data-raw",
+                "--upload",
+                "-T",
+                "-F",
+                "--form",
+                "-X PUT",
+                "-X POST",
+                "-X DELETE",
+                "--request PUT",
+                "--request POST",
+                "--request DELETE",
+            ],
+        ),
+        "wget" => !has_flag(
+            command,
+            &["--post-data", "--post-file", "--upload-file", "-o"],
+        ),
 
         _ => false,
     }
@@ -323,20 +370,32 @@ mod tests {
     #[test]
     fn deny_etc() {
         let c = DenySystemPaths;
-        assert_eq!(c.check("edit_file", "/etc/passwd", false), Some(Decision::Deny("denied".into())));
-        assert_eq!(c.check("write_file", "/etc/nginx/nginx.conf", false), Some(Decision::Deny("denied".into())));
+        assert_eq!(
+            c.check("edit_file", "/etc/passwd", false),
+            Some(Decision::Deny("denied".into()))
+        );
+        assert_eq!(
+            c.check("write_file", "/etc/nginx/nginx.conf", false),
+            Some(Decision::Deny("denied".into()))
+        );
     }
 
     #[test]
     fn deny_usr() {
         let c = DenySystemPaths;
-        assert_eq!(c.check("edit_file", "/usr/local/bin/something", false), Some(Decision::Deny("denied".into())));
+        assert_eq!(
+            c.check("edit_file", "/usr/local/bin/something", false),
+            Some(Decision::Deny("denied".into()))
+        );
     }
 
     #[test]
     fn allow_project_file() {
         let c = DenySystemPaths;
-        assert_eq!(c.check("edit_file", "/home/user/project/main.rs", false), None);
+        assert_eq!(
+            c.check("edit_file", "/home/user/project/main.rs", false),
+            None
+        );
     }
 
     #[test]
@@ -365,7 +424,10 @@ mod tests {
     #[test]
     fn force_push_short_flag() {
         let c = ForcePushGuard;
-        assert_eq!(c.check("bash", "git push -f origin", false), Some(Decision::Ask));
+        assert_eq!(
+            c.check("bash", "git push -f origin", false),
+            Some(Decision::Ask)
+        );
     }
 
     #[test]
@@ -403,7 +465,10 @@ mod tests {
     #[test]
     fn git_log_is_readonly() {
         let c = ReadOnlyBashClassifier;
-        assert_eq!(c.check("bash", "git log --oneline -5", false), Some(Decision::Allow));
+        assert_eq!(
+            c.check("bash", "git log --oneline -5", false),
+            Some(Decision::Allow)
+        );
     }
 
     #[test]
@@ -439,19 +504,32 @@ mod tests {
     #[test]
     fn curl_get_readonly() {
         let c = ReadOnlyBashClassifier;
-        assert_eq!(c.check("bash", "curl https://api.example.com", false), Some(Decision::Allow));
+        assert_eq!(
+            c.check("bash", "curl https://api.example.com", false),
+            Some(Decision::Allow)
+        );
     }
 
     #[test]
     fn curl_post_not_readonly() {
         let c = ReadOnlyBashClassifier;
-        assert_eq!(c.check("bash", "curl -X POST -d data https://api.example.com", false), None);
+        assert_eq!(
+            c.check(
+                "bash",
+                "curl -X POST -d data https://api.example.com",
+                false
+            ),
+            None
+        );
     }
 
     #[test]
     fn sort_no_o_readonly() {
         let c = ReadOnlyBashClassifier;
-        assert_eq!(c.check("bash", "sort file.txt", false), Some(Decision::Allow));
+        assert_eq!(
+            c.check("bash", "sort file.txt", false),
+            Some(Decision::Allow)
+        );
     }
 
     #[test]
@@ -481,7 +559,10 @@ mod tests {
     #[test]
     fn find_without_exec_readonly() {
         let c = ReadOnlyBashClassifier;
-        assert_eq!(c.check("bash", "find . -name '*.rs'", false), Some(Decision::Allow));
+        assert_eq!(
+            c.check("bash", "find . -name '*.rs'", false),
+            Some(Decision::Allow)
+        );
     }
 
     #[test]

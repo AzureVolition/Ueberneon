@@ -3,17 +3,17 @@
 // 通过 JobManager 读取后台任务的 stdout+stderr 增量。
 // 每次调用返回自上次读取以来的新内容。
 
-use crate::agent::{ToolContext, ToolResult, GenericsTool};
 #[cfg(test)]
-use crate::agent::{AgentHandler, ActionMode, ToolResultExt};
-use ueberneon_macros::ToolMetaImpl;
-use serde::Deserialize;
+use crate::agent::{ActionMode, AgentHandler, ToolResultExt};
+use crate::agent::{GenericsTool, ToolContext, ToolResult};
 use schemars::JsonSchema;
+use serde::Deserialize;
 use std::sync::Arc;
+use ueberneon_macros::ToolMetaImpl;
 
-use crate::tools::jobs::JobManager;
-use crate::tools::internal::common::checkable_tool::CheckableTool;
 use crate::permission::Decision;
+use crate::tools::internal::common::checkable_tool::CheckableTool;
+use crate::tools::jobs::JobManager;
 
 /// bash_output — 读取通过 bash(run_in_background=true) 启动的后台任务输出。
 ///
@@ -36,12 +36,14 @@ pub struct BashOutputParams {
 
 impl BashOutput {
     pub fn new(job_manager: Arc<JobManager>) -> Self {
-        Self {
-            job_manager,
-        }
+        Self { job_manager }
     }
 
-    async fn do_execute(&self, _ctx: &ToolContext, args: &BashOutputParams) -> Result<ToolResult, String> {
+    async fn do_execute(
+        &self,
+        _ctx: &ToolContext,
+        args: &BashOutputParams,
+    ) -> Result<ToolResult, String> {
         let handle = match self.job_manager.get(&args.job_id) {
             Some(h) => h,
             None => {
@@ -58,25 +60,39 @@ impl BashOutput {
         if output.is_empty() && finished {
             let exit_code = handle.exit_code.load(std::sync::atomic::Ordering::SeqCst);
             if exit_code == 0 {
-                Ok(ToolResult::ok(format!("job {} finished successfully (exit 0)", args.job_id)))
+                Ok(ToolResult::ok(format!(
+                    "job {} finished successfully (exit 0)",
+                    args.job_id
+                )))
             } else {
                 Ok(ToolResult::ok(format!(
-                    "job {} finished with exit code {exit_code}", args.job_id
+                    "job {} finished with exit code {exit_code}",
+                    args.job_id
                 )))
             }
         } else if output.is_empty() {
-            Ok(ToolResult::ok(format!("job {} is still running (no new output)", args.job_id)))
+            Ok(ToolResult::ok(format!(
+                "job {} is still running (no new output)",
+                args.job_id
+            )))
         } else if finished {
             Ok(ToolResult::ok(format!("{output}")))
         } else {
-            Ok(ToolResult::ok(format!("{output}\n[job {} still running]", args.job_id)))
+            Ok(ToolResult::ok(format!(
+                "{output}\n[job {} still running]",
+                args.job_id
+            )))
         }
     }
 }
 
 #[async_trait::async_trait]
 impl GenericsTool for BashOutput {
-    async fn generics_execute(&self, ctx: &ToolContext, args: &BashOutputParams) -> Result<ToolResult, String> {
+    async fn generics_execute(
+        &self,
+        ctx: &ToolContext,
+        args: &BashOutputParams,
+    ) -> Result<ToolResult, String> {
         self.do_execute(ctx, args).await
     }
 }
@@ -86,7 +102,6 @@ impl CheckableTool for BashOutput {
     fn check(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> Decision {
         Decision::Allow
     }
-
 }
 
 #[cfg(test)]
@@ -99,7 +114,11 @@ mod tests {
     async fn read_output_from_background_job() {
         let mgr = Arc::new(JobManager::new());
         let job_id = mgr
-            .spawn("echo", &["bg_test".into()], &std::env::current_dir().unwrap())
+            .spawn(
+                "echo",
+                &["bg_test".into()],
+                &std::env::current_dir().unwrap(),
+            )
             .await;
 
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -113,7 +132,7 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
-        cancel_token: None,
+            cancel_token: None,
         };
 
         let result = tool.execute(&ctx, &args).await;
@@ -136,7 +155,7 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
-        cancel_token: None,
+            cancel_token: None,
         };
 
         let result = tool.execute(&ctx, &args).await;
@@ -156,7 +175,7 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
-        cancel_token: None,
+            cancel_token: None,
         };
 
         let result = tool.execute(&ctx, &args).await;

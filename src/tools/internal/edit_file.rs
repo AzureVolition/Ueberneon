@@ -8,21 +8,21 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::agent::{ActionMode, ToolContext, ToolResult};
-use llm::tool::ToolMeta;
 #[cfg(test)]
 use crate::agent::{AgentHandler, ToolResultExt};
-use ueberneon_macros::ToolMetaImpl;
-use serde::Deserialize;
-use serde_json::Value;
-use schemars::JsonSchema;
 use crate::permission::{Check, Decision, gate::PermissionChecked};
 use crate::tools::internal::common::checkable_tool::CheckableTool;
+use llm::tool::ToolMeta;
+use schemars::JsonSchema;
+use serde::Deserialize;
+use serde_json::Value;
+use ueberneon_macros::ToolMetaImpl;
 
 use super::common::edit;
 use super::common::encoding;
 use crate::tools::content_tracker::FileObserveTracker;
-use crate::tools::snapshot::SnapshotStore;
 use crate::tools::diff::{self, Kind as DiffKind};
+use crate::tools::snapshot::SnapshotStore;
 
 // re-export for registry convenience
 pub use crate::tools::diff::FileChange;
@@ -63,7 +63,12 @@ pub struct EditFileParams {
 }
 
 impl EditFile {
-    pub fn new(work_dir: PathBuf, checkpoint: Arc<SnapshotStore>, checks: Vec<Box<dyn Check>>, tracker: Arc<FileObserveTracker>) -> Self {
+    pub fn new(
+        work_dir: PathBuf,
+        checkpoint: Arc<SnapshotStore>,
+        checks: Vec<Box<dyn Check>>,
+        tracker: Arc<FileObserveTracker>,
+    ) -> Self {
         Self {
             work_dir,
             checkpoint,
@@ -100,7 +105,11 @@ impl EditFile {
     }
 
     /// 工具执行体：参数已由 `GenericsTool` 反序列化为强类型 `EditFileParams`。
-    async fn do_execute(&self, _ctx: &ToolContext, args: &EditFileParams) -> Result<ToolResult, String> {
+    async fn do_execute(
+        &self,
+        _ctx: &ToolContext,
+        args: &EditFileParams,
+    ) -> Result<ToolResult, String> {
         // 1. 解析参数
         let path_str = &args.path;
         let old_string = &args.old_string;
@@ -136,10 +145,17 @@ impl EditFile {
 
         match result.applied {
             0 if result.matches == 0 => {
-                return Err(edit::old_string_not_found_error(path_str, old_string, &content));
+                return Err(edit::old_string_not_found_error(
+                    path_str, old_string, &content,
+                ));
             }
             0 if result.matches > 1 => {
-                return Err(edit::old_string_not_unique_error(path_str, old_string, &content, result.matches));
+                return Err(edit::old_string_not_unique_error(
+                    path_str,
+                    old_string,
+                    &content,
+                    result.matches,
+                ));
             }
             _ => {}
         }
@@ -164,7 +180,10 @@ impl EditFile {
         let fuzzy_suffix = if result.fuzzy { " (fuzzy match)" } else { "" };
         let summary = diff::change_summary(&file_change);
         let diff_text = &file_change.unified_diff;
-        Ok(ToolResult::ok(format!("edited {}{}\n{}\n\n{}", path_str, fuzzy_suffix, summary, diff_text)))
+        Ok(ToolResult::ok(format!(
+            "edited {}{}\n{}\n\n{}",
+            path_str, fuzzy_suffix, summary, diff_text
+        )))
     }
 }
 
@@ -176,7 +195,11 @@ impl PermissionChecked for EditFile {
 
 #[async_trait::async_trait]
 impl crate::agent::GenericsTool for EditFile {
-    async fn generics_execute(&self, ctx: &ToolContext, args: &EditFileParams) -> Result<ToolResult, String> {
+    async fn generics_execute(
+        &self,
+        ctx: &ToolContext,
+        args: &EditFileParams,
+    ) -> Result<ToolResult, String> {
         self.do_execute(ctx, args).await
     }
 }
@@ -184,12 +207,21 @@ impl crate::agent::GenericsTool for EditFile {
 #[async_trait::async_trait]
 impl CheckableTool for EditFile {
     fn check(&self, ctx: &ToolContext, args: &Value) -> Decision {
-        match self.check_permission(self.name(), args, *ctx.handler.agent_mode.lock().expect("agent_mode lock poisoned")) {
+        match self.check_permission(
+            self.name(),
+            args,
+            *ctx.handler
+                .agent_mode
+                .lock()
+                .expect("agent_mode lock poisoned"),
+        ) {
             Decision::Allow => {}
             decision => return decision,
         }
         match ctx.plan_mode {
-            ActionMode::Plan => return Decision::Deny("edit_file is not allowed in plan mode".into()),
+            ActionMode::Plan => {
+                return Decision::Deny("edit_file is not allowed in plan mode".into());
+            }
             ActionMode::Regular => {}
         }
         Decision::Allow
@@ -201,7 +233,6 @@ mod tests {
     use super::*;
     use crate::agent::Tool;
     use std::io::Write;
-    
 
     static TEST_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -236,7 +267,7 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
-        cancel_token: None,
+            cancel_token: None,
         }
     }
 
@@ -250,7 +281,11 @@ mod tests {
         });
         let result = tool.execute(&test_ctx(), &args).await;
         assert!(result.error().is_none(), "error: {:?}", result.error());
-        assert!(result.output().contains("edited"), "output: {}", result.output());
+        assert!(
+            result.output().contains("edited"),
+            "output: {}",
+            result.output()
+        );
         let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(content, "hello\nthere\n");
         let _ = std::fs::remove_file(&path);
@@ -306,7 +341,12 @@ mod tests {
         let path = work_dir.join("test.txt");
         std::fs::write(&path, b"original content\n").unwrap();
         let checkpoint = Arc::new(SnapshotStore::new());
-        let tool = EditFile::new(work_dir, checkpoint.clone(), vec![], Arc::new(FileObserveTracker::new()));
+        let tool = EditFile::new(
+            work_dir,
+            checkpoint.clone(),
+            vec![],
+            Arc::new(FileObserveTracker::new()),
+        );
 
         let args = serde_json::json!({
             "path": path.to_str().unwrap(),
@@ -327,7 +367,12 @@ mod tests {
         let work_dir = temp_dir();
         std::fs::create_dir_all(&work_dir).unwrap();
         let checkpoint = Arc::new(SnapshotStore::new());
-        let tool = EditFile::new(work_dir, checkpoint, vec![], Arc::new(FileObserveTracker::new()));
+        let tool = EditFile::new(
+            work_dir,
+            checkpoint,
+            vec![],
+            Arc::new(FileObserveTracker::new()),
+        );
 
         let args = serde_json::json!({
             "path": "/etc/passwd",

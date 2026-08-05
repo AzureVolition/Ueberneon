@@ -5,10 +5,9 @@
 
 use crate::agent::{GenericsTool, ToolContext, ToolResult};
 use crate::model::{Plan, PlanNode, PlanStatus, StepStatus};
-use ueberneon_macros::ToolMetaImpl;
-use serde::Deserialize;
 use schemars::JsonSchema;
-
+use serde::Deserialize;
+use ueberneon_macros::ToolMetaImpl;
 
 use super::common::checkable_tool::CheckableTool;
 use crate::permission::Decision;
@@ -59,7 +58,10 @@ pub struct CreatePlan;
 #[allow(dead_code)]
 pub struct PlanTaskDef {
     /// 同父下唯一序号（从 1 开始连续）。
-    #[schemars(range(min = 1, max = 255), description = "同父下唯一序号（从 1 开始连续）")]
+    #[schemars(
+        range(min = 1, max = 255),
+        description = "同父下唯一序号（从 1 开始连续）"
+    )]
     idx: u8,
     /// 任务描述。
     #[schemars(description = "任务描述")]
@@ -71,14 +73,19 @@ pub struct PlanTaskDef {
 #[allow(dead_code)]
 pub struct PlanNodeDef {
     /// 同级唯一序号（从 1 开始连续）。
-    #[schemars(range(min = 1, max = 255), description = "同级唯一序号（从 1 开始连续）")]
+    #[schemars(
+        range(min = 1, max = 255),
+        description = "同级唯一序号（从 1 开始连续）"
+    )]
     idx: u8,
     /// 阶段或任务的描述。
     #[schemars(description = "阶段或任务的描述")]
     description: String,
     /// 子任务列表。
     #[serde(default)]
-    #[schemars(description = "子任务列表。有阶段分组时使用，纯任务模式不传。同级 idx 从 1 开始连续")]
+    #[schemars(
+        description = "子任务列表。有阶段分组时使用，纯任务模式不传。同级 idx 从 1 开始连续"
+    )]
     children: Option<Vec<PlanTaskDef>>,
 }
 
@@ -94,7 +101,9 @@ pub struct PlanDef {
     #[schemars(description = "计划的详细描述（可选）")]
     description: Option<String>,
     /// 顶层节点列表。
-    #[schemars(description = "顶层节点列表。有阶段分组时为阶段列表，纯任务时为任务列表。同级 idx 从 1 开始连续")]
+    #[schemars(
+        description = "顶层节点列表。有阶段分组时为阶段列表，纯任务时为任务列表。同级 idx 从 1 开始连续"
+    )]
     children: Vec<PlanNodeDef>,
 }
 
@@ -195,7 +204,11 @@ fn reset_nodes(nodes: &mut [PlanNode]) {
 
 impl CreatePlan {
     /// 工具执行体：参数已由 `GenericsTool` 反序列化为强类型 `CreatePlanParams`。
-    async fn do_execute(&self, ctx: &ToolContext, args: &CreatePlanParams) -> Result<ToolResult, String> {
+    async fn do_execute(
+        &self,
+        ctx: &ToolContext,
+        args: &CreatePlanParams,
+    ) -> Result<ToolResult, String> {
         // PlanDef → 模型 Plan（From 转换中已初始化状态字段）
         let mut plan: Plan = args.plan.clone().into();
 
@@ -210,17 +223,27 @@ impl CreatePlan {
 
         // ── 存入运行时 handler（不入库，审批通过后才入库）──
         {
-            let mut guard = ctx.handler.current_plan.lock().expect("current_plan lock poisoned");
+            let mut guard = ctx
+                .handler
+                .current_plan
+                .lock()
+                .expect("current_plan lock poisoned");
             *guard = Some(plan.clone());
         }
 
-        Ok(ToolResult::ok("plan created — waiting for approval".to_string()))
+        Ok(ToolResult::ok(
+            "plan created — waiting for approval".to_string(),
+        ))
     }
 }
 
 #[async_trait::async_trait]
 impl GenericsTool for CreatePlan {
-    async fn generics_execute(&self, ctx: &ToolContext, args: &CreatePlanParams) -> Result<ToolResult, String> {
+    async fn generics_execute(
+        &self,
+        ctx: &ToolContext,
+        args: &CreatePlanParams,
+    ) -> Result<ToolResult, String> {
         self.do_execute(ctx, args).await
     }
 }

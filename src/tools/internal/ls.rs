@@ -5,14 +5,14 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::agent::{GenericsTool, ToolContext, ToolResult};
 #[cfg(test)]
-use crate::agent::{AgentHandler, ActionMode, ToolResultExt, Tool};
-use ueberneon_macros::ToolMetaImpl;
-use serde::Deserialize;
-use schemars::JsonSchema;
-use crate::tools::internal::common::checkable_tool::CheckableTool;
+use crate::agent::{ActionMode, AgentHandler, Tool, ToolResultExt};
+use crate::agent::{GenericsTool, ToolContext, ToolResult};
 use crate::permission::Decision;
+use crate::tools::internal::common::checkable_tool::CheckableTool;
+use schemars::JsonSchema;
+use serde::Deserialize;
+use ueberneon_macros::ToolMetaImpl;
 
 /// ls — 列出目录内容。
 ///
@@ -57,14 +57,16 @@ const NOISE_DIRS: &[&str] = &[
 
 impl Ls {
     pub fn new(work_dir: PathBuf) -> Self {
-        Self {
-            work_dir,
-        }
+        Self { work_dir }
     }
 
     async fn do_execute(&self, _ctx: &ToolContext, args: &LsParams) -> Result<ToolResult, String> {
         // 相对路径基于项目目录解析
-        let path_str: &str = if args.path.is_empty() { "." } else { &args.path };
+        let path_str: &str = if args.path.is_empty() {
+            "."
+        } else {
+            &args.path
+        };
         let recursive = args.recursive;
 
         let path = if path_str == "." || !path_str.starts_with('/') {
@@ -96,7 +98,11 @@ impl Ls {
 
 #[async_trait::async_trait]
 impl GenericsTool for Ls {
-    async fn generics_execute(&self, ctx: &ToolContext, args: &LsParams) -> Result<ToolResult, String> {
+    async fn generics_execute(
+        &self,
+        ctx: &ToolContext,
+        args: &LsParams,
+    ) -> Result<ToolResult, String> {
         self.do_execute(ctx, args).await
     }
 }
@@ -192,22 +198,18 @@ fn list_recursive(dir: &Path, _display: &str) -> Result<ToolResult, String> {
     Ok(ToolResult::ok(items.join("\n")))
 }
 
-
 #[async_trait::async_trait]
 impl CheckableTool for Ls {
     fn check(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> Decision {
         Decision::Allow
     }
-
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
-    
+
     use std::sync::atomic::{AtomicU64, Ordering};
-    
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -225,7 +227,7 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
-        cancel_token: None,
+            cancel_token: None,
         }
     }
 
@@ -242,15 +244,29 @@ mod tests {
         std::fs::create_dir(dir.join("subdir")).unwrap();
 
         let tool = test_ls();
-        let result = tool.execute(
-            &test_ctx(),
-            &serde_json::json!({"path": dir.to_str().unwrap()}),
-        ).await;
+        let result = tool
+            .execute(
+                &test_ctx(),
+                &serde_json::json!({"path": dir.to_str().unwrap()}),
+            )
+            .await;
 
         assert!(result.error().is_none(), "error: {:?}", result.error());
-        assert!(result.output().contains("a.txt"), "output: {}", result.output());
-        assert!(result.output().contains("b.rs"), "output: {}", result.output());
-        assert!(result.output().contains("subdir/"), "output: {}", result.output());
+        assert!(
+            result.output().contains("a.txt"),
+            "output: {}",
+            result.output()
+        );
+        assert!(
+            result.output().contains("b.rs"),
+            "output: {}",
+            result.output()
+        );
+        assert!(
+            result.output().contains("subdir/"),
+            "output: {}",
+            result.output()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -260,13 +276,19 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         let tool = test_ls();
-        let result = tool.execute(
-            &test_ctx(),
-            &serde_json::json!({"path": dir.to_str().unwrap()}),
-        ).await;
+        let result = tool
+            .execute(
+                &test_ctx(),
+                &serde_json::json!({"path": dir.to_str().unwrap()}),
+            )
+            .await;
 
         assert!(result.error().is_none());
-        assert!(result.output().contains("empty"), "output: {}", result.output());
+        assert!(
+            result.output().contains("empty"),
+            "output: {}",
+            result.output()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -279,28 +301,44 @@ mod tests {
         std::fs::write(dir.join("sub").join("nested.rs"), b"nested").unwrap();
 
         let tool = test_ls();
-        let result = tool.execute(
-            &test_ctx(),
-            &serde_json::json!({
-                "path": dir.to_str().unwrap(),
-                "recursive": true,
-            }),
-        ).await;
+        let result = tool
+            .execute(
+                &test_ctx(),
+                &serde_json::json!({
+                    "path": dir.to_str().unwrap(),
+                    "recursive": true,
+                }),
+            )
+            .await;
 
         assert!(result.error().is_none(), "error: {:?}", result.error());
-        assert!(result.output().contains("root.txt"), "output: {}", result.output());
-        assert!(result.output().contains("sub/"), "output: {}", result.output());
-        assert!(result.output().contains("nested.rs"), "output: {}", result.output());
+        assert!(
+            result.output().contains("root.txt"),
+            "output: {}",
+            result.output()
+        );
+        assert!(
+            result.output().contains("sub/"),
+            "output: {}",
+            result.output()
+        );
+        assert!(
+            result.output().contains("nested.rs"),
+            "output: {}",
+            result.output()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn path_not_exists() {
         let tool = test_ls();
-        let result = tool.execute(
-            &test_ctx(),
-            &serde_json::json!({"path": "/nonexistent_path_12345"}),
-        ).await;
+        let result = tool
+            .execute(
+                &test_ctx(),
+                &serde_json::json!({"path": "/nonexistent_path_12345"}),
+            )
+            .await;
         assert!(result.error().is_some());
         assert!(result.error().unwrap().contains("does not exist"));
     }
@@ -313,10 +351,12 @@ mod tests {
         std::fs::write(&file, b"content").unwrap();
 
         let tool = test_ls();
-        let result = tool.execute(
-            &test_ctx(),
-            &serde_json::json!({"path": file.to_str().unwrap()}),
-        ).await;
+        let result = tool
+            .execute(
+                &test_ctx(),
+                &serde_json::json!({"path": file.to_str().unwrap()}),
+            )
+            .await;
         assert!(result.error().is_some());
         assert!(result.error().unwrap().contains("not a directory"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -325,20 +365,29 @@ mod tests {
     #[tokio::test]
     async fn reject_git_path() {
         let tool = test_ls();
-        let result = tool.execute(
-            &test_ctx(),
-            &serde_json::json!({"path": "/tmp/repo/.git"}),
-        ).await;
+        let result = tool
+            .execute(&test_ctx(), &serde_json::json!({"path": "/tmp/repo/.git"}))
+            .await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn default_path_is_dot() {
         let tool = test_ls();
-        let result = tool.execute(
-            &ToolContext { call_id: "test".into(), plan_mode: ActionMode::Regular, handler: AgentHandler::default(), progress: None, main_conversation_id: String::new(), project_id: None , cancel_token: None },
-            &serde_json::json!({}),
-        ).await;
+        let result = tool
+            .execute(
+                &ToolContext {
+                    call_id: "test".into(),
+                    plan_mode: ActionMode::Regular,
+                    handler: AgentHandler::default(),
+                    progress: None,
+                    main_conversation_id: String::new(),
+                    project_id: None,
+                    cancel_token: None,
+                },
+                &serde_json::json!({}),
+            )
+            .await;
         // 应该成功列出当前目录
         assert!(result.error().is_none(), "error: {:?}", result.error());
     }

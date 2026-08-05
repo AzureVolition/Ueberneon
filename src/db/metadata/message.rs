@@ -2,7 +2,7 @@
 // 支持 active 字段：active / compressed，查询只返回 active 的消息。
 
 use chrono::{DateTime, Local};
-use rusqlite::{params, Connection, Result};
+use rusqlite::{Connection, Result, params};
 
 use llm::{Message as LlmMessage, Role as LlmRole, ToolCall};
 
@@ -42,10 +42,10 @@ pub struct MessageRow {
     pub timestamp: DateTime<Local>,
     pub reasoning_content: Option<String>,
     pub reasoning_signature: Option<String>,
-    pub tool_calls: Option<String>,  // JSON array of ToolCall
+    pub tool_calls: Option<String>, // JSON array of ToolCall
     pub tool_call_id: Option<String>,
     pub tool_name: Option<String>,
-    pub images: Option<String>,      // JSON array of base64 strings
+    pub images: Option<String>, // JSON array of base64 strings
     pub active: MessageStatus,
 }
 
@@ -79,7 +79,8 @@ impl MessageRow {
             conversation_id: conversation_id.to_string(),
             role: role_str,
             content: msg.content.clone(),
-            timestamp: msg.timestamp
+            timestamp: msg
+                .timestamp
                 .map(|t| t.with_timezone(&Local))
                 .unwrap_or_else(Local::now),
             reasoning_content: msg.reasoning_content.clone(),
@@ -157,11 +158,7 @@ pub fn create(conn: &Connection, conversation_id: &str, row: &MessageRow) -> Res
 }
 
 /// 便捷函数：从 llm::Message 创建并持久化
-pub fn create_from_llm(
-    conn: &Connection,
-    conversation_id: &str,
-    msg: &LlmMessage,
-) -> Result<i64> {
+pub fn create_from_llm(conn: &Connection, conversation_id: &str, msg: &LlmMessage) -> Result<i64> {
     let row = MessageRow::from_llm(msg, conversation_id);
     create(conn, conversation_id, &row)
 }
@@ -196,7 +193,10 @@ pub fn list_by_conversation(conn: &Connection, conversation_id: &str) -> Result<
 }
 
 /// 列出某对话下所有消息（不限 active），按 timestamp 升序
-pub fn list_all_by_conversation(conn: &Connection, conversation_id: &str) -> Result<Vec<MessageRow>> {
+pub fn list_all_by_conversation(
+    conn: &Connection,
+    conversation_id: &str,
+) -> Result<Vec<MessageRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, conversation_id, role, content, timestamp,
                 reasoning_content, reasoning_signature,
@@ -227,17 +227,17 @@ pub fn list_by_conversation_before(
 }
 
 /// 将某对话下所有 active 消息转换为 llm::Message 列表
-pub fn list_as_llm_messages(
-    conn: &Connection,
-    conversation_id: &str,
-) -> Result<Vec<LlmMessage>> {
+pub fn list_as_llm_messages(conn: &Connection, conversation_id: &str) -> Result<Vec<LlmMessage>> {
     let rows = list_by_conversation(conn, conversation_id)?;
     Ok(rows.iter().map(|r| r.to_llm()).collect())
 }
 
 /// 软删除消息
 pub fn delete(conn: &Connection, id: i64) -> Result<()> {
-    conn.execute("UPDATE messages SET active='deleted' WHERE id=?1", params![id])?;
+    conn.execute(
+        "UPDATE messages SET active='deleted' WHERE id=?1",
+        params![id],
+    )?;
     Ok(())
 }
 
@@ -313,11 +313,16 @@ mod tests {
     }
 
     fn create_test_msg(conn: &Connection, cid: &str, role: LlmRole, content: &str) -> i64 {
-        create_from_llm(conn, cid, &LlmMessage {
-            role,
-            content: Some(content.into()),
-            ..Default::default()
-        }).unwrap()
+        create_from_llm(
+            conn,
+            cid,
+            &LlmMessage {
+                role,
+                content: Some(content.into()),
+                ..Default::default()
+            },
+        )
+        .unwrap()
     }
 
     #[test]
@@ -352,7 +357,8 @@ mod tests {
             "INSERT INTO messages (conversation_id, role, content, timestamp, active)
              VALUES (?1, 'user', 'compressed msg', ?2, 'compressed')",
             params![cid, chrono::Local::now().to_rfc3339()],
-        ).unwrap();
+        )
+        .unwrap();
 
         let rows = list_by_conversation(&conn, &cid).unwrap();
         assert_eq!(rows.len(), 1);
@@ -463,7 +469,9 @@ mod tests {
         let id = create_from_llm(&conn, &cid, &llm_msg).unwrap();
         delete(&conn, id).unwrap();
         // 软删除：get 仍返回行，但 active 为 Deleted
-        let row = get(&conn, id).unwrap().expect("row should still exist after soft delete");
+        let row = get(&conn, id)
+            .unwrap()
+            .expect("row should still exist after soft delete");
         assert_eq!(row.active, MessageStatus::Deleted);
     }
 

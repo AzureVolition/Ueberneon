@@ -8,20 +8,20 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::agent::{ToolContext, ToolResult};
 #[cfg(test)]
 use crate::agent::ToolResultExt;
-use ueberneon_macros::ToolMetaImpl;
-use serde::Deserialize;
+use crate::agent::{ToolContext, ToolResult};
 use schemars::JsonSchema;
+use serde::Deserialize;
+use ueberneon_macros::ToolMetaImpl;
 
 use super::common::env::EnvBuilder;
 use super::common::process::{ProcessOutput, ProcessRunner};
 use super::common::shell::Shell;
-use crate::tools::sandbox::SandboxSpec;
-use crate::tools::internal::common::checkable_tool::CheckableTool;
-use crate::permission::bash_decompose;
 use crate::permission::Decision;
+use crate::permission::bash_decompose;
+use crate::tools::internal::common::checkable_tool::CheckableTool;
+use crate::tools::sandbox::SandboxSpec;
 
 /// read_only_bash —— 只读安全的 shell 命令执行。
 ///
@@ -66,7 +66,11 @@ impl ReadOnlyBash {
     }
 
     /// 工具执行体：参数已由 `GenericsTool` 反序列化为强类型 `ReadOnlyBashParams`。
-    async fn do_execute(&self, _ctx: &ToolContext, args: &ReadOnlyBashParams) -> Result<ToolResult, String> {
+    async fn do_execute(
+        &self,
+        _ctx: &ToolContext,
+        args: &ReadOnlyBashParams,
+    ) -> Result<ToolResult, String> {
         // 1. 校验参数
         if args.command.trim().is_empty() {
             return Err("read_only_bash: missing required argument 'command'".into());
@@ -87,8 +91,7 @@ impl ReadOnlyBash {
         let env = self.build_env();
 
         // 5. 通过 ProcessRunner 执行（带超时 + 可选沙箱）
-        let runner = ProcessRunner::new(self.work_dir.clone(), self.timeout)
-            .with_env(env);
+        let runner = ProcessRunner::new(self.work_dir.clone(), self.timeout).with_env(env);
 
         let runner = if let Some(spec) = &self.sandbox {
             runner.with_sandbox(spec.clone())
@@ -117,8 +120,20 @@ impl ReadOnlyBash {
 
     /// plan mode 下 bash 的允许命令前缀白名单。
     const PLAN_MODE_ALLOWED_PREFIXES: &[&str] = &[
-        "cd", "echo", "ls", "cat", "head", "tail", "wc", "find", "grep", "git log",
-        "git diff", "git show", "git status", "git branch",
+        "cd",
+        "echo",
+        "ls",
+        "cat",
+        "head",
+        "tail",
+        "wc",
+        "find",
+        "grep",
+        "git log",
+        "git diff",
+        "git show",
+        "git status",
+        "git branch",
     ];
 
     /// 检查命令（可能含 &&、||、|、; 链）是否全部在白名单中。
@@ -169,7 +184,12 @@ impl ReadOnlyBash {
             let detail = if output.combined.is_empty() {
                 "(no output)".to_string()
             } else {
-                let preview: String = output.combined.lines().take(5).collect::<Vec<_>>().join("\n");
+                let preview: String = output
+                    .combined
+                    .lines()
+                    .take(5)
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 format!("output:\n{preview}")
             };
             let msg = if output.timed_out {
@@ -178,21 +198,25 @@ impl ReadOnlyBash {
                     output.exit_code
                 )
             } else {
-                format!(
-                    "command exited with code {}\n{detail}",
-                    output.exit_code
-                )
+                format!("command exited with code {}\n{detail}", output.exit_code)
             };
             return Err(msg);
         }
 
-        Ok(ToolResult { output: output.combined, truncated: output.truncated })
+        Ok(ToolResult {
+            output: output.combined,
+            truncated: output.truncated,
+        })
     }
 }
 
 #[async_trait::async_trait]
 impl crate::agent::GenericsTool for ReadOnlyBash {
-    async fn generics_execute(&self, ctx: &ToolContext, args: &ReadOnlyBashParams) -> Result<ToolResult, String> {
+    async fn generics_execute(
+        &self,
+        ctx: &ToolContext,
+        args: &ReadOnlyBashParams,
+    ) -> Result<ToolResult, String> {
         self.do_execute(ctx, args).await
     }
 }
@@ -202,15 +226,12 @@ impl CheckableTool for ReadOnlyBash {
     fn check(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> Decision {
         Decision::Allow
     }
-
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::{ActionMode, Tool, AgentHandler};
-    
-    
+    use crate::agent::{ActionMode, AgentHandler, Tool};
 
     #[allow(dead_code)]
     fn test_sandbox() -> Option<SandboxSpec> {
@@ -273,7 +294,11 @@ mod tests {
         let args = serde_json::json!({"command": "rm -rf /tmp"});
         let result = tool.execute(&test_ctx(), &args).await;
         assert!(result.is_err(), "should be blocked");
-        assert!(result.output().contains("blocked"), "output: {}", result.output());
+        assert!(
+            result.output().contains("blocked"),
+            "output: {}",
+            result.output()
+        );
     }
 
     #[tokio::test]
@@ -339,13 +364,19 @@ mod tests {
         let tool = test_tool();
         let ctx = test_ctx();
 
-        let head_result = tool.execute(&ctx, &serde_json::json!({"command": "head -5 Cargo.toml"})).await;
+        let head_result = tool
+            .execute(&ctx, &serde_json::json!({"command": "head -5 Cargo.toml"}))
+            .await;
         assert!(!head_result.is_err(), "head should be allowed");
 
-        let tail_result = tool.execute(&ctx, &serde_json::json!({"command": "tail -5 Cargo.toml"})).await;
+        let tail_result = tool
+            .execute(&ctx, &serde_json::json!({"command": "tail -5 Cargo.toml"}))
+            .await;
         assert!(!tail_result.is_err(), "tail should be allowed");
 
-        let wc_result = tool.execute(&ctx, &serde_json::json!({"command": "wc -l Cargo.toml"})).await;
+        let wc_result = tool
+            .execute(&ctx, &serde_json::json!({"command": "wc -l Cargo.toml"}))
+            .await;
         assert!(!wc_result.is_err(), "wc should be allowed");
     }
 
@@ -366,14 +397,22 @@ mod tests {
     #[test]
     fn check_chain_all_read_only() {
         let err = ReadOnlyBash::check_read_only("cd src && ls -la && cat Cargo.toml | head -5");
-        assert!(err.is_none(), "full read-only chain should be allowed: {:?}", err);
+        assert!(
+            err.is_none(),
+            "full read-only chain should be allowed: {:?}",
+            err
+        );
     }
 
     #[test]
     fn check_chain_with_write_blocked() {
         let err = ReadOnlyBash::check_read_only("cd src && touch foo.txt && cat foo.txt");
         assert!(err.is_some(), "touch should be blocked");
-        assert!(err.as_ref().unwrap().contains("touch"), "error should mention touch: {:?}", err);
+        assert!(
+            err.as_ref().unwrap().contains("touch"),
+            "error should mention touch: {:?}",
+            err
+        );
     }
 
     #[test]
@@ -387,7 +426,10 @@ mod tests {
         // 未闭合引号让 decompose 返回 None，回退到整串 starts_with
         // 使用 whitelist 之外的命令名验证回退路径
         let err = ReadOnlyBash::check_read_only("touch 'unclosed");
-        assert!(err.is_some(), "unclosed quote with blocked cmd should be blocked via fallback");
+        assert!(
+            err.is_some(),
+            "unclosed quote with blocked cmd should be blocked via fallback"
+        );
     }
 
     // ── 集成测试：链式命令通过 execute ──
@@ -398,7 +440,10 @@ mod tests {
         let tool = test_tool();
         let args = serde_json::json!({"command": "cd /tmp && cat Cargo.toml 2>/dev/null || echo 'no file'"});
         let result = tool.execute(&test_ctx(), &args).await;
-        assert!(!result.is_err(), "chain with echo fallback should be allowed");
+        assert!(
+            !result.is_err(),
+            "chain with echo fallback should be allowed"
+        );
     }
 
     #[tokio::test]
@@ -417,6 +462,9 @@ mod tests {
         assert!(result.is_err(), "chain with touch should be blocked");
         let err = result.output();
         assert!(err.contains("touch"), "error should mention touch: {err}");
-        assert!(err.contains("not in the read-only whitelist"), "error should indicate whitelist: {err}");
+        assert!(
+            err.contains("not in the read-only whitelist"),
+            "error should indicate whitelist: {err}"
+        );
     }
 }

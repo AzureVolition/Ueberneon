@@ -10,9 +10,8 @@ use crate::agent::manager::AgentManager;
 use crate::agent::{Tool, ToolContext, ToolResult};
 use crate::permission::Decision;
 
-
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use super::common::checkable_tool::CheckableTool;
@@ -40,9 +39,7 @@ impl Task {
 
         let enum_values: Vec<Value> = subagents
             .iter()
-            .map(|(name, desc)| {
-                json!({ "value": name, "description": desc })
-            })
+            .map(|(name, desc)| json!({ "value": name, "description": desc }))
             .collect();
 
         let enum_desc = if subagents.is_empty() {
@@ -73,7 +70,6 @@ impl Task {
 // ── ToolMeta 手动实现 ──
 
 impl llm::tool::ToolMeta for Task {
-
     fn name(&self) -> &str {
         "Task"
     }
@@ -140,10 +136,10 @@ impl Tool for Task {
         let mgr = AgentManager::get();
         let (sub_conv_id, handler) = mgr
             .init_or_get(
-                None,                              // 新建对话
+                None, // 新建对话
                 ctx.project_id.clone(),
                 Some(&row.id),
-                Some(&parent_id),                  // 设置父对话
+                Some(&parent_id), // 设置父对话
             )
             .map_err(|e| format!("创建子 Agent 失败: {e}"))?;
 
@@ -151,7 +147,10 @@ impl Tool for Task {
         let sub_agent = mgr
             .remove(&sub_conv_id)
             .ok_or_else(|| "子 Agent 未找到".to_string())?;
-        let cancel_token = ctx.cancel_token.clone().unwrap_or_else(CancellationToken::new);
+        let cancel_token = ctx
+            .cancel_token
+            .clone()
+            .unwrap_or_else(CancellationToken::new);
         let agent = crate::state_agent::Agent {
             running: crate::state_agent::Static,
             agent: sub_agent,
@@ -169,9 +168,9 @@ impl Tool for Task {
                 input,
                 cancel_token,
                 handler,
-                Box::new(crate::state_agent::ApprovalChain::new(vec![
-                    Box::new(crate::state_agent::AutoDenyApprovalGate),
-                ])),
+                Box::new(crate::state_agent::ApprovalChain::new(vec![Box::new(
+                    crate::state_agent::AutoDenyApprovalGate,
+                )])),
                 |_ev| {},
             )
             .await;

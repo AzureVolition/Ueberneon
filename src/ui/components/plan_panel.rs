@@ -1,12 +1,13 @@
 // ── Plan Panel — Floating collapsible task board ──
 // Renders from completion_queue, building tree via parent_idx.
 
-use dioxus::prelude::*;
 use crate::model::{Plan, PlanNode, PlanStatus, StepStatus};
+use dioxus::prelude::*;
 
 fn collect_entities(plan: &Plan) -> Vec<crate::model::Entity> {
     if !plan.completion_queue.is_empty() {
-        plan.completion_queue.iter()
+        plan.completion_queue
+            .iter()
             .flat_map(|qi| qi.batch.iter())
             .cloned()
             .collect()
@@ -17,13 +18,17 @@ fn collect_entities(plan: &Plan) -> Vec<crate::model::Entity> {
 }
 
 fn roots_from<'a>(entities: &'a [crate::model::Entity]) -> Vec<&'a crate::model::Entity> {
-    let mut roots: Vec<&crate::model::Entity> = entities.iter().filter(|e| e.parent_idx.is_none()).collect();
+    let mut roots: Vec<&crate::model::Entity> =
+        entities.iter().filter(|e| e.parent_idx.is_none()).collect();
     roots.sort_by_key(|e| e.idx);
     roots
 }
 
 fn children_of<'a>(entities: &'a [crate::model::Entity], pid: u8) -> Vec<&'a crate::model::Entity> {
-    let mut kids: Vec<&crate::model::Entity> = entities.iter().filter(|e| e.parent_idx == Some(pid)).collect();
+    let mut kids: Vec<&crate::model::Entity> = entities
+        .iter()
+        .filter(|e| e.parent_idx == Some(pid))
+        .collect();
     kids.sort_by_key(|e| e.idx);
     kids
 }
@@ -48,24 +53,39 @@ pub fn PlanPanel(
     // 有子任务（层级 plan）时统计子任务为步骤；无子任务（扁平 plan，全部为根）时统计全部
     let has_subtasks = all_entities.iter().any(|e| e.parent_idx.is_some());
     let tasks: Vec<&crate::model::Entity> = if has_subtasks {
-        all_entities.iter().filter(|e| e.parent_idx.is_some()).collect()
+        all_entities
+            .iter()
+            .filter(|e| e.parent_idx.is_some())
+            .collect()
     } else {
         all_entities.iter().collect()
     };
     let total = tasks.len() as u32;
-    let completed = tasks.iter().filter(|t| matches!(t.step_status, StepStatus::Completed)).count() as u32;
-    let progress_pct = if total > 0 { (completed as f64 / total as f64 * 100.0) as u32 } else { 0 };
+    let completed = tasks
+        .iter()
+        .filter(|t| matches!(t.step_status, StepStatus::Completed))
+        .count() as u32;
+    let progress_pct = if total > 0 {
+        (completed as f64 / total as f64 * 100.0) as u32
+    } else {
+        0
+    };
 
     let mut roots_done: Vec<&crate::model::Entity> = Vec::new();
     let mut roots_doing: Vec<&crate::model::Entity> = Vec::new();
     let mut roots_todo: Vec<&crate::model::Entity> = Vec::new();
     for r in &roots {
         let kids = children_of(&all_entities, r.idx);
-        let all_done = !kids.is_empty() && kids.iter().all(|k| k.step_status == StepStatus::Completed);
+        let all_done =
+            !kids.is_empty() && kids.iter().all(|k| k.step_status == StepStatus::Completed);
         let any_doing = kids.iter().any(|k| k.step_status == StepStatus::InProgress);
-        if all_done { roots_done.push(r); }
-        else if any_doing { roots_doing.push(r); }
-        else { roots_todo.push(r); }
+        if all_done {
+            roots_done.push(r);
+        } else if any_doing {
+            roots_doing.push(r);
+        } else {
+            roots_todo.push(r);
+        }
     }
 
     let doing_count = roots_doing.len();
@@ -93,7 +113,9 @@ pub fn PlanPanel(
             }
         }
     } else {
-        let current_task = tasks.iter().find(|t| matches!(t.step_status, StepStatus::InProgress));
+        let current_task = tasks
+            .iter()
+            .find(|t| matches!(t.step_status, StepStatus::InProgress));
 
         let (status_label, status_mod) = match plan_data.status {
             PlanStatus::NeedApproval => ("need approval", "pending"),
@@ -106,7 +128,11 @@ pub fn PlanPanel(
                 let dur = chrono::Utc::now() - t;
                 let mins = dur.num_minutes();
                 let secs = dur.num_seconds() % 60;
-                if mins > 0 { format!("{mins}m {secs}s") } else { format!("{secs}s") }
+                if mins > 0 {
+                    format!("{mins}m {secs}s")
+                } else {
+                    format!("{secs}s")
+                }
             }
             None => "—".to_string(),
         };

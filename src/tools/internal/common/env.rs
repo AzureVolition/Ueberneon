@@ -69,11 +69,7 @@ impl EnvBuilder {
     /// 确保从 GUI 启动的 agent 也能找到 Homebrew 等包管理器的命令。
     pub fn merge_login_path(&mut self) {
         if let Some(login_path) = Self::probe_login_path() {
-            let current_path = self
-                .vars
-                .get("PATH")
-                .cloned()
-                .unwrap_or_default();
+            let current_path = self.vars.get("PATH").cloned().unwrap_or_default();
 
             let merged = Self::merge_paths(&current_path, &login_path);
             self.vars.insert("PATH".into(), merged);

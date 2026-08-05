@@ -1,6 +1,6 @@
 // ── Plan CRUD ──
 
-use rusqlite::{params, Connection, Result};
+use rusqlite::{Connection, Result, params};
 
 /// 计划状态枚举（对应数据库 plans.status 的小写字符串）
 #[derive(Debug, Clone, PartialEq)]
@@ -69,7 +69,15 @@ pub fn create(
     conn.execute(
         "INSERT INTO plans (id, project_id, conversation_id, goal, description, status, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![id, project_id, conversation_id, goal, description, status.as_str(), now],
+        params![
+            id,
+            project_id,
+            conversation_id,
+            goal,
+            description,
+            status.as_str(),
+            now
+        ],
     )?;
     Ok(id)
 }
@@ -173,7 +181,15 @@ mod tests {
     #[test]
     fn test_create_and_get() {
         let conn = test_conn();
-        let id = create(&conn, "proj-1", "conv-1", "test goal", "", PlanStatus::InProgress).unwrap();
+        let id = create(
+            &conn,
+            "proj-1",
+            "conv-1",
+            "test goal",
+            "",
+            PlanStatus::InProgress,
+        )
+        .unwrap();
         assert!(id.starts_with("plan-"));
 
         let row = get(&conn, &id).unwrap().expect("should exist");

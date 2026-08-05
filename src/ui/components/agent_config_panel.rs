@@ -12,30 +12,38 @@ fn markdown_to_html(md: &str) -> String {
     pulldown_cmark::html::push_html(&mut html, parser);
     html
 }
-use crate::db::metadata::provider_instance::{self, ProviderInstanceRow};
 use crate::db::metadata::provider::{self, ProviderRow};
+use crate::db::metadata::provider_instance::{self, ProviderInstanceRow};
 use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 
 fn gen_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
     let pid = std::process::id();
     format!("acfg-{ts:x}-{pid:x}")
 }
 
-
 #[component]
-pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: String, on_change: EventHandler<()>) -> Element {
+pub fn AgentConfigPanel(
+    filter_agent_type: String,
+    readonly: bool,
+    edit_mode: String,
+    on_change: EventHandler<()>,
+) -> Element {
     // ── DB 数据 ──
     let mut configs: Signal<Vec<AgentConfigRow>> = use_signal(|| {
-        crate::db::with_db(|conn| agent_config::list_by_type(conn, &filter_agent_type).unwrap_or_default())
+        crate::db::with_db(|conn| {
+            agent_config::list_by_type(conn, &filter_agent_type).unwrap_or_default()
+        })
     });
     let instances: Signal<Vec<ProviderInstanceRow>> = use_signal(|| {
         crate::db::with_db(|conn| provider_instance::list_all(conn).unwrap_or_default())
     });
-    let providers_cache: Signal<Vec<ProviderRow>> = use_signal(|| {
-        crate::db::with_db(|conn| provider::list_all(conn).unwrap_or_default())
-    });
+    let providers_cache: Signal<Vec<ProviderRow>> =
+        use_signal(|| crate::db::with_db(|conn| provider::list_all(conn).unwrap_or_default()));
     let models_cache: Signal<std::collections::HashMap<String, Vec<String>>> = use_signal(|| {
         crate::db::with_db(|conn| {
             let mut map = std::collections::HashMap::new();
@@ -60,17 +68,18 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
     let mut edit_temperature = use_signal(|| 0.7f64);
     let mut edit_max_tokens = use_signal(|| String::new());
     let mut edit_context_window = use_signal(|| String::new());
-    let mut edit_tools: Signal<std::collections::HashSet<String>> = use_signal(std::collections::HashSet::new);
-    let mut edit_groups: Signal<std::collections::HashSet<String>> = use_signal(std::collections::HashSet::new);
+    let mut edit_tools: Signal<std::collections::HashSet<String>> =
+        use_signal(std::collections::HashSet::new);
+    let mut edit_groups: Signal<std::collections::HashSet<String>> =
+        use_signal(std::collections::HashSet::new);
     let mut show_group_selector = use_signal(|| false);
     let mut deleting = use_signal(|| Option::<String>::None);
     let mut viewing_prompt = use_signal(|| Option::<(String, String)>::None);
     let mut edit_error = use_signal(|| Option::<String>::None);
 
     // ── 加载工具组列表 ──
-    let all_groups: Vec<ToolGroupRow> = crate::db::with_db(|conn| {
-        tool::list_groups(conn).unwrap_or_default()
-    });
+    let all_groups: Vec<ToolGroupRow> =
+        crate::db::with_db(|conn| tool::list_groups(conn).unwrap_or_default());
 
     // ── 工具组 → 工具名查找缓存 ──
     let group_tools_cache: std::collections::HashMap<String, Vec<String>> = {
@@ -85,7 +94,9 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
         })
     };
 
-    let all_configs: Vec<AgentConfigRow> = configs.read().clone()
+    let all_configs: Vec<AgentConfigRow> = configs
+        .read()
+        .clone()
         .into_iter()
         .filter(|c| c.agent_type == filter_agent_type)
         .collect();
@@ -97,14 +108,18 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
     let provider_name_for_instance = |inst_id: &str| -> String {
         let inst = all_instances.iter().find(|i| i.id == inst_id);
         match inst {
-            Some(i) => all_providers.iter().find(|p| p.id == i.provider_id)
-                .map(|p| p.name.clone()).unwrap_or_else(|| i.provider_id.clone()),
+            Some(i) => all_providers
+                .iter()
+                .find(|p| p.id == i.provider_id)
+                .map(|p| p.name.clone())
+                .unwrap_or_else(|| i.provider_id.clone()),
             None => String::new(),
         }
     };
 
     let provider_id_for_instance = |inst_id: &str| -> String {
-        all_instances.iter()
+        all_instances
+            .iter()
             .find(|i| i.id == inst_id)
             .map(|i| i.provider_id.clone())
             .unwrap_or_default()
@@ -123,7 +138,8 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
                 edit_system_prompt.set(c.system_prompt.clone());
                 edit_temperature.set(c.temperature);
                 edit_max_tokens.set(c.max_tokens.map(|v| v.to_string()).unwrap_or_default());
-                edit_context_window.set(c.context_window.map(|v| v.to_string()).unwrap_or_default());
+                edit_context_window
+                    .set(c.context_window.map(|v| v.to_string()).unwrap_or_default());
                 // 解析 tools JSON
                 let tools_set: std::collections::HashSet<String> =
                     serde_json::from_str(&c.tools).unwrap_or_default();
@@ -158,7 +174,9 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
             let now = chrono::Local::now().to_rfc3339();
             let _id = editing_id.read().clone().unwrap_or_else(gen_id);
             let name = edit_name.read().trim().to_string();
-            if name.is_empty() { return; }
+            if name.is_empty() {
+                return;
+            }
             let model = edit_model.read().trim().to_string();
             if model.is_empty() {
                 err_sig.set(Some("model is required".into()));
@@ -170,26 +188,37 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
             let temperature = *edit_temperature.read();
             let max_tokens = {
                 let v = edit_max_tokens.read().trim().to_string();
-                if v.is_empty() { None } else { v.parse::<u32>().ok() }
+                if v.is_empty() {
+                    None
+                } else {
+                    v.parse::<u32>().ok()
+                }
             };
             let context_window = {
                 let v = edit_context_window.read().trim().to_string();
-                if v.is_empty() { None } else { v.parse::<u32>().ok() }
+                if v.is_empty() {
+                    None
+                } else {
+                    v.parse::<u32>().ok()
+                }
             };
             let tools = {
                 // 展开选中的工具组 → 工具名列表 → 去重
-                let mut tool_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+                let mut tool_set: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
                 let group_ids: Vec<String> = edit_groups.read().iter().cloned().collect();
                 crate::db::with_db(|conn| {
                     for gid in &group_ids {
-                        if let Ok(tools) = crate::db::metadata::tool::list_tools_in_group(conn, gid) {
+                        if let Ok(tools) = crate::db::metadata::tool::list_tools_in_group(conn, gid)
+                        {
                             for t in &tools {
                                 tool_set.insert(t.name.clone());
                             }
                         }
                     }
                 });
-                serde_json::to_string(&tool_set.into_iter().collect::<Vec<_>>()).unwrap_or_else(|_| "[]".to_string())
+                serde_json::to_string(&tool_set.into_iter().collect::<Vec<_>>())
+                    .unwrap_or_else(|_| "[]".to_string())
             };
             let is_new = editing_id.read().is_none();
 
@@ -198,19 +227,30 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
                 let inst_id = edit_provider_inst.read().clone();
                 crate::db::with_db(|conn| {
                     let inst = crate::db::metadata::provider_instance::get(conn, &inst_id)
-                        .ok().flatten();
+                        .ok()
+                        .flatten();
                     let (raw_key, prov_id) = match inst {
                         Some(ref i) => (i.api_key.clone(), i.provider_id.clone()),
                         None => (String::new(), String::new()),
                     };
                     let url = crate::db::metadata::provider::get(conn, &prov_id)
-                        .ok().flatten().map(|p| p.base_url).unwrap_or_default();
+                        .ok()
+                        .flatten()
+                        .map(|p| p.base_url)
+                        .unwrap_or_default();
                     (url, raw_key)
                 })
             };
 
             let row = AgentConfigRow {
-                id: if is_new { gen_id() } else { editing_id.read().clone().expect("editing_id should be Some when is_new is false") },
+                id: if is_new {
+                    gen_id()
+                } else {
+                    editing_id
+                        .read()
+                        .clone()
+                        .expect("editing_id should be Some when is_new is false")
+                },
                 name,
                 agent_type: filter_type.clone(),
                 provider_instance_id: provider_inst,
@@ -230,9 +270,13 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
             let row_id = row.id.clone();
             crate::db::with_db(|conn| {
                 if is_new {
-                    if let Err(e) = agent_config::insert(conn, &row) { tracing::error!(target:"db", error=%e, "insert agent config"); }
+                    if let Err(e) = agent_config::insert(conn, &row) {
+                        tracing::error!(target:"db", error=%e, "insert agent config");
+                    }
                 } else {
-                    if let Err(e) = agent_config::update(conn, &row) { tracing::error!(target:"db", error=%e, "update agent config"); }
+                    if let Err(e) = agent_config::update(conn, &row) {
+                        tracing::error!(target:"db", error=%e, "update agent config");
+                    }
                 }
                 let group_ids: Vec<String> = edit_groups.read().iter().cloned().collect();
                 if let Err(e) = agent_config::save_groups(conn, &row_id, &group_ids) {
@@ -254,7 +298,8 @@ pub fn AgentConfigPanel(filter_agent_type: String, readonly: bool, edit_mode: St
     let sel_grps = all_groups.clone();
     let sel_selected = edit_groups.read().clone();
     let sel_count = sel_selected.len();
-    let total_tools: usize = sel_selected.iter()
+    let total_tools: usize = sel_selected
+        .iter()
         .filter_map(|id| sel_gcache.get(id))
         .map(|v| v.len())
         .sum();

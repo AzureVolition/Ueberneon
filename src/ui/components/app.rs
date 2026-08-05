@@ -111,7 +111,12 @@ fn load_messages_from_db(conv_id: &str, md_to_html: fn(&str) -> String) -> Vec<C
                             continue;
                         }
                         if let Some(tc) = cm.segments.iter_mut().find_map(|s| match s {
-                            StreamSegment::ToolCall(rec) if rec.result.is_none() && tool_name.map_or(true, |n| rec.tool_name == n) => Some(rec),
+                            StreamSegment::ToolCall(rec)
+                                if rec.result.is_none()
+                                    && tool_name.map_or(true, |n| rec.tool_name == n) =>
+                            {
+                                Some(rec)
+                            }
                             _ => None,
                         }) {
                             tc.result = Some(content.clone());
@@ -180,12 +185,15 @@ fn ensure_conv_loaded(
     }
     // 从 DB 恢复该对话的累计 token 用量
     let (db_usage, db_requests, db_context_window) = crate::db::with_db(|conn| {
-        let usage = crate::db::metadata::conversation::get_usage(conn, conv_id)
-            .unwrap_or_default();
-        let reqs = crate::db::metadata::conversation::get_request_count(conn, conv_id)
-            .unwrap_or(0);
-        let cw = agent_config_id.as_ref()
-            .and_then(|acid| crate::db::metadata::agent_config::get(conn, acid).ok().flatten())
+        let usage = crate::db::metadata::conversation::get_usage(conn, conv_id).unwrap_or_default();
+        let reqs = crate::db::metadata::conversation::get_request_count(conn, conv_id).unwrap_or(0);
+        let cw = agent_config_id
+            .as_ref()
+            .and_then(|acid| {
+                crate::db::metadata::agent_config::get(conn, acid)
+                    .ok()
+                    .flatten()
+            })
             .and_then(|ac| ac.context_window)
             .unwrap_or(crate::model::DEFAULT_CONTEXT_WINDOW);
         (usage, reqs, cw)
@@ -241,7 +249,12 @@ pub fn App() -> Element {
 
     // ── Agent config 选择状态 ──
     let agent_configs: Signal<Vec<crate::db::metadata::agent_config::AgentConfigRow>> =
-        use_signal(|| load_agent_configs().into_iter().filter(|c| c.agent_type != "SubAgent").collect());
+        use_signal(|| {
+            load_agent_configs()
+                .into_iter()
+                .filter(|c| c.agent_type != "SubAgent")
+                .collect()
+        });
     let mut selected_agent_config_id = use_signal(|| {
         let default_id = crate::settings::get().general.default_agent_config_id;
         if !default_id.is_empty() {
@@ -260,8 +273,9 @@ pub fn App() -> Element {
 
     // 审批注入通道（按 conversation_id 键控，避免多对话并发串台）：
     // bridge 在工具执行阶段写入 mpsc Sender，审批卡按钮经它发送 (tool_call_id, approved)
-    let approval_tx: Signal<std::collections::HashMap<String, tokio::sync::mpsc::Sender<(String, bool)>>> =
-        use_signal(std::collections::HashMap::new);
+    let approval_tx: Signal<
+        std::collections::HashMap<String, tokio::sync::mpsc::Sender<(String, bool)>>,
+    > = use_signal(std::collections::HashMap::new);
     let mut error_signal = use_signal(ErrorSignal::new);
     use_context_provider(|| error_signal);
 
@@ -406,14 +420,18 @@ pub fn App() -> Element {
         active_conversation_id.set(conv_id.clone());
         agent_mode.set(
             crate::settings::get()
-                .general.default_agent_mode
+                .general
+                .default_agent_mode
                 .parse::<AgentMode>()
                 .unwrap_or_default(),
         );
         // 同步默认 agent config id（跟 agent_mode 一样从 settings 重新读取，
         // 避免用户在 settings 面板修改后不重启就不生效）
         {
-            let default_ac_id = crate::settings::get().general.default_agent_config_id.clone();
+            let default_ac_id = crate::settings::get()
+                .general
+                .default_agent_config_id
+                .clone();
             if !default_ac_id.is_empty() {
                 let exists = crate::db::with_db(|conn| {
                     crate::db::metadata::agent_config::get(conn, &default_ac_id)
@@ -616,11 +634,30 @@ pub fn App() -> Element {
                 class: "main-area",
                 match sidebar_view() {
                     SidebarView::Settings(ref tab) => {
+                        let project_path = crate::db::with_db(|conn| {
+                            let pid = active_project_id.read().clone();
+                            pid.as_deref()
+                                .and_then(|p| {
+                                    crate::db::metadata::project::get(conn, p).ok().flatten()
+                                })
+                                .map(|r| r.path)
+                                .unwrap_or_else(|| {
+                                    crate::db::metadata::project::get(
+                                        conn,
+                                        crate::db::DEFAULT_PROJECT_ID,
+                                    )
+                                    .ok()
+                                    .flatten()
+                                    .map(|r| r.path)
+                                    .unwrap_or_default()
+                                })
+                        });
                         match tab {
-                            SettingsTab::Providers | SettingsTab::General | SettingsTab::Appearance | SettingsTab::Sql | SettingsTab::Tools => {
+                            SettingsTab::Providers | SettingsTab::General | SettingsTab::Appearance | SettingsTab::Sql | SettingsTab::Tools | SettingsTab::Skills => {
                                 rsx! {
                                     SettingsPanel {
                                         tab: tab.clone(),
+                                        project_path: project_path.clone(),
                                         on_change: {
                                             let mut ac = agent_configs;
                                             let mut sel_id = selected_agent_config_id;
@@ -646,6 +683,7 @@ pub fn App() -> Element {
                                 rsx! {
                                     SettingsPanel {
                                         tab: tab.clone(),
+                                        project_path: project_path.clone(),
                                         on_change: {
                                             let mut ac = agent_configs;
                                             let mut sel_id = selected_agent_config_id;

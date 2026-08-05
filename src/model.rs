@@ -130,8 +130,14 @@ pub fn title_from_messages(messages: &[ChatMessage]) -> String {
 
 /// 计算对话的轮数（user + assistant 消息对数）
 pub fn conversation_rounds(messages: &[ChatMessage]) -> usize {
-    let user_count = messages.iter().filter(|m| matches!(m.role, Role::User)).count();
-    let assistant_count = messages.iter().filter(|m| matches!(m.role, Role::Assistant)).count();
+    let user_count = messages
+        .iter()
+        .filter(|m| matches!(m.role, Role::User))
+        .count();
+    let assistant_count = messages
+        .iter()
+        .filter(|m| matches!(m.role, Role::Assistant))
+        .count();
     user_count.min(assistant_count)
 }
 
@@ -209,7 +215,11 @@ impl PlanNode {
         let mut sorted = nodes.to_vec();
         sorted.sort_by_key(|n| n.idx);
         for node in &sorted {
-            let pid = if node.children.is_empty() { parent_idx } else { None };
+            let pid = if node.children.is_empty() {
+                parent_idx
+            } else {
+                None
+            };
             result.push(Entity {
                 db_id: None,
                 idx: node.idx,
@@ -357,7 +367,7 @@ impl From<DbTaskStatus> for StepStatus {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema,PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub enum Difficulty {
     Easy,
     Medium,
@@ -394,7 +404,11 @@ mod tests {
         let mut sorted = nodes.to_vec();
         sorted.sort_by_key(|n| n.idx);
         for node in &sorted {
-            let pid = if node.children.is_empty() { parent_idx } else { None };
+            let pid = if node.children.is_empty() {
+                parent_idx
+            } else {
+                None
+            };
             result.push((pid, node.idx, node.description.clone()));
             if !node.children.is_empty() {
                 result.append(&mut flatten_tree(&node.children, Some(node.idx)));
@@ -405,7 +419,8 @@ mod tests {
     }
 
     fn entities_sorted(queue: &[QueueItem]) -> Vec<(Option<u8>, u8, String)> {
-        let mut items: Vec<(Option<u8>, u8, String)> = queue.iter()
+        let mut items: Vec<(Option<u8>, u8, String)> = queue
+            .iter()
             .flat_map(|qi| qi.batch.iter())
             .map(|e| (e.parent_idx, e.idx, e.description.clone()))
             .collect();
@@ -417,18 +432,30 @@ mod tests {
     fn test_tree_queue_roundtrip_with_phases() {
         let tree = vec![
             PlanNode {
-                idx: 1, description: "Phase 1".into(),
+                idx: 1,
+                description: "Phase 1".into(),
                 children: vec![
-                    PlanNode { idx: 1, description: "Task 1.1".into(), ..Default::default() },
-                    PlanNode { idx: 2, description: "Task 1.2".into(), ..Default::default() },
+                    PlanNode {
+                        idx: 1,
+                        description: "Task 1.1".into(),
+                        ..Default::default()
+                    },
+                    PlanNode {
+                        idx: 2,
+                        description: "Task 1.2".into(),
+                        ..Default::default()
+                    },
                 ],
                 ..Default::default()
             },
             PlanNode {
-                idx: 2, description: "Phase 2".into(),
-                children: vec![
-                    PlanNode { idx: 1, description: "Task 2.1".into(), ..Default::default() },
-                ],
+                idx: 2,
+                description: "Phase 2".into(),
+                children: vec![PlanNode {
+                    idx: 1,
+                    description: "Task 2.1".into(),
+                    ..Default::default()
+                }],
                 ..Default::default()
             },
         ];
@@ -444,9 +471,21 @@ mod tests {
     #[test]
     fn test_tree_queue_roundtrip_pure_tasks() {
         let tree = vec![
-            PlanNode { idx: 1, description: "Task A".into(), ..Default::default() },
-            PlanNode { idx: 2, description: "Task B".into(), ..Default::default() },
-            PlanNode { idx: 3, description: "Task C".into(), ..Default::default() },
+            PlanNode {
+                idx: 1,
+                description: "Task A".into(),
+                ..Default::default()
+            },
+            PlanNode {
+                idx: 2,
+                description: "Task B".into(),
+                ..Default::default()
+            },
+            PlanNode {
+                idx: 3,
+                description: "Task C".into(),
+                ..Default::default()
+            },
         ];
         let original = flatten_tree(&tree, None);
         let queue = PlanNode::build_queue(&tree, None);
@@ -459,16 +498,23 @@ mod tests {
 
     #[test]
     fn test_queue_phase_appended_to_last_child() {
-        let tree = vec![
-            PlanNode {
-                idx: 1, description: "Phase".into(),
-                children: vec![
-                    PlanNode { idx: 1, description: "Task 1".into(), ..Default::default() },
-                    PlanNode { idx: 2, description: "Task 2".into(), ..Default::default() },
-                ],
-                ..Default::default()
-            },
-        ];
+        let tree = vec![PlanNode {
+            idx: 1,
+            description: "Phase".into(),
+            children: vec![
+                PlanNode {
+                    idx: 1,
+                    description: "Task 1".into(),
+                    ..Default::default()
+                },
+                PlanNode {
+                    idx: 2,
+                    description: "Task 2".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }];
         let queue = PlanNode::build_queue(&tree, None);
         assert_eq!(queue.len(), 2);
         assert_eq!(queue[0].batch.len(), 1);
@@ -494,7 +540,11 @@ mod tests {
         let plan: Plan = serde_json::from_value(json).expect("should parse");
         assert_eq!(plan.children.len(), 1, "should have 1 phase");
         assert_eq!(plan.children[0].idx, 1);
-        assert_eq!(plan.children[0].children.len(), 1, "phase should have 1 task");
+        assert_eq!(
+            plan.children[0].children.len(),
+            1,
+            "phase should have 1 task"
+        );
         assert_eq!(plan.children[0].children[0].idx, 1);
         assert_eq!(plan.children[0].children[0].description, "Task 1");
     }
@@ -520,18 +570,30 @@ mod tests {
         // 验证：审批阶段用 to_entities 和 approve 后用队列展平，结果一致
         let tree = vec![
             PlanNode {
-                idx: 1, description: "Phase 1".into(),
+                idx: 1,
+                description: "Phase 1".into(),
                 children: vec![
-                    PlanNode { idx: 1, description: "Task 1.1".into(), ..Default::default() },
-                    PlanNode { idx: 2, description: "Task 1.2".into(), ..Default::default() },
+                    PlanNode {
+                        idx: 1,
+                        description: "Task 1.1".into(),
+                        ..Default::default()
+                    },
+                    PlanNode {
+                        idx: 2,
+                        description: "Task 1.2".into(),
+                        ..Default::default()
+                    },
                 ],
                 ..Default::default()
             },
             PlanNode {
-                idx: 2, description: "Phase 2".into(),
-                children: vec![
-                    PlanNode { idx: 1, description: "Task 2.1".into(), ..Default::default() },
-                ],
+                idx: 2,
+                description: "Phase 2".into(),
+                children: vec![PlanNode {
+                    idx: 1,
+                    description: "Task 2.1".into(),
+                    ..Default::default()
+                }],
                 ..Default::default()
             },
         ];
@@ -541,7 +603,8 @@ mod tests {
 
         // approve 后：build_queue → 展平
         let queue = PlanNode::build_queue(&tree, None);
-        let from_queue: Vec<Entity> = queue.iter()
+        let from_queue: Vec<Entity> = queue
+            .iter()
             .flat_map(|qi| qi.batch.iter())
             .cloned()
             .collect();
@@ -553,8 +616,13 @@ mod tests {
         let mut sorted_queue = from_queue;
         sorted_queue.sort_by_key(|e| (e.parent_idx, e.idx));
 
-        assert_eq!(sorted_tree.len(), sorted_queue.len(),
-            "entity count: tree={} queue={}", sorted_tree.len(), sorted_queue.len());
+        assert_eq!(
+            sorted_tree.len(),
+            sorted_queue.len(),
+            "entity count: tree={} queue={}",
+            sorted_tree.len(),
+            sorted_queue.len()
+        );
         for (i, (t, q)) in sorted_tree.iter().zip(sorted_queue.iter()).enumerate() {
             assert_eq!(t.parent_idx, q.parent_idx, "row {i}: parent_idx");
             assert_eq!(t.idx, q.idx, "row {i}: idx");
@@ -565,13 +633,22 @@ mod tests {
     #[test]
     fn test_to_entities_pure_tasks() {
         let tree = vec![
-            PlanNode { idx: 1, description: "Task A".into(), ..Default::default() },
-            PlanNode { idx: 2, description: "Task B".into(), ..Default::default() },
+            PlanNode {
+                idx: 1,
+                description: "Task A".into(),
+                ..Default::default()
+            },
+            PlanNode {
+                idx: 2,
+                description: "Task B".into(),
+                ..Default::default()
+            },
         ];
 
         let from_tree = PlanNode::to_entities(&tree, None);
         let queue = PlanNode::build_queue(&tree, None);
-        let from_queue: Vec<Entity> = queue.iter()
+        let from_queue: Vec<Entity> = queue
+            .iter()
             .flat_map(|qi| qi.batch.iter())
             .cloned()
             .collect();

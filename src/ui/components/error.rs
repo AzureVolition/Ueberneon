@@ -219,7 +219,11 @@ pub struct ErrorSignal {
 
 impl ErrorSignal {
     pub fn new() -> Self {
-        Self { modal: None, banner: None, toasts: Vec::new() }
+        Self {
+            modal: None,
+            banner: None,
+            toasts: Vec::new(),
+        }
     }
 
     pub fn push(&mut self, error: ErrorInfo) {
@@ -230,8 +234,12 @@ impl ErrorSignal {
         }
     }
 
-    pub fn dismiss_modal(&mut self) { self.modal = None; }
-    pub fn dismiss_banner(&mut self) { self.banner = None; }
+    pub fn dismiss_modal(&mut self) {
+        self.modal = None;
+    }
+    pub fn dismiss_banner(&mut self) {
+        self.banner = None;
+    }
     pub fn dismiss_toast(&mut self, index: usize) {
         if index < self.toasts.len() {
             self.toasts.remove(index);

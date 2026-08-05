@@ -20,7 +20,11 @@ impl AgentCore {
     }
 
     /// 将单条 llm::Message 持久化到 messages 表（不删旧消息）。
-    pub fn save_message(&self, conn: &rusqlite::Connection, msg: &llm::Message) -> rusqlite::Result<()> {
+    pub fn save_message(
+        &self,
+        conn: &rusqlite::Connection,
+        msg: &llm::Message,
+    ) -> rusqlite::Result<()> {
         use crate::db::metadata::message;
         let row = message::MessageRow::from_llm(msg, &self.conversation_id);
         message::create(conn, &self.conversation_id, &row)?;
@@ -67,7 +71,9 @@ impl AgentCore {
         match crate::db::get_db().lock() {
             Ok(guard) => {
                 if let Err(e) = crate::db::metadata::conversation::accumulate_usage(
-                    &guard, &self.conversation_id, usage,
+                    &guard,
+                    &self.conversation_id,
+                    usage,
                 ) {
                     tracing::warn!(target: "dashboard", error = %e, "accumulate_usage failed");
                 }

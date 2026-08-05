@@ -62,8 +62,16 @@ pub fn build_diff(path: &str, old_text: &str, new_text: &str, kind: Kind) -> Fil
         // 头部
         let path_str = if path.is_empty() { "unknown" } else { path };
         match kind {
-            Kind::Create => diff_lines.push(format!("--- /dev/null\n+++ b/{}\n@@ -0,0 +1,{} @@", path_str, new_text.lines().count())),
-            Kind::Delete => diff_lines.push(format!("--- a/{}\n+++ /dev/null\n@@ -1,{} +0,0 @@", path_str, old_text.lines().count())),
+            Kind::Create => diff_lines.push(format!(
+                "--- /dev/null\n+++ b/{}\n@@ -0,0 +1,{} @@",
+                path_str,
+                new_text.lines().count()
+            )),
+            Kind::Delete => diff_lines.push(format!(
+                "--- a/{}\n+++ /dev/null\n@@ -1,{} +0,0 @@",
+                path_str,
+                old_text.lines().count()
+            )),
             Kind::Modify => {
                 let old_lines = old_text.lines().count();
                 let new_lines = new_text.lines().count();

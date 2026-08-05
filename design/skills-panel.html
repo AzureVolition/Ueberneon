@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>ueberneon · skills panel — design</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif&family=Geist:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../tokens.css">
+  <link rel="stylesheet" href="skills-panel.css">
+</head>
+<body>
+  <div class="app">
+
+    <!-- ── App shell · N3 side-rail ── -->
+    <aside class="sidebar" aria-label="app navigation">
+      <header class="sidebar__head">
+        <h2 class="sidebar__brand">ueberneon</h2>
+        <span class="mono-label">desktop · 0.7</span>
+      </header>
+
+      <div class="sidebar__section">
+        <span class="mono-label">projects /</span>
+        <button class="project-item is-active" aria-current="page">
+          <span class="project-dot" aria-hidden="true"></span>
+          <span class="name">ueberneon</span>
+        </button>
+      </div>
+
+      <div class="sidebar__section sidebar__section--grow">
+        <span class="mono-label">conversations</span>
+        <button class="conv-item">
+          <span class="conv-item__title">fix permission gate</span>
+          <span class="conv-meta">3 · 2m</span>
+        </button>
+        <button class="conv-item">
+          <span class="conv-item__title">refactor hooks to state machine</span>
+          <span class="conv-meta">14 · 1h</span>
+        </button>
+        <button class="conv-item">
+          <span class="conv-item__title">sql panel export</span>
+          <span class="conv-meta">6 · yesterday</span>
+        </button>
+        <button class="conv-item">
+          <span class="conv-item__title">agent config presets</span>
+          <span class="conv-meta">9 · tue</span>
+        </button>
+      </div>
+
+      <div class="sidebar__foot">
+        <button class="nav-link">settings</button>
+        <button class="nav-link is-active" aria-current="page">skills</button>
+        <div class="sidebar__status">
+          <span class="status-dot status-dot--ready" aria-hidden="true"></span>
+          <span class="mono-label">shell · ready</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ── Skills view ── -->
+    <main class="main">
+
+      <header class="page-head reveal" style="--i: 0">
+        <div class="page-head__text">
+          <p class="mono-label">ueberneon / capabilities</p>
+          <h1 class="page-head__title">skills that <em>wire</em> into the loop.</h1>
+          <p class="page-head__lede">browse, enable, and install reusable capabilities for the agent. changes apply to the next task.</p>
+        </div>
+        <div class="page-head__actions">
+          <button class="searchpill" id="searchpill" aria-label="search skills (command k)">
+            <span class="searchpill__ico" aria-hidden="true"></span>
+            <span class="searchpill__text">search skills</span>
+            <span class="searchpill__kbd"><kbd>⌘</kbd><kbd>K</kbd></span>
+          </button>
+          <button class="btn btn--accent" id="install-btn">
+            <span class="btn__label">install skill</span>
+          </button>
+        </div>
+      </header>
+
+      <section class="toolbar reveal" style="--i: 1" aria-label="skill filters">
+        <div class="chip-row chip-row--status" role="group" aria-label="filter by status">
+          <button class="chip is-active" data-status="all" aria-pressed="true">all · <span data-count="all">0</span></button>
+          <button class="chip" data-status="installed" aria-pressed="false">installed · <span data-count="installed">0</span></button>
+          <button class="chip" data-status="available" aria-pressed="false">available · <span data-count="available">0</span></button>
+          <button class="chip" data-status="update" aria-pressed="false">needs update · <span data-count="update">0</span></button>
+          <button class="chip" data-status="disabled" aria-pressed="false">disabled · <span data-count="disabled">0</span></button>
+        </div>
+        <div class="chip-row chip-row--category" role="group" aria-label="filter by category">
+          <button class="chip chip--quiet is-active" data-cat="all" aria-pressed="true">all categories</button>
+          <button class="chip chip--quiet" data-cat="design" aria-pressed="false">design</button>
+          <button class="chip chip--quiet" data-cat="documents" aria-pressed="false">documents</button>
+          <button class="chip chip--quiet" data-cat="data" aria-pressed="false">data</button>
+          <button class="chip chip--quiet" data-cat="comms" aria-pressed="false">comms</button>
+          <button class="chip chip--quiet" data-cat="automation" aria-pressed="false">automation</button>
+        </div>
+      </section>
+
+      <section class="workspace reveal" style="--i: 2">
+
+        <!-- index -->
+        <div class="index" aria-label="skill index">
+          <div class="index__head">
+            <span class="mono-label" id="index-label">installed · <span id="installed-count">0</span></span>
+            <button class="link-btn" id="clear-filters" hidden>clear filters</button>
+          </div>
+          <ul class="skill-list" id="skill-list"></ul>
+          <div class="empty" id="empty" hidden>
+            <p class="empty__title">no skills match.</p>
+            <p class="empty__body">try another filter, or widen the search.</p>
+            <button class="btn btn--ghost" id="empty-clear">clear filters</button>
+          </div>
+        </div>
+
+        <!-- detail -->
+        <aside class="detail" id="detail" aria-live="polite"></aside>
+      </section>
+
+      <footer class="status-strip reveal" style="--i: 3" aria-label="registry readout">
+        <span class="status-strip__label mono-label" id="meter-active">active · 0</span>
+        <div class="status-strip__bars" id="meter" aria-hidden="true"></div>
+        <span class="status-strip__label mono-label" id="meter-updates">updates · 0</span>
+      </footer>
+
+      <p class="demo-note">design prototype — demo data. wire counts to the real skill registry before shipping.</p>
+    </main>
+  </div>
+
+  <!-- ── N13 command palette ── -->
+  <dialog id="cmdk" class="cmdk">
+    <div class="cmdk__field">
+      <span class="cmdk__ico" aria-hidden="true"></span>
+      <input id="cmdk-input" placeholder="search skills, actions…" autocomplete="off" aria-label="search skills and actions">
+      <kbd>esc</kbd>
+    </div>
+    <div class="cmdk__results" id="cmdk-results" role="listbox" aria-label="results"></div>
+    <div class="cmdk__foot">
+      <span><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
+      <span><kbd>↵</kbd> open</span>
+      <span><kbd>esc</kbd> close</span>
+    </div>
+  </dialog>
+
+  <!-- ── install dialog ── -->
+  <dialog id="install-dialog" class="modal">
+    <form id="install-form" novalidate>
+      <p class="mono-label">install skill</p>
+      <h2 class="modal__title">install from a repo or path.</h2>
+      <label class="field-label" for="install-input">source</label>
+      <div class="field" id="install-field">
+        <input id="install-input" name="source" placeholder="github.com/user/skill-repo" autocomplete="off" spellcheck="false"
+               aria-describedby="install-helper" aria-invalid="false">
+        <span class="field__slot" aria-hidden="true"></span>
+      </div>
+      <p class="field__helper" id="install-helper">a git url or local path. must contain a skill manifest.</p>
+      <p class="field__error" id="install-error" hidden>the source is empty. paste a git url or local path.</p>
+      <div class="modal__actions">
+        <button class="btn btn--ghost" id="install-cancel" value="cancel">cancel</button>
+        <button class="btn btn--accent" id="install-submit" value="default">
+          <span class="btn__label">install</span>
+        </button>
+      </div>
+    </form>
+  </dialog>
+
+  <p class="sr-only" id="live-region" aria-live="polite"></p>
+
+  <script src="skills-panel.js"></script>
+</body>
+</html>

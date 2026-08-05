@@ -4,20 +4,20 @@
 // 自动跳过 .gitignore 匹配的文件和目录，以及二进制文件。
 // 支持编码检测（UTF-8/16/GB18030），最多返回 200 条匹配。
 
-use std::path::PathBuf;
 use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::agent::{GenericsTool, ToolContext, ToolResult};
 #[cfg(test)]
 use crate::agent::{ActionMode, AgentHandler, Tool, ToolResultExt};
-use ueberneon_macros::ToolMetaImpl;
-use serde::Deserialize;
+use crate::agent::{GenericsTool, ToolContext, ToolResult};
 use schemars::JsonSchema;
+use serde::Deserialize;
+use ueberneon_macros::ToolMetaImpl;
 
 use super::common::encoding;
-use crate::tools::internal::common::checkable_tool::CheckableTool;
 use crate::permission::Decision;
+use crate::tools::internal::common::checkable_tool::CheckableTool;
 
 // ── 常量 ─────────────────────────────────────────────────────────────────────
 
@@ -48,33 +48,50 @@ pub struct GrepParams {
     path: String,
     /// 超时时间（秒）。
     #[serde(default)]
-    #[schemars(range(min = 1), description = "Abort after this many seconds (default 30, max 300)")]
+    #[schemars(
+        range(min = 1),
+        description = "Abort after this many seconds (default 30, max 300)"
+    )]
     timeout_seconds: Option<u64>,
 }
 
 impl Grep {
     pub fn new(work_dir: PathBuf) -> Self {
-        Self {
-            work_dir,
-        }
+        Self { work_dir }
     }
 
     fn resolve_path(&self, path: &str) -> Result<PathBuf, String> {
         let p = Path::new(path);
-        let abs = if p.is_relative() { self.work_dir.join(p) } else { p.to_path_buf() };
+        let abs = if p.is_relative() {
+            self.work_dir.join(p)
+        } else {
+            p.to_path_buf()
+        };
         if !abs.starts_with(&self.work_dir) {
-            return Err(format!("path '{}' is outside workspace '{}'", abs.display(), self.work_dir.display()));
+            return Err(format!(
+                "path '{}' is outside workspace '{}'",
+                abs.display(),
+                self.work_dir.display()
+            ));
         }
         Ok(abs)
     }
 
-    async fn do_execute(&self, _ctx: &ToolContext, args: &GrepParams) -> Result<ToolResult, String> {
+    async fn do_execute(
+        &self,
+        _ctx: &ToolContext,
+        args: &GrepParams,
+    ) -> Result<ToolResult, String> {
         // 1. 解析参数
         let pattern_str = match args.pattern.as_str() {
             p if !p.is_empty() => p,
             _ => return Err("grep: missing required argument 'pattern'".into()),
         };
-        let path_str: &str = if args.path.is_empty() { "." } else { &args.path };
+        let path_str: &str = if args.path.is_empty() {
+            "."
+        } else {
+            &args.path
+        };
 
         let path_buf = self.resolve_path(path_str)?;
         let timeout_secs = args.timeout_seconds.map(|v| v as u64).unwrap_or(30);
@@ -100,9 +117,7 @@ impl Grep {
         let re_clone = re.clone();
         let path_clone = path_buf.clone();
 
-        let result = tokio::task::spawn_blocking(move || {
-            run_search(&re_clone, &path_clone)
-        });
+        let result = tokio::task::spawn_blocking(move || run_search(&re_clone, &path_clone));
 
         let (matches, timed_out) = match tokio::time::timeout(timeout, result).await {
             Ok(Ok(out)) => (out, false),
@@ -116,13 +131,19 @@ impl Grep {
         };
 
         // 6. 格式化输出
-        Ok(ToolResult::ok(format_grep_output(&matches, timed_out, timeout)))
+        Ok(ToolResult::ok(format_grep_output(
+            &matches, timed_out, timeout,
+        )))
     }
 }
 
 #[async_trait::async_trait]
 impl GenericsTool for Grep {
-    async fn generics_execute(&self, ctx: &ToolContext, args: &GrepParams) -> Result<ToolResult, String> {
+    async fn generics_execute(
+        &self,
+        ctx: &ToolContext,
+        args: &GrepParams,
+    ) -> Result<ToolResult, String> {
         self.do_execute(ctx, args).await
     }
 }
@@ -193,7 +214,9 @@ fn search_file(path: &Path, re: &regex::Regex, results: &mut Vec<MatchLine>) {
                 let (detected, _) = encoding::detect(&data);
                 matches!(
                     detected,
-                    encoding::Kind::UTF16LENoBOM | encoding::Kind::UTF16BE | encoding::Kind::UTF16BENoBOM
+                    encoding::Kind::UTF16LENoBOM
+                        | encoding::Kind::UTF16BE
+                        | encoding::Kind::UTF16BENoBOM
                 )
             } else {
                 true
@@ -252,10 +275,7 @@ fn format_grep_output(matches: &[MatchLine], timed_out: bool, timeout: Duration)
     }
 
     if matches.len() >= GREP_MAX_MATCHES {
-        output.push_str(&format!(
-            "... (truncated at {} matches)",
-            GREP_MAX_MATCHES
-        ));
+        output.push_str(&format!("... (truncated at {} matches)", GREP_MAX_MATCHES));
     } else if timed_out {
         output.push_str(&format!(
             "... (timed out after {}s; results incomplete — narrow the path/pattern or raise timeout_seconds)",
@@ -273,22 +293,19 @@ fn format_grep_output(matches: &[MatchLine], timed_out: bool, timeout: Duration)
 
 // ── 测试 ─────────────────────────────────────────────────────────────────────
 
-
 #[async_trait::async_trait]
 impl CheckableTool for Grep {
     fn check(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> Decision {
         Decision::Allow
     }
-
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
-    
+
     use std::sync::atomic::{AtomicU64, Ordering};
-    
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -313,7 +330,7 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
-        cancel_token: None,
+            cancel_token: None,
         }
     }
 
@@ -331,9 +348,21 @@ mod tests {
         });
         let result = tool.execute(&test_ctx(), &args).await;
         assert!(result.error().is_none(), "error: {:?}", result.error());
-        assert!(result.output().contains("hello world"), "output: {}", result.output());
-        assert!(result.output().contains("baz hello"), "output: {}", result.output());
-        assert!(!result.output().contains("foo bar"), "output: {}", result.output());
+        assert!(
+            result.output().contains("hello world"),
+            "output: {}",
+            result.output()
+        );
+        assert!(
+            result.output().contains("baz hello"),
+            "output: {}",
+            result.output()
+        );
+        assert!(
+            !result.output().contains("foo bar"),
+            "output: {}",
+            result.output()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -350,7 +379,11 @@ mod tests {
         });
         let result = tool.execute(&test_ctx(), &args).await;
         assert!(result.error().is_none());
-        assert!(result.output().contains("no matches"), "output: {}", result.output());
+        assert!(
+            result.output().contains("no matches"),
+            "output: {}",
+            result.output()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -386,7 +419,11 @@ mod tests {
         let result = tool.execute(&test_ctx(), &args).await;
         assert!(result.error().is_none());
         // 应该匹配两行
-        let count = result.output().lines().filter(|l| l.contains("test.txt")).count();
+        let count = result
+            .output()
+            .lines()
+            .filter(|l| l.contains("test.txt"))
+            .count();
         assert_eq!(count, 2, "output: {}", result.output());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -419,9 +456,17 @@ mod tests {
         let result = tool.execute(&test_ctx(), &args).await;
         assert!(result.error().is_none());
         // 应该只匹配到 text.txt，不匹配 binary.bin
-        assert!(result.output().contains("text.txt"), "output: {}", result.output());
+        assert!(
+            result.output().contains("text.txt"),
+            "output: {}",
+            result.output()
+        );
         // 不能包含 binary.bin 的匹配
-        assert!(!result.output().contains("binary.bin"), "output: {}", result.output());
+        assert!(
+            !result.output().contains("binary.bin"),
+            "output: {}",
+            result.output()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -443,7 +488,11 @@ mod tests {
         });
         let result = tool.execute(&test_ctx(), &args).await;
         assert!(result.error().is_none(), "error: {:?}", result.error());
-        assert!(result.output().contains("hello"), "output: {}", result.output());
+        assert!(
+            result.output().contains("hello"),
+            "output: {}",
+            result.output()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -474,8 +523,16 @@ mod tests {
     #[test]
     fn format_output_with_matches() {
         let matches = vec![
-            MatchLine { path: "a.txt".into(), line_number: 1, text: "hello".into() },
-            MatchLine { path: "b.txt".into(), line_number: 3, text: "world".into() },
+            MatchLine {
+                path: "a.txt".into(),
+                line_number: 1,
+                text: "hello".into(),
+            },
+            MatchLine {
+                path: "b.txt".into(),
+                line_number: 3,
+                text: "world".into(),
+            },
         ];
         let result = format_grep_output(&matches, false, Duration::from_secs(30));
         assert!(result.contains("a.txt:1:hello"));
@@ -497,9 +554,21 @@ mod tests {
         });
         let result = tool.execute(&test_ctx(), &args).await;
         assert!(result.error().is_none());
-        assert!(result.output().contains("a.rs"), "output: {}", result.output());
-        assert!(result.output().contains("b.rs"), "output: {}", result.output());
-        assert!(!result.output().contains("c.rs"), "output: {}", result.output());
+        assert!(
+            result.output().contains("a.rs"),
+            "output: {}",
+            result.output()
+        );
+        assert!(
+            result.output().contains("b.rs"),
+            "output: {}",
+            result.output()
+        );
+        assert!(
+            !result.output().contains("c.rs"),
+            "output: {}",
+            result.output()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

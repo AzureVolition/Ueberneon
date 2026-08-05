@@ -3,23 +3,24 @@
 // 使用正则表达式从源文件中提取函数、结构体、类等符号定义。
 // 支持 outline（列出路径下所有符号）和 search（按名搜索）两种模式。
 
-use std::path::PathBuf;
 use std::path::Path;
+use std::path::PathBuf;
 
-use crate::agent::{GenericsTool, ToolContext, ToolResult};
 #[cfg(test)]
-use crate::agent::{AgentHandler, ActionMode, Tool, ToolResultExt};
-use ueberneon_macros::ToolMetaImpl;
-use regex::Regex;
-use std::sync::LazyLock;
-use serde::Deserialize;
-use schemars::JsonSchema;
+use crate::agent::{ActionMode, AgentHandler, Tool, ToolResultExt};
+use crate::agent::{GenericsTool, ToolContext, ToolResult};
 use crate::tools::internal::common::checkable_tool::CheckableTool;
+use regex::Regex;
+use schemars::JsonSchema;
+use serde::Deserialize;
+use std::sync::LazyLock;
+use ueberneon_macros::ToolMetaImpl;
 // ── Lazy-compiled regexes (compiled once, reused across calls) ──────────
 
 macro_rules! lazy_regex {
     ($name:ident, $pat:literal) => {
-        static $name: LazyLock<Regex> = LazyLock::new(|| Regex::new($pat).expect("invalid hardcoded regex"));
+        static $name: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new($pat).expect("invalid hardcoded regex"));
     };
 }
 
@@ -29,8 +30,14 @@ lazy_regex!(RE_TRAILING, r"\s*$");
 
 // Rust
 lazy_regex!(RUST_RE_FN, r"^\s*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)");
-lazy_regex!(RUST_RE_ITEM, r"^\s*(?:pub\s+)?(struct|enum|trait|union|type|mod)\s+(\w+)");
-lazy_regex!(RUST_RE_IMPL, r"^\s*(?:pub\s+)?(?:unsafe\s+)?impl\s*(?:<[^>]+>)?\s+(\w+(?:\s+for\s+\w+)?)");
+lazy_regex!(
+    RUST_RE_ITEM,
+    r"^\s*(?:pub\s+)?(struct|enum|trait|union|type|mod)\s+(\w+)"
+);
+lazy_regex!(
+    RUST_RE_IMPL,
+    r"^\s*(?:pub\s+)?(?:unsafe\s+)?impl\s*(?:<[^>]+>)?\s+(\w+(?:\s+for\s+\w+)?)"
+);
 lazy_regex!(RUST_RE_CONST, r"^\s*(?:pub\s+)?const\s+(\w+)");
 lazy_regex!(RUST_RE_MACRO, r"^\s*macro_rules!\s*(\w+)");
 
@@ -40,29 +47,46 @@ lazy_regex!(PY_RE_FN, r"^\s*(?:async\s+)?def\s+(\w+)");
 
 // JS/TS
 lazy_regex!(JS_RE_FN, r"^\s*(?:export\s+)?(?:async\s+)?function\s+(\w+)");
-lazy_regex!(JS_RE_CLASS, r"^\s*(?:export\s+)?(?:abstract\s+)?class\s+(\w+)");
+lazy_regex!(
+    JS_RE_CLASS,
+    r"^\s*(?:export\s+)?(?:abstract\s+)?class\s+(\w+)"
+);
 lazy_regex!(JS_RE_INTERFACE, r"^\s*(?:export\s+)?interface\s+(\w+)");
 lazy_regex!(JS_RE_TYPE, r"^\s*(?:export\s+)?type\s+(\w+)");
 lazy_regex!(JS_RE_ENUM, r"^\s*(?:export\s+)?enum\s+(\w+)");
-lazy_regex!(JS_RE_CONST, r"^\s*(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=");
+lazy_regex!(
+    JS_RE_CONST,
+    r"^\s*(?:export\s+)?(?:const|let|var)\s+(\w+)\s*="
+);
 
 // Go
 lazy_regex!(GO_RE_FUNC, r"^\s*func\s+(?:\([^)]*\)\s+)?(\w+)");
 lazy_regex!(GO_RE_TYPE, r"^\s*type\s+(\w+)\s+(struct|interface)");
 
 // Java
-lazy_regex!(JAVA_RE_CLASS, r"^\s*(?:public\s+|private\s+|protected\s+)?(?:abstract\s+|final\s+)?(?:class|interface|enum|record)\s+(\w+)");
+lazy_regex!(
+    JAVA_RE_CLASS,
+    r"^\s*(?:public\s+|private\s+|protected\s+)?(?:abstract\s+|final\s+)?(?:class|interface|enum|record)\s+(\w+)"
+);
 
 // C/C++
 lazy_regex!(CPP_RE_CLASS, r"^\s*(?:class|struct|enum)\s+(\w+)");
 
 // C#
-lazy_regex!(CS_RE_TYPE, r"^\s*(?:public|private|protected|internal|static|abstract|sealed|readonly|partial\s+)*(?:class|interface|struct|enum|record)\s+(\w+)");
+lazy_regex!(
+    CS_RE_TYPE,
+    r"^\s*(?:public|private|protected|internal|static|abstract|sealed|readonly|partial\s+)*(?:class|interface|struct|enum|record)\s+(\w+)"
+);
 
 // Kotlin
-lazy_regex!(KT_RE_FUN, r"^\s*(?:public|private|protected|internal|override|suspend|inline|tailrec|operator|infix)\s+*(?:fun\s+)(\w+)");
-lazy_regex!(KT_RE_CLASS, r"^\s*(?:public|private|protected|internal|data|sealed|open|abstract)\s+*(?:class|interface|object|enum)\s+(\w+)");
-
+lazy_regex!(
+    KT_RE_FUN,
+    r"^\s*(?:public|private|protected|internal|override|suspend|inline|tailrec|operator|infix)\s+*(?:fun\s+)(\w+)"
+);
+lazy_regex!(
+    KT_RE_CLASS,
+    r"^\s*(?:public|private|protected|internal|data|sealed|open|abstract)\s+*(?:class|interface|object|enum)\s+(\w+)"
+);
 
 use crate::permission::Decision;
 
@@ -83,7 +107,9 @@ pub struct CodeIndex {
 #[allow(dead_code)]
 pub struct CodeIndexParams {
     /// 操作类型。
-    #[schemars(description = "Action: 'outline' (list symbols under path) or 'search' (search by name)")]
+    #[schemars(
+        description = "Action: 'outline' (list symbols under path) or 'search' (search by name)"
+    )]
     action: String,
     /// 文件或目录路径。
     #[serde(default)]
@@ -91,15 +117,22 @@ pub struct CodeIndexParams {
     path: String,
     /// 要搜索的符号名称或子串。
     #[serde(default)]
-    #[schemars(description = "Symbol name or substring to search for (required for action=search)")]
+    #[schemars(
+        description = "Symbol name or substring to search for (required for action=search)"
+    )]
     query: Option<String>,
     /// 按符号类型过滤。
     #[serde(default)]
-    #[schemars(description = "Filter by symbol kind: func/fn, method, class, type, interface, const, var, struct, enum, trait, mod, impl")]
+    #[schemars(
+        description = "Filter by symbol kind: func/fn, method, class, type, interface, const, var, struct, enum, trait, mod, impl"
+    )]
     kind: Option<String>,
     /// 最大返回符号数。
     #[serde(default)]
-    #[schemars(range(min = 1), description = "Maximum symbols to return (default 100, max 200)")]
+    #[schemars(
+        range(min = 1),
+        description = "Maximum symbols to return (default 100, max 200)"
+    )]
     limit: Option<u64>,
 }
 
@@ -135,7 +168,9 @@ const LANGUAGES: &[LangDef] = &[
     LangDef {
         extensions: &["rs"],
         parser: parse_rust,
-        kinds: &["fn", "struct", "enum", "trait", "impl", "mod", "type", "const", "macro"],
+        kinds: &[
+            "fn", "struct", "enum", "trait", "impl", "mod", "type", "const", "macro",
+        ],
     },
     LangDef {
         extensions: &["py"],
@@ -145,7 +180,15 @@ const LANGUAGES: &[LangDef] = &[
     LangDef {
         extensions: &["js", "jsx", "ts", "tsx"],
         parser: parse_jsts,
-        kinds: &["function", "class", "interface", "type", "enum", "const", "var"],
+        kinds: &[
+            "function",
+            "class",
+            "interface",
+            "type",
+            "enum",
+            "const",
+            "var",
+        ],
     },
     LangDef {
         extensions: &["go"],
@@ -176,16 +219,22 @@ const LANGUAGES: &[LangDef] = &[
 
 impl CodeIndex {
     pub fn new(work_dir: PathBuf) -> Self {
-        Self {
-            work_dir,
-        }
+        Self { work_dir }
     }
 
     fn resolve_path(&self, path: &str) -> Result<PathBuf, String> {
         let p = Path::new(path);
-        let abs = if p.is_relative() { self.work_dir.join(p) } else { p.to_path_buf() };
+        let abs = if p.is_relative() {
+            self.work_dir.join(p)
+        } else {
+            p.to_path_buf()
+        };
         if !abs.starts_with(&self.work_dir) {
-            return Err(format!("path '{}' is outside workspace '{}'", abs.display(), self.work_dir.display()));
+            return Err(format!(
+                "path '{}' is outside workspace '{}'",
+                abs.display(),
+                self.work_dir.display()
+            ));
         }
         Ok(abs)
     }
@@ -222,7 +271,11 @@ impl CodeIndex {
     }
 
     /// 工具执行体：参数已由 `GenericsTool` 反序列化为强类型 `CodeIndexParams`。
-    async fn do_execute(&self, _ctx: &ToolContext, args: &CodeIndexParams) -> Result<ToolResult, String> {
+    async fn do_execute(
+        &self,
+        _ctx: &ToolContext,
+        args: &CodeIndexParams,
+    ) -> Result<ToolResult, String> {
         let action = match args.action.as_str() {
             "outline" => "outline",
             "search" => "search",
@@ -238,7 +291,11 @@ impl CodeIndex {
             args.query.as_deref().map(|q| q.to_lowercase())
         };
 
-        let path_str: &str = if args.path.is_empty() { "." } else { &args.path };
+        let path_str: &str = if args.path.is_empty() {
+            "."
+        } else {
+            &args.path
+        };
 
         let kind_filter = args.kind.as_deref().map(|s| s.to_lowercase());
 
@@ -295,7 +352,8 @@ impl CodeIndex {
         let query_lower = query.as_ref().map(|q| q.to_lowercase());
         let kind_lower = kind_filter.as_ref().map(|k| k.to_lowercase());
 
-        let filtered: Vec<&CodeSymbol> = symbols.iter()
+        let filtered: Vec<&CodeSymbol> = symbols
+            .iter()
             .filter(|s| {
                 if let Some(ref q) = query_lower {
                     if !s.name.to_lowercase().contains(q.as_str())
@@ -316,7 +374,10 @@ impl CodeIndex {
 
         if filtered.is_empty() {
             let msg = match action {
-                "search" => format!("code_index: no symbols found matching '{}'", query.unwrap_or_default()),
+                "search" => format!(
+                    "code_index: no symbols found matching '{}'",
+                    query.unwrap_or_default()
+                ),
                 _ => "code_index: no symbols found".into(),
             };
             return Ok(ToolResult::ok(msg));
@@ -325,7 +386,11 @@ impl CodeIndex {
         // 格式化输出
         let mut output = String::new();
         for sym in &filtered {
-            let parent_str = sym.parent.as_ref().map(|p| format!("{}.", p)).unwrap_or_default();
+            let parent_str = sym
+                .parent
+                .as_ref()
+                .map(|p| format!("{}.", p))
+                .unwrap_or_default();
             output.push_str(&format!(
                 "{}:{}: {} {}{} — {}\n",
                 sym.file, sym.line, sym.kind, parent_str, sym.name, sym.signature
@@ -358,33 +423,48 @@ fn parse_rust(file: &str, content: &str, _: &Regex, _: &Regex) -> Vec<CodeSymbol
 
         if let Some(cap) = re_fn.captures(line) {
             symbols.push(CodeSymbol {
-                file: file.to_string(), line: line_num,
-                kind: "fn".into(), name: cap[1].to_string(),
-                parent: None, signature: trimmed.to_string(),
+                file: file.to_string(),
+                line: line_num,
+                kind: "fn".into(),
+                name: cap[1].to_string(),
+                parent: None,
+                signature: trimmed.to_string(),
             });
         } else if let Some(cap) = re_item.captures(line) {
             symbols.push(CodeSymbol {
-                file: file.to_string(), line: line_num,
-                kind: cap[1].to_string(), name: cap[2].to_string(),
-                parent: None, signature: trimmed.to_string(),
+                file: file.to_string(),
+                line: line_num,
+                kind: cap[1].to_string(),
+                name: cap[2].to_string(),
+                parent: None,
+                signature: trimmed.to_string(),
             });
         } else if let Some(cap) = re_impl.captures(line) {
             symbols.push(CodeSymbol {
-                file: file.to_string(), line: line_num,
-                kind: "impl".into(), name: cap[1].to_string(),
-                parent: None, signature: trimmed.to_string(),
+                file: file.to_string(),
+                line: line_num,
+                kind: "impl".into(),
+                name: cap[1].to_string(),
+                parent: None,
+                signature: trimmed.to_string(),
             });
         } else if let Some(cap) = re_const.captures(line) {
             symbols.push(CodeSymbol {
-                file: file.to_string(), line: line_num,
-                kind: "const".into(), name: cap[1].to_string(),
-                parent: None, signature: trimmed.to_string(),
+                file: file.to_string(),
+                line: line_num,
+                kind: "const".into(),
+                name: cap[1].to_string(),
+                parent: None,
+                signature: trimmed.to_string(),
             });
         } else if let Some(cap) = re_macro.captures(line) {
             symbols.push(CodeSymbol {
-                file: file.to_string(), line: line_num,
-                kind: "macro".into(), name: cap[1].to_string(),
-                parent: None, signature: trimmed.to_string(),
+                file: file.to_string(),
+                line: line_num,
+                kind: "macro".into(),
+                name: cap[1].to_string(),
+                parent: None,
+                signature: trimmed.to_string(),
             });
         }
     }
@@ -404,15 +484,21 @@ fn parse_python(file: &str, content: &str, _: &Regex, _: &Regex) -> Vec<CodeSymb
     for (i, line) in lines.iter().enumerate() {
         if let Some(cap) = re_fn.captures(line) {
             symbols.push(CodeSymbol {
-                file: file.to_string(), line: i + 1,
-                kind: "function".into(), name: cap[1].to_string(),
-                parent: None, signature: line.trim().to_string(),
+                file: file.to_string(),
+                line: i + 1,
+                kind: "function".into(),
+                name: cap[1].to_string(),
+                parent: None,
+                signature: line.trim().to_string(),
             });
         } else if let Some(cap) = re_class.captures(line) {
             symbols.push(CodeSymbol {
-                file: file.to_string(), line: i + 1,
-                kind: "class".into(), name: cap[1].to_string(),
-                parent: None, signature: line.trim().to_string(),
+                file: file.to_string(),
+                line: i + 1,
+                kind: "class".into(),
+                name: cap[1].to_string(),
+                parent: None,
+                signature: line.trim().to_string(),
             });
         }
     }
@@ -436,39 +522,57 @@ fn parse_jsts(file: &str, content: &str, _: &Regex, _: &Regex) -> Vec<CodeSymbol
     for (i, line) in lines.iter().enumerate() {
         if let Some(cap) = re_fn.captures(line) {
             symbols.push(CodeSymbol {
-                file: file.to_string(), line: i + 1,
-                kind: "function".into(), name: cap[1].to_string(),
-                parent: None, signature: line.trim().to_string(),
+                file: file.to_string(),
+                line: i + 1,
+                kind: "function".into(),
+                name: cap[1].to_string(),
+                parent: None,
+                signature: line.trim().to_string(),
             });
         } else if let Some(cap) = re_class.captures(line) {
             symbols.push(CodeSymbol {
-                file: file.to_string(), line: i + 1,
-                kind: "class".into(), name: cap[1].to_string(),
-                parent: None, signature: line.trim().to_string(),
+                file: file.to_string(),
+                line: i + 1,
+                kind: "class".into(),
+                name: cap[1].to_string(),
+                parent: None,
+                signature: line.trim().to_string(),
             });
         } else if let Some(cap) = re_interface.captures(line) {
             symbols.push(CodeSymbol {
-                file: file.to_string(), line: i + 1,
-                kind: "interface".into(), name: cap[1].to_string(),
-                parent: None, signature: line.trim().to_string(),
+                file: file.to_string(),
+                line: i + 1,
+                kind: "interface".into(),
+                name: cap[1].to_string(),
+                parent: None,
+                signature: line.trim().to_string(),
             });
         } else if let Some(cap) = re_type.captures(line) {
             symbols.push(CodeSymbol {
-                file: file.to_string(), line: i + 1,
-                kind: "type".into(), name: cap[1].to_string(),
-                parent: None, signature: line.trim().to_string(),
+                file: file.to_string(),
+                line: i + 1,
+                kind: "type".into(),
+                name: cap[1].to_string(),
+                parent: None,
+                signature: line.trim().to_string(),
             });
         } else if let Some(cap) = re_enum.captures(line) {
             symbols.push(CodeSymbol {
-                file: file.to_string(), line: i + 1,
-                kind: "enum".into(), name: cap[1].to_string(),
-                parent: None, signature: line.trim().to_string(),
+                file: file.to_string(),
+                line: i + 1,
+                kind: "enum".into(),
+                name: cap[1].to_string(),
+                parent: None,
+                signature: line.trim().to_string(),
             });
         } else if let Some(cap) = re_const.captures(line) {
             symbols.push(CodeSymbol {
-                file: file.to_string(), line: i + 1,
-                kind: "const".into(), name: cap[1].to_string(),
-                parent: None, signature: line.trim().to_string(),
+                file: file.to_string(),
+                line: i + 1,
+                kind: "const".into(),
+                name: cap[1].to_string(),
+                parent: None,
+                signature: line.trim().to_string(),
             });
         }
     }
@@ -488,15 +592,21 @@ fn parse_go(file: &str, content: &str, _: &Regex, _: &Regex) -> Vec<CodeSymbol> 
     for (i, line) in lines.iter().enumerate() {
         if let Some(cap) = re_func.captures(line) {
             symbols.push(CodeSymbol {
-                file: file.to_string(), line: i + 1,
-                kind: "func".into(), name: cap[1].to_string(),
-                parent: None, signature: line.trim().to_string(),
+                file: file.to_string(),
+                line: i + 1,
+                kind: "func".into(),
+                name: cap[1].to_string(),
+                parent: None,
+                signature: line.trim().to_string(),
             });
         } else if let Some(cap) = re_type.captures(line) {
             symbols.push(CodeSymbol {
-                file: file.to_string(), line: i + 1,
-                kind: cap[2].to_string(), name: cap[1].to_string(),
-                parent: None, signature: line.trim().to_string(),
+                file: file.to_string(),
+                line: i + 1,
+                kind: cap[2].to_string(),
+                name: cap[1].to_string(),
+                parent: None,
+                signature: line.trim().to_string(),
             });
         }
     }
@@ -515,9 +625,12 @@ fn parse_java(file: &str, content: &str, _: &Regex, _: &Regex) -> Vec<CodeSymbol
     for (i, line) in lines.iter().enumerate() {
         if let Some(cap) = re_class.captures(line) {
             symbols.push(CodeSymbol {
-                file: file.to_string(), line: i + 1,
-                kind: "class".into(), name: cap[1].to_string(),
-                parent: None, signature: line.trim().to_string(),
+                file: file.to_string(),
+                line: i + 1,
+                kind: "class".into(),
+                name: cap[1].to_string(),
+                parent: None,
+                signature: line.trim().to_string(),
             });
         }
     }
@@ -535,11 +648,19 @@ fn parse_c_cpp(file: &str, content: &str, _: &Regex, _: &Regex) -> Vec<CodeSymbo
 
     for (i, line) in lines.iter().enumerate() {
         if let Some(cap) = re_class.captures(line) {
-            let kind = line.trim_start().split_whitespace().next().unwrap_or("class").to_string();
+            let kind = line
+                .trim_start()
+                .split_whitespace()
+                .next()
+                .unwrap_or("class")
+                .to_string();
             symbols.push(CodeSymbol {
-                file: file.to_string(), line: i + 1,
-                kind, name: cap[1].to_string(),
-                parent: None, signature: line.trim().to_string(),
+                file: file.to_string(),
+                line: i + 1,
+                kind,
+                name: cap[1].to_string(),
+                parent: None,
+                signature: line.trim().to_string(),
             });
         }
     }
@@ -557,13 +678,19 @@ fn parse_csharp(file: &str, content: &str, _: &Regex, _: &Regex) -> Vec<CodeSymb
 
     for (i, line) in lines.iter().enumerate() {
         if let Some(cap) = re_type.captures(line) {
-            let kind = line.trim_start().split_whitespace()
+            let kind = line
+                .trim_start()
+                .split_whitespace()
                 .find(|w| ["class", "interface", "struct", "enum", "record"].contains(w))
-                .unwrap_or("class").to_string();
+                .unwrap_or("class")
+                .to_string();
             symbols.push(CodeSymbol {
-                file: file.to_string(), line: i + 1,
-                kind, name: cap[1].to_string(),
-                parent: None, signature: line.trim().to_string(),
+                file: file.to_string(),
+                line: i + 1,
+                kind,
+                name: cap[1].to_string(),
+                parent: None,
+                signature: line.trim().to_string(),
             });
         }
     }
@@ -583,18 +710,26 @@ fn parse_kotlin(file: &str, content: &str, _: &Regex, _: &Regex) -> Vec<CodeSymb
     for (i, line) in lines.iter().enumerate() {
         if let Some(cap) = re_fun.captures(line) {
             symbols.push(CodeSymbol {
-                file: file.to_string(), line: i + 1,
-                kind: "fun".into(), name: cap[1].to_string(),
-                parent: None, signature: line.trim().to_string(),
+                file: file.to_string(),
+                line: i + 1,
+                kind: "fun".into(),
+                name: cap[1].to_string(),
+                parent: None,
+                signature: line.trim().to_string(),
             });
         } else if let Some(cap) = re_class.captures(line) {
-            let kind = line.trim_start().split_whitespace()
+            let kind = line
+                .trim_start()
+                .split_whitespace()
                 .find(|w| ["class", "interface", "object", "enum"].contains(w))
                 .unwrap_or("class");
             symbols.push(CodeSymbol {
-                file: file.to_string(), line: i + 1,
-                kind: kind.to_string(), name: cap[1].to_string(),
-                parent: None, signature: line.trim().to_string(),
+                file: file.to_string(),
+                line: i + 1,
+                kind: kind.to_string(),
+                name: cap[1].to_string(),
+                parent: None,
+                signature: line.trim().to_string(),
             });
         }
     }
@@ -604,26 +739,27 @@ fn parse_kotlin(file: &str, content: &str, _: &Regex, _: &Regex) -> Vec<CodeSymb
 
 #[async_trait::async_trait]
 impl GenericsTool for CodeIndex {
-    async fn generics_execute(&self, ctx: &ToolContext, args: &CodeIndexParams) -> Result<ToolResult, String> {
+    async fn generics_execute(
+        &self,
+        ctx: &ToolContext,
+        args: &CodeIndexParams,
+    ) -> Result<ToolResult, String> {
         self.do_execute(ctx, args).await
     }
 }
-
 
 #[async_trait::async_trait]
 impl CheckableTool for CodeIndex {
     fn check(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> Decision {
         Decision::Allow
     }
-
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     use std::sync::atomic::{AtomicU64, Ordering};
-    
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -641,7 +777,7 @@ mod tests {
             progress: None,
             main_conversation_id: String::new(),
             project_id: None,
-        cancel_token: None,
+            cancel_token: None,
         }
     }
 
@@ -649,19 +785,28 @@ mod tests {
     async fn outline_rust_file() {
         let dir = temp_dir();
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("test.rs"), b"\
+        std::fs::write(
+            dir.join("test.rs"),
+            b"\
 pub fn hello() {}\n\
 struct MyStruct {}\n\
 enum MyEnum {}\n\
 trait MyTrait {}\n\
 mod my_mod;\n\
 const MAX: usize = 100;\n\
-macro_rules! my_macro {}\n").unwrap();
+macro_rules! my_macro {}\n",
+        )
+        .unwrap();
 
         let tool = CodeIndex::new(std::env::temp_dir());
-        let result = tool.execute(&test_ctx(), &serde_json::json!({
-            "action": "outline", "path": dir.join("test.rs").to_str().unwrap()
-        })).await;
+        let result = tool
+            .execute(
+                &test_ctx(),
+                &serde_json::json!({
+                    "action": "outline", "path": dir.join("test.rs").to_str().unwrap()
+                }),
+            )
+            .await;
 
         assert!(result.error().is_none(), "error: {:?}", result.error());
         assert!(result.output().contains("hello"));
@@ -676,19 +821,36 @@ macro_rules! my_macro {}\n").unwrap();
     async fn search_symbol() {
         let dir = temp_dir();
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("lib.rs"), b"\
+        std::fs::write(
+            dir.join("lib.rs"),
+            b"\
 pub fn add(a: i32, b: i32) -> i32 { a + b }\n\
 pub fn subtract(a: i32, b: i32) -> i32 { a - b }\n\
-struct Config {}\n").unwrap();
+struct Config {}\n",
+        )
+        .unwrap();
 
         let tool = CodeIndex::new(std::env::temp_dir());
-        let result = tool.execute(&test_ctx(), &serde_json::json!({
-            "action": "search", "query": "add", "path": dir.to_str().unwrap()
-        })).await;
+        let result = tool
+            .execute(
+                &test_ctx(),
+                &serde_json::json!({
+                    "action": "search", "query": "add", "path": dir.to_str().unwrap()
+                }),
+            )
+            .await;
 
         assert!(result.error().is_none());
-        assert!(result.output().contains("add"), "output: {}", result.output());
-        assert!(!result.output().contains("subtract"), "output: {}", result.output());
+        assert!(
+            result.output().contains("add"),
+            "output: {}",
+            result.output()
+        );
+        assert!(
+            !result.output().contains("subtract"),
+            "output: {}",
+            result.output()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -696,12 +858,21 @@ struct Config {}\n").unwrap();
     async fn filter_by_kind() {
         let dir = temp_dir();
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("test.rs"), b"fn do_something() {}\nstruct Data {}\nenum Status {}\n").unwrap();
+        std::fs::write(
+            dir.join("test.rs"),
+            b"fn do_something() {}\nstruct Data {}\nenum Status {}\n",
+        )
+        .unwrap();
 
         let tool = CodeIndex::new(std::env::temp_dir());
-        let result = tool.execute(&test_ctx(), &serde_json::json!({
-            "action": "outline", "path": dir.to_str().unwrap(), "kind": "struct"
-        })).await;
+        let result = tool
+            .execute(
+                &test_ctx(),
+                &serde_json::json!({
+                    "action": "outline", "path": dir.to_str().unwrap(), "kind": "struct"
+                }),
+            )
+            .await;
 
         assert!(result.error().is_none());
         assert!(result.output().contains("Data"));
@@ -716,9 +887,14 @@ struct Config {}\n").unwrap();
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("data.json"), b"{\"key\": \"value\"}").unwrap();
         let tool = CodeIndex::new(std::env::temp_dir());
-        let result = tool.execute(&test_ctx(), &serde_json::json!({
-            "action": "outline", "path": dir.to_str().unwrap()
-        })).await;
+        let result = tool
+            .execute(
+                &test_ctx(),
+                &serde_json::json!({
+                    "action": "outline", "path": dir.to_str().unwrap()
+                }),
+            )
+            .await;
         assert!(result.error().is_none());
         assert!(result.output().contains("no symbols found"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -735,11 +911,20 @@ struct Config {}\n").unwrap();
     async fn python_symbols() {
         let dir = temp_dir();
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("main.py"), b"class MyClass:\n    def method(self): pass\ndef top_level(): pass\n").unwrap();
+        std::fs::write(
+            dir.join("main.py"),
+            b"class MyClass:\n    def method(self): pass\ndef top_level(): pass\n",
+        )
+        .unwrap();
         let tool = CodeIndex::new(std::env::temp_dir());
-        let result = tool.execute(&test_ctx(), &serde_json::json!({
-            "action": "outline", "path": dir.to_str().unwrap()
-        })).await;
+        let result = tool
+            .execute(
+                &test_ctx(),
+                &serde_json::json!({
+                    "action": "outline", "path": dir.to_str().unwrap()
+                }),
+            )
+            .await;
         assert!(result.error().is_none());
         assert!(result.output().contains("MyClass"));
         assert!(result.output().contains("top_level"));
@@ -750,13 +935,22 @@ struct Config {}\n").unwrap();
     async fn jsts_symbols() {
         let dir = temp_dir();
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("app.ts"), b"\
+        std::fs::write(
+            dir.join("app.ts"),
+            b"\
 function greet(name: string): string { return ''; }\n\
-class App {}\ninterface Config {}\ntype Data = string;\nenum Color { Red }\nconst MAX = 100;\n").unwrap();
+class App {}\ninterface Config {}\ntype Data = string;\nenum Color { Red }\nconst MAX = 100;\n",
+        )
+        .unwrap();
         let tool = CodeIndex::new(std::env::temp_dir());
-        let result = tool.execute(&test_ctx(), &serde_json::json!({
-            "action": "outline", "path": dir.to_str().unwrap()
-        })).await;
+        let result = tool
+            .execute(
+                &test_ctx(),
+                &serde_json::json!({
+                    "action": "outline", "path": dir.to_str().unwrap()
+                }),
+            )
+            .await;
         assert!(result.error().is_none());
         assert!(result.output().contains("greet"));
         assert!(result.output().contains("App"));
@@ -771,11 +965,20 @@ class App {}\ninterface Config {}\ntype Data = string;\nenum Color { Red }\ncons
     async fn go_symbols() {
         let dir = temp_dir();
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("main.go"), b"package main\nfunc hello() {}\ntype Config struct {}\ntype Reader interface {}\n").unwrap();
+        std::fs::write(
+            dir.join("main.go"),
+            b"package main\nfunc hello() {}\ntype Config struct {}\ntype Reader interface {}\n",
+        )
+        .unwrap();
         let tool = CodeIndex::new(std::env::temp_dir());
-        let result = tool.execute(&test_ctx(), &serde_json::json!({
-            "action": "outline", "path": dir.to_str().unwrap()
-        })).await;
+        let result = tool
+            .execute(
+                &test_ctx(),
+                &serde_json::json!({
+                    "action": "outline", "path": dir.to_str().unwrap()
+                }),
+            )
+            .await;
         assert!(result.error().is_none());
         assert!(result.output().contains("hello"));
         assert!(result.output().contains("Config"));
@@ -786,7 +989,9 @@ class App {}\ninterface Config {}\ntype Data = string;\nenum Color { Red }\ncons
     #[tokio::test]
     async fn search_requires_query() {
         let tool = CodeIndex::new(std::env::temp_dir());
-        let result = tool.execute(&test_ctx(), &serde_json::json!({"action": "search"})).await;
+        let result = tool
+            .execute(&test_ctx(), &serde_json::json!({"action": "search"}))
+            .await;
         assert!(result.error().is_some());
         assert!(result.error().unwrap().contains("query"));
     }

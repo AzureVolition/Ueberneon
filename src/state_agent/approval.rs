@@ -89,23 +89,50 @@ mod tests {
     fn user_gate_safe_allow_dangerous_ask() {
         let g = UserApprovalGate;
         // 只读工具
-        assert_eq!(g.decide("read_file", &serde_json::json!({}), true), Decision::Allow);
-        assert_eq!(g.decide("ls", &serde_json::json!({}), true), Decision::Allow);
+        assert_eq!(
+            g.decide("read_file", &serde_json::json!({}), true),
+            Decision::Allow
+        );
+        assert_eq!(
+            g.decide("ls", &serde_json::json!({}), true),
+            Decision::Allow
+        );
         // 非执行类写工具（文件编辑等）→ 安全通过
-        assert_eq!(g.decide("edit_file", &serde_json::json!({}), false), Decision::Allow);
-        assert_eq!(g.decide("write_file", &serde_json::json!({}), false), Decision::Allow);
-        assert_eq!(g.decide("multi_edit", &serde_json::json!({}), false), Decision::Allow);
+        assert_eq!(
+            g.decide("edit_file", &serde_json::json!({}), false),
+            Decision::Allow
+        );
+        assert_eq!(
+            g.decide("write_file", &serde_json::json!({}), false),
+            Decision::Allow
+        );
+        assert_eq!(
+            g.decide("multi_edit", &serde_json::json!({}), false),
+            Decision::Allow
+        );
         // 执行类工具 → 询问
-        assert_eq!(g.decide("bash", &serde_json::json!({}), false), Decision::Ask);
-        assert_eq!(g.decide("kill_shell", &serde_json::json!({}), false), Decision::Ask);
-        assert_eq!(g.decide("task", &serde_json::json!({}), false), Decision::Ask);
+        assert_eq!(
+            g.decide("bash", &serde_json::json!({}), false),
+            Decision::Ask
+        );
+        assert_eq!(
+            g.decide("kill_shell", &serde_json::json!({}), false),
+            Decision::Ask
+        );
+        assert_eq!(
+            g.decide("task", &serde_json::json!({}), false),
+            Decision::Ask
+        );
     }
 
     /// 只读标记优先于执行类名单：名单内工具若被标记只读仍直接放行。
     #[test]
     fn read_only_beats_dangerous_list() {
         let g = UserApprovalGate;
-        assert_eq!(g.decide("bash", &serde_json::json!({}), true), Decision::Allow);
+        assert_eq!(
+            g.decide("bash", &serde_json::json!({}), true),
+            Decision::Allow
+        );
     }
 
     /// AutoDenyApprovalGate：只读标记不影响自动拒绝（子 Agent 非交互）。
@@ -126,8 +153,17 @@ mod tests {
     #[test]
     fn chain_forwards_read_only() {
         let chain = ApprovalChain::new(vec![Box::new(UserApprovalGate)]);
-        assert_eq!(chain.decide("read_file", &serde_json::json!({}), true), Decision::Allow);
-        assert_eq!(chain.decide("edit_file", &serde_json::json!({}), false), Decision::Allow);
-        assert_eq!(chain.decide("bash", &serde_json::json!({}), false), Decision::Ask);
+        assert_eq!(
+            chain.decide("read_file", &serde_json::json!({}), true),
+            Decision::Allow
+        );
+        assert_eq!(
+            chain.decide("edit_file", &serde_json::json!({}), false),
+            Decision::Allow
+        );
+        assert_eq!(
+            chain.decide("bash", &serde_json::json!({}), false),
+            Decision::Ask
+        );
     }
 }

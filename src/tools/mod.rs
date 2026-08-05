@@ -1,15 +1,14 @@
-
 pub mod content_tracker;
-pub mod internal;
-pub mod snapshot;
 pub mod diff;
+pub mod internal;
 pub mod jobs;
 pub mod registry;
 pub mod sandbox;
+pub mod snapshot;
 
+use crate::permission::Check;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
-use crate::permission::Check;
 
 pub use internal::bash::Bash;
 pub use internal::bash_output::BashOutput;
@@ -20,6 +19,7 @@ pub use internal::edit_file::EditFile;
 pub use internal::glob::Glob;
 pub use internal::grep::Grep;
 pub use internal::kill_shell::KillShell;
+pub use internal::load_skill::LoadSkill;
 pub use internal::ls::Ls;
 pub use internal::multi_edit::MultiEdit;
 pub use internal::read_file::ReadFile;
@@ -27,10 +27,10 @@ pub use internal::read_only_bash::ReadOnlyBash;
 pub use internal::task::Task;
 pub use internal::web_fetch::WebFetch;
 pub use internal::write_file::WriteFile;
-pub use snapshot::SnapshotStore;
 pub use jobs::JobManager;
 pub use registry::Registry;
 pub use sandbox::SandboxSpec;
+pub use snapshot::SnapshotStore;
 
 /// 内部工具的编译时元信息。
 /// 每个 `#[derive(ToolMetaImpl)]` 结构体会通过 `inventory::submit!` 自动注册。
@@ -38,7 +38,7 @@ pub struct InternalToolMeta {
     pub name: &'static str,
     pub description: &'static str,
     pub read_only: bool,
-    pub schema: &'static LazyLock<String>, 
+    pub schema: &'static LazyLock<String>,
 }
 
 inventory::collect!(InternalToolMeta);
@@ -54,6 +54,9 @@ pub fn register_builtins(registry: &Registry, base_dir: &std::path::Path) {
     let snapshot = Arc::new(SnapshotStore::new());
 
     let work_dir = base_dir.to_path_buf();
+
+    // 把磁盘上的技能目录同步进 DB 注册表（面板数据源）
+    crate::skills::sync_registry(&work_dir);
 
     registry.add(Box::new(ReadFile::new(work_dir.clone(), tracker.clone())));
 
@@ -84,14 +87,22 @@ pub fn register_builtins(registry: &Registry, base_dir: &std::path::Path) {
 
     // 文件编辑工具（注入可复用的权限检查：DenySystemPaths）
     registry.add(Box::new(EditFile::new(
-        work_dir.clone(), snapshot.clone(),
-        file_checks(), tracker.clone(),
+        work_dir.clone(),
+        snapshot.clone(),
+        file_checks(),
+        tracker.clone(),
     )));
     registry.add(Box::new(MultiEdit::new(
-        work_dir.clone(), snapshot.clone(), file_checks(), tracker.clone(),
+        work_dir.clone(),
+        snapshot.clone(),
+        file_checks(),
+        tracker.clone(),
     )));
     registry.add(Box::new(WriteFile::new(
-        work_dir.clone(), snapshot, file_checks(), tracker,
+        work_dir.clone(),
+        snapshot,
+        file_checks(),
+        tracker,
     )));
 
     // 搜索工具
@@ -118,4 +129,7 @@ pub fn register_builtins(registry: &Registry, base_dir: &std::path::Path) {
 
     // 子 Agent 委派工具
     registry.add(Box::new(Task::new()));
+
+    // 技能加载工具
+    registry.add(Box::new(LoadSkill::new(work_dir)));
 }

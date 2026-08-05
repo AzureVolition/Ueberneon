@@ -1,10 +1,10 @@
+use crate::agent::{ActionMode, AgentMode};
+use crate::db::metadata::agent_config::AgentConfigRow;
 use crate::ui::components::app::ErrorSignal;
+use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 use dioxus::desktop::use_window;
 use dioxus::prelude::*;
 use std::time::Duration;
-use crate::agent::{ActionMode, AgentMode};
-use crate::db::metadata::agent_config::AgentConfigRow;
-use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 
 impl ActionMode {
     /// 用于 HTML option value 的键。
@@ -125,12 +125,13 @@ pub fn InputBar(
             label: "— no config —".into(),
         }]
     } else {
-        agent_configs.iter().map(|cfg| {
-            DropdownOption {
+        agent_configs
+            .iter()
+            .map(|cfg| DropdownOption {
                 value: cfg.id.clone(),
                 label: format!("{} · {}", cfg.name, cfg.model),
-            }
-        }).collect()
+            })
+            .collect()
     };
 
     let no_agent_configs = agent_configs.is_empty();
@@ -235,7 +236,7 @@ pub fn InputBar(
                         }
                     },
                 }
-                
+
                 if running {
                     button {
                         class: "btn btn-cancel",

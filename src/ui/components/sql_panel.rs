@@ -24,9 +24,7 @@ struct SqlResult {
 #[component]
 pub fn SqlPanel() -> Element {
     // 表列表
-    let tables = use_signal(|| {
-        load_table_list().unwrap_or_default()
-    });
+    let tables = use_signal(|| load_table_list().unwrap_or_default());
     let mut selected_table = use_signal(String::new);
     let mut sql_input = use_signal(String::new);
 
@@ -39,20 +37,31 @@ pub fn SqlPanel() -> Element {
 
     // 执行 SQL（带分页参数）
     let mut run_query = move |sql: String, page: usize| {
-        if sql.is_empty() { return; }
+        if sql.is_empty() {
+            return;
+        }
         running.set(true);
         error_msg.set(None);
         let offset = page.saturating_sub(1) * PAGE_SIZE;
         // 先查总数
         let count_sql = format!("SELECT COUNT(*) FROM ({})", sql.trim_end_matches(';'));
         let total = crate::db::with_db(|conn| -> Result<usize, String> {
-            let mut stmt = conn.prepare(&count_sql).map_err(|e| format!("count: {e}"))?;
-            let total: usize = stmt.query_row([], |row| row.get::<_, i64>(0))
+            let mut stmt = conn
+                .prepare(&count_sql)
+                .map_err(|e| format!("count: {e}"))?;
+            let total: usize = stmt
+                .query_row([], |row| row.get::<_, i64>(0))
                 .map_err(|e| format!("count row: {e}"))? as usize;
             Ok(total)
-        }).unwrap_or(0);
+        })
+        .unwrap_or(0);
         // 执行分页查询
-        let paged_sql = format!("{} LIMIT {} OFFSET {}", sql.trim_end_matches(';'), PAGE_SIZE, offset);
+        let paged_sql = format!(
+            "{} LIMIT {} OFFSET {}",
+            sql.trim_end_matches(';'),
+            PAGE_SIZE,
+            offset
+        );
         match execute_sql(&paged_sql) {
             Ok(mut r) => {
                 r.total_rows = total;
@@ -269,12 +278,12 @@ pub fn SqlPanel() -> Element {
 
 fn load_table_list() -> Result<Vec<TableInfo>, String> {
     crate::db::with_db(|conn| -> Result<Vec<TableInfo>, String> {
-        let mut stmt = conn.prepare(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-        ).map_err(|e| format!("prepare: {e}"))?;
-        let rows = stmt.query_map([], |row| {
-            Ok(TableInfo { name: row.get(0)? })
-        }).map_err(|e| format!("query: {e}"))?;
+        let mut stmt = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .map_err(|e| format!("prepare: {e}"))?;
+        let rows = stmt
+            .query_map([], |row| Ok(TableInfo { name: row.get(0)? }))
+            .map_err(|e| format!("query: {e}"))?;
         let mut tables = Vec::new();
         for row in rows {
             tables.push(row.map_err(|e| format!("row: {e}"))?);
@@ -288,8 +297,10 @@ fn execute_sql(sql: &str) -> Result<SqlResult, String> {
 
     // 只有 SELECT/WITH/PRAGMA/EXPLAIN 才返回行
     let trimmed = sql.trim().to_uppercase();
-    let is_query = trimmed.starts_with("SELECT") || trimmed.starts_with("PRAGMA")
-        || trimmed.starts_with("EXPLAIN") || trimmed.starts_with("WITH")
+    let is_query = trimmed.starts_with("SELECT")
+        || trimmed.starts_with("PRAGMA")
+        || trimmed.starts_with("EXPLAIN")
+        || trimmed.starts_with("WITH")
         || trimmed.starts_with("LIMIT");
 
     if !is_query {
@@ -315,21 +326,23 @@ fn execute_sql(sql: &str) -> Result<SqlResult, String> {
         let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
 
         let mut rows = Vec::new();
-        let row_iter = stmt.query_map([], |row| {
-            let mut vals = Vec::new();
-            for i in 0..row.as_ref().column_count() {
-                let val = match row.get::<_, Value>(i) {
-                    Ok(Value::Null) => String::new(),
-                    Ok(Value::Integer(n)) => n.to_string(),
-                    Ok(Value::Real(f)) => f.to_string(),
-                    Ok(Value::Text(s)) => s,
-                    Ok(Value::Blob(b)) => format!("<blob {} bytes>", b.len()),
-                    Err(_) => "<error>".into(),
-                };
-                vals.push(val);
-            }
-            Ok(vals)
-        }).map_err(|e| format!("query: {e}"))?;
+        let row_iter = stmt
+            .query_map([], |row| {
+                let mut vals = Vec::new();
+                for i in 0..row.as_ref().column_count() {
+                    let val = match row.get::<_, Value>(i) {
+                        Ok(Value::Null) => String::new(),
+                        Ok(Value::Integer(n)) => n.to_string(),
+                        Ok(Value::Real(f)) => f.to_string(),
+                        Ok(Value::Text(s)) => s,
+                        Ok(Value::Blob(b)) => format!("<blob {} bytes>", b.len()),
+                        Err(_) => "<error>".into(),
+                    };
+                    vals.push(val);
+                }
+                Ok(vals)
+            })
+            .map_err(|e| format!("query: {e}"))?;
         for row in row_iter {
             rows.push(row.map_err(|e| format!("row: {e}"))?);
         }

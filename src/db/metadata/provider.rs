@@ -1,6 +1,6 @@
 // ── Provider CRUD ──
 
-use rusqlite::{params, Connection, Result};
+use rusqlite::{Connection, Result, params};
 
 /// 数据库行
 #[derive(Debug, Clone)]
@@ -79,7 +79,7 @@ pub fn list_all(conn: &Connection) -> Result<Vec<ProviderRow>> {
 /// 获取 provider 的模型列表
 pub fn list_models(conn: &Connection, provider_id: &str) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
-        "SELECT model_name FROM provider_models WHERE provider_id = ?1 ORDER BY model_name ASC"
+        "SELECT model_name FROM provider_models WHERE provider_id = ?1 ORDER BY model_name ASC",
     )?;
     let rows = stmt.query_map(params![provider_id], |row| row.get(0))?;
     rows.collect()
@@ -87,9 +87,12 @@ pub fn list_models(conn: &Connection, provider_id: &str) -> Result<Vec<String>> 
 
 /// 替换 provider 的模型列表（先删后插）
 pub fn replace_models(conn: &Connection, provider_id: &str, models: &[String]) -> Result<()> {
-    conn.execute("DELETE FROM provider_models WHERE provider_id = ?1", params![provider_id])?;
+    conn.execute(
+        "DELETE FROM provider_models WHERE provider_id = ?1",
+        params![provider_id],
+    )?;
     let mut stmt = conn.prepare(
-        "INSERT OR IGNORE INTO provider_models (provider_id, model_name) VALUES (?1, ?2)"
+        "INSERT OR IGNORE INTO provider_models (provider_id, model_name) VALUES (?1, ?2)",
     )?;
     for m in models {
         stmt.execute(params![provider_id, m])?;

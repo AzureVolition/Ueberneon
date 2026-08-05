@@ -28,7 +28,11 @@ pub async fn fetch_models(provider: &ProviderRow, api_key: &str) -> Result<Vec<S
 }
 
 /// 从 URL 尝试拉取模型列表
-async fn try_fetch(client: &reqwest::Client, url: &str, api_key: &str) -> Result<Vec<String>, String> {
+async fn try_fetch(
+    client: &reqwest::Client,
+    url: &str,
+    api_key: &str,
+) -> Result<Vec<String>, String> {
     let resp = client
         .get(url)
         .header("Authorization", format!("Bearer {}", api_key))
@@ -43,10 +47,14 @@ async fn try_fetch(client: &reqwest::Client, url: &str, api_key: &str) -> Result
     }
 
     #[derive(serde::Deserialize)]
-    struct ModelEntry { id: String }
+    struct ModelEntry {
+        id: String,
+    }
 
     #[derive(serde::Deserialize)]
-    struct ModelsResponse { data: Vec<ModelEntry> }
+    struct ModelsResponse {
+        data: Vec<ModelEntry>,
+    }
 
     let body: ModelsResponse = resp
         .json()
@@ -84,7 +92,6 @@ pub async fn refresh_and_save(
     api_key: &str,
 ) -> Result<Vec<String>, String> {
     let models = fetch_models(provider, api_key).await?;
-    provider::replace_models(conn, &provider.id, &models)
-        .map_err(|e| format!("db error: {e}"))?;
+    provider::replace_models(conn, &provider.id, &models).map_err(|e| format!("db error: {e}"))?;
     Ok(models)
 }

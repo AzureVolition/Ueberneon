@@ -113,7 +113,10 @@ const SUBJECT_KEYS: &[&str] = &[
 /// 返回第一个匹配的 key 的值；如果没有任何已知 key，返回空字符串。
 /// 这允许规则只匹配 bare `ToolName`（无 subject 限制）。
 pub fn extract_subject(args: &serde_json::Value) -> String {
-    extract_subjects(args).into_iter().next().unwrap_or_default()
+    extract_subjects(args)
+        .into_iter()
+        .next()
+        .unwrap_or_default()
 }
 
 /// 提取所有 subject（如 move_file 有 source_path 和 destination_path）。
@@ -126,8 +129,14 @@ pub fn extract_subjects(args: &serde_json::Value) -> Vec<String> {
     };
 
     // move_file 特殊处理：source_path + destination_path
-    let src = obj.get("source_path").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
-    let dst = obj.get("destination_path").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+    let src = obj
+        .get("source_path")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+    let dst = obj
+        .get("destination_path")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
 
     if let (Some(src), Some(dst)) = (src, dst) {
         if src == dst {
@@ -137,7 +146,11 @@ pub fn extract_subjects(args: &serde_json::Value) -> Vec<String> {
     }
 
     for key in SUBJECT_KEYS {
-        if let Some(val) = obj.get(*key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+        if let Some(val) = obj
+            .get(*key)
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
             return vec![val.to_string()];
         }
     }
@@ -242,7 +255,6 @@ pub fn rule_matches(rule: &str, tool: &str, subject: &str) -> bool {
 
 // ── 工具分类 ─────────────────────────────────────────────────────────────────
 
-
 // ── 便利函数 ─────────────────────────────────────────────────────────────────
 
 /// 检查一个 bash 命令是否是危险命令（仅用于 UI 警告，不替代规则执行）。
@@ -277,9 +289,18 @@ mod tests {
 
     #[test]
     fn decision_combine_deny_wins() {
-        assert!(matches!(Decision::Allow.combine(Decision::Deny("denied".into())), Decision::Deny(_)));
-        assert!(matches!(Decision::Deny("denied".into()).combine(Decision::Allow), Decision::Deny(_)));
-        assert!(matches!(Decision::Ask.combine(Decision::Deny("denied".into())), Decision::Deny(_)));
+        assert!(matches!(
+            Decision::Allow.combine(Decision::Deny("denied".into())),
+            Decision::Deny(_)
+        ));
+        assert!(matches!(
+            Decision::Deny("denied".into()).combine(Decision::Allow),
+            Decision::Deny(_)
+        ));
+        assert!(matches!(
+            Decision::Ask.combine(Decision::Deny("denied".into())),
+            Decision::Deny(_)
+        ));
     }
 
     #[test]
@@ -434,15 +455,15 @@ mod tests {
 
     // ── 工具分类 ──
 
-    
-    
-
     // ── 危险警告 ──
 
     #[test]
     fn danger_warning_rm_rf() {
         assert_eq!(danger_warning("rm -rf /"), Some("recursive delete"));
-        assert_eq!(danger_warning("rm -rf --no-preserve-root /etc"), Some("recursive delete"));
+        assert_eq!(
+            danger_warning("rm -rf --no-preserve-root /etc"),
+            Some("recursive delete")
+        );
     }
 
     #[test]
@@ -453,6 +474,9 @@ mod tests {
 
     #[test]
     fn danger_warning_force_push() {
-        assert_eq!(danger_warning("git push --force origin main"), Some("force push"));
+        assert_eq!(
+            danger_warning("git push --force origin main"),
+            Some("force push")
+        );
     }
 }

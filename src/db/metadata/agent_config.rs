@@ -1,24 +1,23 @@
 // ── Agent 配置 CRUD ──
 
-
-use rusqlite::{params, Connection, Result};
+use rusqlite::{Connection, Result, params};
 
 /// 数据库行
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentConfigRow {
     pub id: String,
     pub name: String,
-    pub agent_type: String,       // "InBuilt" | "Custom" | "SubAgent"
+    pub agent_type: String, // "InBuilt" | "Custom" | "SubAgent"
     pub provider_instance_id: String,
     pub model: String,
-    pub base_url: String,         // 保存时从 provider 自动填充
-    pub api_key: String,          // 保存时从 provider instance 自动填充
+    pub base_url: String, // 保存时从 provider 自动填充
+    pub api_key: String,  // 保存时从 provider instance 自动填充
     pub system_prompt: String,
     pub temperature: f64,
     pub max_tokens: Option<u32>,
     pub context_window: Option<u32>, // 上下文窗口上限（NULL = 使用默认值）
-    pub tools: String,            // JSON 数组: ["Bash","ReadFile",...]  空数组 = 全部
-    pub description: String,      // 子 Agent 描述，供主 Agent 了解能力
+    pub tools: String,               // JSON 数组: ["Bash","ReadFile",...]  空数组 = 全部
+    pub description: String,         // 子 Agent 描述，供主 Agent 了解能力
     pub created_at: String,
     pub updated_at: String,
 }
@@ -202,9 +201,12 @@ pub fn list_by_type(conn: &Connection, agent_type: &str) -> Result<Vec<AgentConf
 
 /// 保存关联（先删后插，事务内）
 pub fn save_groups(conn: &Connection, agent_config_id: &str, group_ids: &[String]) -> Result<()> {
-    conn.execute("DELETE FROM agent_config_groups WHERE agent_config_id = ?1", params![agent_config_id])?;
+    conn.execute(
+        "DELETE FROM agent_config_groups WHERE agent_config_id = ?1",
+        params![agent_config_id],
+    )?;
     let mut stmt = conn.prepare(
-        "INSERT INTO agent_config_groups (agent_config_id, tool_group_id) VALUES (?1, ?2)"
+        "INSERT INTO agent_config_groups (agent_config_id, tool_group_id) VALUES (?1, ?2)",
     )?;
     for gid in group_ids {
         stmt.execute(params![agent_config_id, gid])?;
@@ -217,8 +219,6 @@ pub fn load_group_ids(conn: &Connection, agent_config_id: &str) -> Result<Vec<St
     let mut stmt = conn.prepare(
         "SELECT tool_group_id FROM agent_config_groups WHERE agent_config_id = ?1 ORDER BY tool_group_id"
     )?;
-    let rows = stmt.query_map(params![agent_config_id], |row| {
-        row.get::<_, String>(0)
-    })?;
+    let rows = stmt.query_map(params![agent_config_id], |row| row.get::<_, String>(0))?;
     rows.collect()
 }

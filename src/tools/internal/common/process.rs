@@ -41,7 +41,13 @@ pub struct ProcessRunner {
 
 impl ProcessRunner {
     pub fn new(work_dir: PathBuf, timeout: Duration) -> Self {
-        Self { work_dir, timeout, sandbox: None, env: None, cancel_token: None }
+        Self {
+            work_dir,
+            timeout,
+            sandbox: None,
+            env: None,
+            cancel_token: None,
+        }
     }
 
     /// 配置取消令牌，收到取消信号时终止进程。
@@ -175,8 +181,16 @@ impl ProcessRunner {
 
         let (out_res, err_res) = tokio::join!(stdout_fut, stderr_fut);
 
-        let out = if out_res.is_ok() { out_buf } else { String::new() };
-        let err = if err_res.is_ok() { err_buf } else { String::new() };
+        let out = if out_res.is_ok() {
+            out_buf
+        } else {
+            String::new()
+        };
+        let err = if err_res.is_ok() {
+            err_buf
+        } else {
+            String::new()
+        };
 
         let combined = if err.is_empty() {
             out
@@ -251,10 +265,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_simple_echo() {
-        let runner = ProcessRunner::new(
-            std::env::current_dir().unwrap(),
-            Duration::from_secs(10),
-        );
+        let runner = ProcessRunner::new(std::env::current_dir().unwrap(), Duration::from_secs(10));
         let out = runner.run("echo", &["hello".into()]).await;
         assert_eq!(out.combined, "hello");
         assert_eq!(out.exit_code, 0);
@@ -263,10 +274,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_nonexistent_command() {
-        let runner = ProcessRunner::new(
-            std::env::current_dir().unwrap(),
-            Duration::from_secs(10),
-        );
+        let runner = ProcessRunner::new(std::env::current_dir().unwrap(), Duration::from_secs(10));
         let out = runner.run("nonexistent_command_xyz", &[]).await;
         assert_ne!(out.exit_code, 0);
     }
@@ -304,11 +312,8 @@ mod tests {
         env.insert("PATH".into(), "/usr/bin:/bin".into());
         env.insert("HOME".into(), "/tmp".into());
 
-        let runner = ProcessRunner::new(
-            std::env::current_dir().unwrap(),
-            Duration::from_secs(10),
-        )
-        .with_env(env);
+        let runner = ProcessRunner::new(std::env::current_dir().unwrap(), Duration::from_secs(10))
+            .with_env(env);
 
         let out = runner.run("sh", &["-c".into(), "echo $HOME".into()]).await;
         assert_eq!(out.exit_code, 0);
@@ -318,22 +323,13 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn run_with_sandbox_enabled() {
-        let spec = crate::tools::sandbox::SandboxSpec::defaults(
-            &std::env::current_dir().unwrap(),
-        );
+        let spec = crate::tools::sandbox::SandboxSpec::defaults(&std::env::current_dir().unwrap());
 
-        let runner = ProcessRunner::new(
-            std::env::current_dir().unwrap(),
-            Duration::from_secs(10),
-        )
-        .with_sandbox(spec);
+        let runner = ProcessRunner::new(std::env::current_dir().unwrap(), Duration::from_secs(10))
+            .with_sandbox(spec);
 
         let out = runner.run("echo", &["sandbox_works".into()]).await;
-        assert_eq!(
-            out.exit_code, 0,
-            "sandbox failed: {}",
-            out.combined
-        );
+        assert_eq!(out.exit_code, 0, "sandbox failed: {}", out.combined);
         assert!(
             out.combined.contains("sandbox_works"),
             "unexpected output: {}",

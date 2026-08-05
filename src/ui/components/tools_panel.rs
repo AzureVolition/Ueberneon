@@ -39,24 +39,24 @@ pub fn ToolsPanel() -> Element {
     let page_size = 10i64;
     let mut filter_group = use_signal(|| Option::<String>::None);
     let mut search_text = use_signal(String::new);
-    let mut groups_cache: Signal<Vec<ToolGroupRow>> = use_signal(|| {
-        crate::db::with_db(|conn| list_groups(conn).unwrap_or_default())
-    });
+    let mut groups_cache: Signal<Vec<ToolGroupRow>> =
+        use_signal(|| crate::db::with_db(|conn| list_groups(conn).unwrap_or_default()));
 
     let tools_data = use_memo(move || {
         let gid = filter_group.read().clone();
         let s = search_text.read();
         let search = if s.is_empty() { None } else { Some(s.as_str()) };
         crate::db::with_db(|conn| {
-            let list = list_tools_paginated(conn, gid.as_deref(), search, page_size, page() * page_size).unwrap_or_default();
+            let list =
+                list_tools_paginated(conn, gid.as_deref(), search, page_size, page() * page_size)
+                    .unwrap_or_default();
             let total = count_tools(conn, gid.as_deref(), search).unwrap_or(0);
             (list, total)
         })
     });
 
-    let mut groups: Signal<Vec<ToolGroupRow>> = use_signal(|| {
-        crate::db::with_db(|conn| list_groups(conn).unwrap_or_default())
-    });
+    let mut groups: Signal<Vec<ToolGroupRow>> =
+        use_signal(|| crate::db::with_db(|conn| list_groups(conn).unwrap_or_default()));
     let mut group_tool_count: Signal<std::collections::HashMap<String, i64>> = use_signal(|| {
         crate::db::with_db(|conn| {
             let grps = list_groups(conn).unwrap_or_default();
@@ -83,21 +83,25 @@ pub fn ToolsPanel() -> Element {
                 "SELECT id, name, description, schema_json, read_only, source, mcp_server, created_at
                  FROM tools ORDER BY name"
             ).ok()?;
-            let rows = stmt.query_map([], |row| {
-                Ok(ToolRow {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    description: row.get(2)?,
-                    schema_json: row.get(3)?,
-                    read_only: row.get::<_, i32>(4)? != 0,
-                    source: row.get(5)?,
-                    mcp_server: row.get(6)?,
-                    created_at: row.get(7)?,
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(ToolRow {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        description: row.get(2)?,
+                        schema_json: row.get(3)?,
+                        read_only: row.get::<_, i32>(4)? != 0,
+                        source: row.get(5)?,
+                        mcp_server: row.get(6)?,
+                        created_at: row.get(7)?,
+                    })
                 })
-            }).ok()?;
+                .ok()?;
             let mut result = Vec::new();
             for r in rows {
-                if let Ok(t) = r { result.push(t); }
+                if let Ok(t) = r {
+                    result.push(t);
+                }
             }
             Some(result)
         })
@@ -105,7 +109,9 @@ pub fn ToolsPanel() -> Element {
 
     let do_add_group = move |_| {
         let name = new_group_name.read().trim().to_string();
-        if name.is_empty() { return; }
+        if name.is_empty() {
+            return;
+        }
         let desc = new_group_desc.read().trim().to_string();
         let id = format!("grp-{}", name.to_lowercase().replace(' ', "-"));
         let now = chrono::Local::now().to_rfc3339();
@@ -114,7 +120,13 @@ pub fn ToolsPanel() -> Element {
                 let grps = list_groups(conn).unwrap_or_default();
                 grps.iter().map(|g| g.sort_order).max().unwrap_or(0) + 1
             };
-            let row = ToolGroupRow { id: id.clone(), name, description: desc, sort_order: max_order, created_at: now };
+            let row = ToolGroupRow {
+                id: id.clone(),
+                name,
+                description: desc,
+                sort_order: max_order,
+                created_at: now,
+            };
             if let Err(e) = insert_group(conn, &row) {
                 tracing::error!(target:"db", error=%e, "insert tool group");
             }
@@ -170,30 +182,41 @@ pub fn ToolsPanel() -> Element {
     // 预计算迭代数据
     let current_tools = tools_data.read().0.clone();
     let total_count = tools_data.read().1;
-    let total_pages = if total_count == 0 { 1 } else { ((total_count as f64) / (page_size as f64)).ceil() as i64 };
+    let total_pages = if total_count == 0 {
+        1
+    } else {
+        ((total_count as f64) / (page_size as f64)).ceil() as i64
+    };
     let grp_opts = groups_cache.read().clone();
     let cur_filter = filter_group.read().clone();
     let cur_search = search_text.read().clone();
     let grps = groups.read().clone();
     let cnt_map = group_tool_count.read().clone();
     let del_id = deleting_group.read().clone();
-    let group_items: Vec<GroupItem> = grps.iter().map(|g| GroupItem {
-        id: g.id.clone(),
-        name: g.name.clone(),
-        description: g.description.clone(),
-        tool_count: cnt_map.get(&g.id).copied().unwrap_or(0),
-        is_deleting: del_id.as_deref() == Some(&g.id),
-    }).collect();
+    let group_items: Vec<GroupItem> = grps
+        .iter()
+        .map(|g| GroupItem {
+            id: g.id.clone(),
+            name: g.name.clone(),
+            description: g.description.clone(),
+            tool_count: cnt_map.get(&g.id).copied().unwrap_or(0),
+            is_deleting: del_id.as_deref() == Some(&g.id),
+        })
+        .collect();
     let edit_gid = editing_group();
     let edit_tools_raw = all_tools.read().clone().unwrap_or_default();
     let edit_selected = edit_group_tools.read().clone();
-    let edit_tool_items: Vec<EditToolItem> = edit_tools_raw.iter().map(|t| EditToolItem {
-        id: t.id.clone(),
-        name: t.name.clone(),
-        description: t.description.clone(),
-        is_in_group: edit_selected.contains(&t.id),
-    }).collect();
-    let eg_name: String = grps.iter()
+    let edit_tool_items: Vec<EditToolItem> = edit_tools_raw
+        .iter()
+        .map(|t| EditToolItem {
+            id: t.id.clone(),
+            name: t.name.clone(),
+            description: t.description.clone(),
+            is_in_group: edit_selected.contains(&t.id),
+        })
+        .collect();
+    let eg_name: String = grps
+        .iter()
         .find(|g| Some(&g.id) == edit_gid.as_ref())
         .map(|g| g.name.clone())
         .unwrap_or_default();
