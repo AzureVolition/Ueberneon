@@ -216,6 +216,7 @@ fn install_into(source: &str, target_root: &Path) -> Result<String, String> {
         || source.starts_with("https://")
         || source.starts_with("git@")
         || source.starts_with("ssh://")
+        || source.starts_with("file://")
         || source.ends_with(".git");
 
     let name = if is_git {
@@ -265,30 +266,31 @@ fn install_into(source: &str, target_root: &Path) -> Result<String, String> {
         ));
     }
 
-    let mut failed: Option<String> = None;
     if is_git {
-        let output = std::process::Command::new("git")
-            .args([
-                "clone",
-                "--depth",
-                "1",
-                source,
-                target.to_str().unwrap_or_default(),
-            ])
-            .output()
-            .map_err(|e| format!("install skill: failed to run git clone: {e}"))?;
-        if !output.status.success() {
-            failed = Some(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        if let Some((repo_url, subdir)) = parse_github_tree(source) {
+            clone_github_subdir(&repo_url, &subdir, &target)?;
+        } else {
+            let output = std::process::Command::new("git")
+                .args([
+                    "clone",
+                    "--depth",
+                    "1",
+                    source,
+                    target.to_str().unwrap_or_default(),
+                ])
+                .output()
+                .map_err(|e| format!("install skill: failed to run git clone: {e}"))?;
+            if !output.status.success() {
+                let _ = std::fs::remove_dir_all(&target);
+                return Err(format!(
+                    "install skill: git clone failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ));
+            }
         }
     } else if let Err(e) = copy_dir(Path::new(source), &target) {
-        failed = Some(e.to_string());
-    }
-    if let Some(err) = failed {
         let _ = std::fs::remove_dir_all(&target);
-        return Err(format!(
-            "install skill: failed to install '{}': {}",
-            name, err
-        ));
+        return Err(format!("install skill: failed to copy '{}': {}", source, e));
     }
 
     // 校验 SKILL.md 存在；不存在则回滚
@@ -302,6 +304,101 @@ fn install_into(source: &str, target_root: &Path) -> Result<String, String> {
 
     let _ = crate::db::with_db_result(|conn| crate::db::metadata::skill::ensure(conn, &name));
     Ok(name)
+}
+
+/// 解析 GitHub 的 tree 子目录链接：
+/// `https://github.com/<owner>/<repo>/tree/<ref>/<subdir...>`
+/// → `(repo_url, subdir)`。
+fn parse_github_tree(url: &str) -> Option<(String, String)> {
+    let rest = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("http://github.com/"))?;
+    let parts: Vec<&str> = rest.split('/').collect();
+    if parts.len() < 5 || parts[2] != "tree" {
+        return None;
+    }
+    let owner = parts[0];
+    let repo = parts[1].trim_end_matches(".git");
+    let repo_url = format!("https://github.com/{owner}/{repo}.git");
+    // parts[3] 是 ref（main/master/commit hash），子目录从 parts[4..] 开始
+    let subdir = parts[4..].join("/");
+    Some((repo_url, subdir))
+}
+
+/// 用稀疏检出把 GitHub 仓库的某个子目录克隆到 target。
+fn clone_github_subdir(repo_url: &str, subdir: &str, target: &Path) -> Result<(), String> {
+    let tmp = std::env::temp_dir().join(format!(
+        "ueberneon-skill-clone-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    let clone = std::process::Command::new("git")
+        .args([
+            "clone",
+            "--depth",
+            "1",
+            "--filter=blob:none",
+            "--sparse",
+            repo_url,
+            tmp.to_str().unwrap_or_default(),
+        ])
+        .output();
+    let clone = match clone {
+        Ok(o) if o.status.success() => o,
+        Ok(o) => {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err(format!(
+                "install skill: git clone failed: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            ));
+        }
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err(format!("install skill: failed to run git clone: {e}"));
+        }
+    };
+
+    let sparse = std::process::Command::new("git")
+        .args([
+            "-C",
+            tmp.to_str().unwrap_or_default(),
+            "sparse-checkout",
+            "set",
+            subdir,
+        ])
+        .output();
+    let sparse = match sparse {
+        Ok(o) if o.status.success() => o,
+        Ok(o) => {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err(format!(
+                "install skill: sparse-checkout failed: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            ));
+        }
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err(format!("install skill: sparse-checkout failed: {e}"));
+        }
+    };
+    let _ = (clone, sparse);
+
+    let src = tmp.join(subdir);
+    if !src.is_dir() {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(format!(
+            "install skill: subdir '{}' not found in repo",
+            subdir
+        ));
+    }
+    let result = copy_dir(&src, target);
+    let _ = std::fs::remove_dir_all(&tmp);
+    result.map_err(|e| format!("install skill: failed to copy skill dir: {e}"))
 }
 
 /// 递归拷贝目录。
@@ -530,6 +627,62 @@ mod tests {
                     .is_none()
             );
         });
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn parses_github_tree_url() {
+        let (repo, subdir) =
+            parse_github_tree("https://github.com/joshp123/ai-stack/tree/main/skills/grill-me")
+                .unwrap();
+        assert_eq!(repo, "https://github.com/joshp123/ai-stack.git");
+        assert_eq!(subdir, "skills/grill-me");
+
+        assert!(parse_github_tree("https://github.com/joshp123/ai-stack").is_none());
+        assert!(parse_github_tree("https://github.com/joshp123/ai-stack/blob/main/x").is_none());
+        assert!(parse_github_tree("https://example.com/repo/tree/main/x").is_none());
+    }
+
+    #[test]
+    fn sparse_clone_installs_subdir() {
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let tmp = std::env::temp_dir().join(format!("_skill_git_{}", std::process::id()));
+        let repo = tmp.join("repo");
+        std::fs::create_dir_all(repo.join("skills").join("demo")).unwrap();
+        std::fs::write(
+            repo.join("skills").join("demo").join("SKILL.md"),
+            "---\nname: demo\ndescription: demo\n---\nbody\n",
+        )
+        .unwrap();
+
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap()
+        };
+        run(&["init", "-b", "main"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "test"]);
+        run(&["add", "."]);
+        assert!(run(&["commit", "-m", "init"]).status.success());
+
+        let target_root = tmp.join("target");
+        let repo_url = format!("file://{}", repo.display());
+        clone_github_subdir(&repo_url, "skills/demo", &target_root.join("demo")).unwrap();
+        assert!(target_root.join("demo").join("SKILL.md").is_file());
+        assert_eq!(
+            std::fs::read_to_string(target_root.join("demo").join("SKILL.md")).unwrap(),
+            "---\nname: demo\ndescription: demo\n---\nbody\n"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
