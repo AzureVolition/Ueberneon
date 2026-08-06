@@ -1,0 +1,23 @@
+[package]
+name = "ueberneon-macros"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"
+inventory = "0.3"
+schemars = "0.8" 
+
+# 引用 llm crate，宏展开时可引用其类型
+llm = { path = "../llm" }
+
+[dev-dependencies]
+async-trait = "0.1"
+ueberneon = { path = "../.." }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }

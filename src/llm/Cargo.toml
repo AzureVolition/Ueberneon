@@ -1,0 +1,23 @@
+[package]
+name = "llm"
+version = "0.1.0"
+edition = "2024"
+
+
+[features]
+default = ["openai"]
+openai = []
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+backon = "1"
+tokio-stream = "0.1"
+tokio-util = { version = "0.7", features = ["io"] }
+futures = "0.3"
+bytes = "1"
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
