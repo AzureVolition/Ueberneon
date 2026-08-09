@@ -346,6 +346,16 @@ pub fn App() -> Element {
         }
     };
 
+    // 启动时自动选中默认项目并加载其对话
+    let mut booted = use_signal(|| false);
+    let mut startup_select = on_select_project.clone();
+    use_effect(move || {
+        if !*booted.read() {
+            booted.set(true);
+            startup_select(crate::db::DEFAULT_PROJECT_ID.to_string());
+        }
+    });
+
     let on_back_to_projects = move |_| {
         sidebar_view.set(SidebarView::ProjectList);
         active_project_id.set(None);
@@ -359,36 +369,48 @@ pub fn App() -> Element {
         );
     };
 
-    let on_new_project = move |(name, path): (String, String)| {
-        let (new_id, rows) = crate::db::with_db(|conn| {
-            let new_id = crate::db::metadata::project::create(conn, &name, &path)
-                .unwrap_or_else(|_| String::new());
-            let rows = crate::db::metadata::project::list(conn).unwrap_or_default();
-            (new_id, rows)
-        });
-        projects.set(
-            rows.into_iter()
-                .map(|r| Project {
-                    id: r.id,
-                    name: r.name,
-                    path: r.path,
-                    created_at: r.created_at,
-                    conversations: Vec::new(),
-                    indicator_color: r.indicator_color,
-                    last_activity_at: r.last_activity_at,
-                })
-                .collect(),
-        );
-        active_project_id.set(Some(new_id.clone()));
-        sidebar_view.set(SidebarView::ConversationList(new_id));
-        active_conversation_id.set(String::new());
-        runtimes.write().insert(
-            active_conversation_id(),
-            ConversationRuntime {
-                messages: Vec::new(),
-                ..Default::default()
-            },
-        );
+    let on_new_project = move |name: String| {
+        let result =
+            crate::db::with_db(|conn| crate::db::metadata::project::create_managed(conn, &name));
+        match result {
+            Err(e) => {
+                error_signal.write().push(ErrorInfo::new(
+                    "project-create-failed",
+                    "create project failed",
+                    format!("{e:#}"),
+                    ErrorSeverity::Warning,
+                    ErrorSource::Validation,
+                ));
+            }
+            Ok(new_id) => {
+                let rows = crate::db::with_db(|conn| {
+                    crate::db::metadata::project::list(conn).unwrap_or_default()
+                });
+                projects.set(
+                    rows.into_iter()
+                        .map(|r| Project {
+                            id: r.id,
+                            name: r.name,
+                            path: r.path,
+                            created_at: r.created_at,
+                            conversations: Vec::new(),
+                            indicator_color: r.indicator_color,
+                            last_activity_at: r.last_activity_at,
+                        })
+                        .collect(),
+                );
+                active_project_id.set(Some(new_id.clone()));
+                sidebar_view.set(SidebarView::ConversationList(new_id));
+                active_conversation_id.set(String::new());
+                runtimes.write().insert(
+                    active_conversation_id(),
+                    ConversationRuntime {
+                        messages: Vec::new(),
+                        ..Default::default()
+                    },
+                );
+            }
+        }
     };
 
     let on_new_conversation = move |_| {
@@ -537,7 +559,7 @@ pub fn App() -> Element {
             mgr.remove(cid);
         }
         crate::db::try_with_db(|conn| {
-            if let Err(e) = crate::db::metadata::project::delete(conn, &project_id) {
+            if let Err(e) = crate::db::metadata::project::delete_full(conn, &project_id) {
                 tracing::error!(target:"db", error=%e, "delete project");
             }
         });
@@ -621,6 +643,7 @@ pub fn App() -> Element {
                 sidebar_view,
                 active_conversation_id,
                 streaming_project_id,
+                error_signal,
                 on_new_project,
                 on_new_conversation,
                 on_select_project,

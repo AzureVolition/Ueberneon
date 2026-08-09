@@ -112,14 +112,7 @@ impl AgentManager {
                 .ok_or(format!("{} project not found", pid))
         })?;
 
-        let mut project_path = PathBuf::from(project_row.path);
-        // 默认项目的 agent 工作区收敛到 <原路径>/workdir，避免直接操作数据目录
-        if pid == crate::db::DEFAULT_PROJECT_ID
-            && project_path.file_name().and_then(|s| s.to_str()) != Some("workdir")
-        {
-            project_path.push("workdir");
-            let _ = std::fs::create_dir_all(&project_path);
-        }
+        let project_path = PathBuf::from(project_row.path);
         register_builtins(&registry, &project_path);
 
         // 如果配置了启用工具列表，移除未启用的工具

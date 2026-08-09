@@ -58,6 +58,18 @@ pub fn init_db() -> anyhow::Result<Connection> {
     // 建表 + 种子数据
     rebuild_schema(&conn)?;
 
+    // 确保项目目录与默认项目笔记目录存在
+    let default_dir = crate::layout::default_project_dir();
+    std::fs::create_dir_all(default_dir.join("note")).with_context(|| {
+        format!(
+            "failed to create default project dir: {}",
+            default_dir.display()
+        )
+    })?;
+
+    // 同步全局书库（磁盘为真相）
+    crate::books::sync_from_disk(&conn)?;
+
     Ok(conn)
 }
 
@@ -77,6 +89,23 @@ fn rebuild_schema(conn: &Connection) -> anyhow::Result<()> {
             indicator_color TEXT DEFAULT '',
             last_activity_at TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS books (
+            id              TEXT PRIMARY KEY,
+            name            TEXT NOT NULL UNIQUE,
+            path            TEXT NOT NULL,
+            created_at      TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS project_books (
+            project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            book_id         TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+            created_at      TEXT NOT NULL,
+            PRIMARY KEY (project_id, book_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_project_books_book
+            ON project_books(book_id);
 
         CREATE TABLE IF NOT EXISTS conversations (
             id          TEXT PRIMARY KEY,
@@ -299,21 +328,59 @@ fn rebuild_schema(conn: &Connection) -> anyhow::Result<()> {
     );
 
     // ── 默认项目 ──────────────────────────────────────────────────────────
-    // 确保 "ueberneon" 默认项目始终存在
+    // 确保 "ueberneon" 默认项目始终存在，并迁移到 projects/ueberneon-default
+    let default_path = crate::layout::default_project_dir();
     conn.execute(
         "INSERT OR IGNORE INTO projects (id, name, path, created_at)
          VALUES (?1, ?2, ?3, ?4)",
         rusqlite::params![
             DEFAULT_PROJECT_ID,
             "ueberneon",
-            db_path()
-                .parent()
-                .context("db_path has no parent directory")?
-                .to_string_lossy()
-                .to_string(),
+            default_path.to_string_lossy().to_string(),
             chrono::Local::now().to_rfc3339(),
         ],
     )?;
+    // 旧版本默认项目路径是 ~/.ueberneon，迁移到新目录
+    conn.execute(
+        "UPDATE projects SET path = ?1 WHERE id = ?2 AND path != ?1",
+        rusqlite::params![
+            default_path.to_string_lossy().to_string(),
+            DEFAULT_PROJECT_ID
+        ],
+    )?;
+
+    // ── 迁移 v1：清除非默认项目（仅执行一次）──
+    // 老版本允许外部路径项目；新版本只保留默认项目和应用内新建项目。
+    // 只清理应用内记录，不触碰项目原本指向的外部磁盘目录。
+    let schema_version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if schema_version < 1 {
+        conn.execute(
+            "DELETE FROM tasks WHERE project_id != ?1",
+            rusqlite::params![DEFAULT_PROJECT_ID],
+        )?;
+        conn.execute(
+            "DELETE FROM plans WHERE project_id != ?1",
+            rusqlite::params![DEFAULT_PROJECT_ID],
+        )?;
+        conn.execute(
+            "DELETE FROM messages WHERE conversation_id IN
+             (SELECT id FROM conversations WHERE project_id != ?1)",
+            rusqlite::params![DEFAULT_PROJECT_ID],
+        )?;
+        conn.execute(
+            "DELETE FROM conversations WHERE project_id != ?1",
+            rusqlite::params![DEFAULT_PROJECT_ID],
+        )?;
+        conn.execute(
+            "DELETE FROM project_books WHERE project_id != ?1",
+            rusqlite::params![DEFAULT_PROJECT_ID],
+        )?;
+        conn.execute(
+            "DELETE FROM projects WHERE id != ?1",
+            rusqlite::params![DEFAULT_PROJECT_ID],
+        )?;
+        conn.execute_batch("PRAGMA user_version = 1;")?;
+    }
 
     // ── Provider 预设 ─────────────────────────────────────────────────────
     // 幂等插入所有内置 provider 预设

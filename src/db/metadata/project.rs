@@ -2,6 +2,7 @@
 
 use chrono::{DateTime, Local};
 use rusqlite::{Connection, Result, params};
+use std::path::{Path, PathBuf};
 
 /// 数据库行 —— 不含嵌套的 conversations 列表
 #[derive(Debug, Clone)]
@@ -33,6 +34,43 @@ pub fn create(conn: &Connection, name: &str, path: &str) -> Result<String> {
         "INSERT INTO projects (id, name, path, created_at) VALUES (?1, ?2, ?3, ?4)",
         params![id, name, path, now],
     )?;
+    Ok(id)
+}
+
+/// 创建应用管理的项目：名称 trim 后不能为空且不能与现有项目重名，
+/// 自动在项目根目录下创建 `note/` 文件夹，再写入 projects 表。
+pub fn create_managed(conn: &Connection, name: &str) -> anyhow::Result<String> {
+    create_managed_at(conn, name, &crate::layout::projects_root())
+}
+
+/// 创建入口（测试可注入项目根目录）
+fn create_managed_at(conn: &Connection, name: &str, root: &Path) -> anyhow::Result<String> {
+    use anyhow::{Context, anyhow};
+
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(anyhow!("project name cannot be empty"));
+    }
+    let exists: i64 = conn.query_row(
+        "SELECT count(*) FROM projects WHERE name = ?1",
+        params![name],
+        |r| r.get(0),
+    )?;
+    if exists > 0 {
+        return Err(anyhow!("project name already exists: {name}"));
+    }
+
+    let existing_paths: Vec<PathBuf> = {
+        let mut stmt = conn.prepare("SELECT path FROM projects")?;
+        stmt.query_map([], |r| r.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .map(PathBuf::from)
+            .collect()
+    };
+    let dir = crate::layout::unique_project_dir(root, name, &existing_paths);
+    std::fs::create_dir_all(crate::layout::project_note_dir(&dir))
+        .with_context(|| format!("failed to create project dir: {}", dir.display()))?;
+    let id = create(conn, name, &dir.display().to_string())?;
     Ok(id)
 }
 
@@ -120,6 +158,51 @@ pub fn delete(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// 删除项目及其全部关联数据（消息/对话/计划/任务/书关联）。
+/// 若项目目录位于应用数据目录内（~/.ueberneon/projects/），一并移除目录；
+/// 外部路径项目只删应用记录，不触碰磁盘。
+pub fn delete_full(conn: &Connection, id: &str) -> anyhow::Result<()> {
+    delete_full_at(conn, id, &crate::layout::projects_root())
+}
+
+/// 删除入口（测试可注入项目根目录）
+fn delete_full_at(conn: &Connection, id: &str, root: &Path) -> anyhow::Result<()> {
+    let project = get(conn, id)?;
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("DELETE FROM tasks WHERE project_id = ?1", params![id])?;
+    tx.execute("DELETE FROM plans WHERE project_id = ?1", params![id])?;
+    tx.execute(
+        "DELETE FROM messages WHERE conversation_id IN
+         (SELECT id FROM conversations WHERE project_id = ?1)",
+        params![id],
+    )?;
+    tx.execute(
+        "DELETE FROM conversations WHERE project_id = ?1",
+        params![id],
+    )?;
+    tx.execute(
+        "DELETE FROM project_books WHERE project_id = ?1",
+        params![id],
+    )?;
+    tx.execute("DELETE FROM projects WHERE id = ?1", params![id])?;
+    tx.commit()?;
+
+    if let Some(row) = project {
+        let path = PathBuf::from(&row.path);
+        if path.starts_with(&root) && path != root {
+            if let Err(e) = std::fs::remove_dir_all(&path) {
+                tracing::warn!(
+                    target: "db",
+                    error = %e,
+                    path = %path.display(),
+                    "failed to remove project dir"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,6 +217,58 @@ mod tests {
                 created_at TEXT NOT NULL,
                 indicator_color TEXT DEFAULT '',
                 last_activity_at TEXT
+            );
+            CREATE TABLE conversations (
+                id          TEXT PRIMARY KEY,
+                project_id  TEXT NOT NULL REFERENCES projects(id),
+                parent_conversation_id TEXT REFERENCES conversations(id),
+                title       TEXT DEFAULT '',
+                updated_at  TEXT NOT NULL,
+                created_at  TEXT NOT NULL,
+                agent_config_id TEXT,
+                status      TEXT NOT NULL DEFAULT 'active'
+            );
+            CREATE TABLE messages (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id     TEXT NOT NULL REFERENCES conversations(id),
+                role                TEXT NOT NULL,
+                content             TEXT,
+                timestamp           TEXT NOT NULL
+            );
+            CREATE TABLE plans (
+                id              TEXT PRIMARY KEY,
+                project_id      TEXT NOT NULL REFERENCES projects(id),
+                conversation_id TEXT NOT NULL REFERENCES conversations(id),
+                goal            TEXT NOT NULL,
+                description     TEXT NOT NULL DEFAULT '',
+                status          TEXT NOT NULL DEFAULT 'need_approval',
+                started_at      TEXT,
+                completed_at    TEXT,
+                created_at      TEXT NOT NULL
+            );
+            CREATE TABLE tasks (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                plan_id         TEXT NOT NULL REFERENCES plans(id),
+                project_id      TEXT NOT NULL REFERENCES projects(id),
+                parent_task_id  INTEGER REFERENCES tasks(id),
+                idx             INTEGER NOT NULL,
+                description     TEXT NOT NULL,
+                status          TEXT NOT NULL DEFAULT 'pending',
+                tool_hint       TEXT,
+                created_at      TEXT NOT NULL,
+                updated_at      TEXT NOT NULL
+            );
+            CREATE TABLE project_books (
+                project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                book_id         TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+                created_at      TEXT NOT NULL,
+                PRIMARY KEY (project_id, book_id)
+            );
+            CREATE TABLE books (
+                id              TEXT PRIMARY KEY,
+                name            TEXT NOT NULL UNIQUE,
+                path            TEXT NOT NULL,
+                created_at      TEXT NOT NULL
             );",
         )
         .unwrap();
@@ -177,5 +312,66 @@ mod tests {
         let id = create(&conn, "x", "/x").unwrap();
         delete(&conn, &id).unwrap();
         assert!(get(&conn, &id).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_create_managed_creates_note_dir() {
+        let conn = test_conn();
+        let root =
+            std::env::temp_dir().join(format!("ueberneon-project-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let id = create_managed_at(&conn, "线性代数", &root).unwrap();
+        let row = get(&conn, &id).unwrap().expect("should exist");
+        let dir = std::path::PathBuf::from(&row.path);
+        assert!(dir.join("note").is_dir(), "note dir should exist");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_create_managed_rejects_duplicate_name() {
+        let conn = test_conn();
+        let root =
+            std::env::temp_dir().join(format!("ueberneon-project-dup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        create_managed_at(&conn, "math", &root).unwrap();
+        let err = create_managed_at(&conn, "  math  ", &root).unwrap_err();
+        assert!(err.to_string().contains("already exists"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_create_managed_rejects_empty_name() {
+        let conn = test_conn();
+        let root =
+            std::env::temp_dir().join(format!("ueberneon-project-empty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let err = create_managed_at(&conn, "   ", &root).unwrap_err();
+        assert!(err.to_string().contains("cannot be empty"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_delete_full_removes_managed_dir() {
+        let conn = test_conn();
+        let root =
+            std::env::temp_dir().join(format!("ueberneon-project-del-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let id = create_managed_at(&conn, "to-delete", &root).unwrap();
+        let row = get(&conn, &id).unwrap().unwrap();
+        let dir = std::path::PathBuf::from(&row.path);
+        assert!(dir.is_dir());
+
+        delete_full_at(&conn, &id, &root).unwrap();
+        assert!(get(&conn, &id).unwrap().is_none());
+        assert!(!dir.exists(), "managed project dir should be removed");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

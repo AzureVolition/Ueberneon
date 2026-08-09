@@ -8,7 +8,9 @@ pub mod agent {
     pub use crate::state_agent::*;
 }
 
+pub mod books;
 pub mod db;
+pub mod layout;
 pub mod model;
 pub mod permission;
 pub mod settings;

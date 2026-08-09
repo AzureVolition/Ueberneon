@@ -734,38 +734,141 @@ body {
   text-transform: uppercase;
 }
 
-/* ── Path input row (input + browse button) ── */
-.project-form-field-row {
+/* ── Books dialog ── */
+.books-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.books-dialog {
+  width: min(440px, calc(100vw - 48px));
+  max-height: min(70vh, 560px);
+  background: var(--color-paper-2);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: msg-enter var(--dur-slow) var(--ease-out);
+}
+
+.books-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  padding: var(--space-md) var(--space-lg);
+  border-bottom: 1px solid var(--color-rule);
+}
+
+.books-dialog-title {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  letter-spacing: var(--tracking-micro);
+  color: var(--color-ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.books-dialog-actions {
   display: flex;
   gap: var(--space-2xs);
-  align-items: center;
+  flex-shrink: 0;
 }
 
-.project-form-field-row .project-form-input {
-  flex: 1;
-  min-width: 0;
-}
-
-.btn-browse {
-  background: transparent;
-  color: var(--color-accent);
-  border: 1px solid var(--color-rule);
-  padding: var(--space-xs) var(--space-sm);
+.books-dialog-actions .btn {
+  padding: var(--space-2xs) var(--space-sm);
   font-size: var(--text-xs);
-  border-radius: var(--radius-sm);
   font-family: var(--font-mono);
   letter-spacing: var(--tracking-micro);
   text-transform: uppercase;
+}
+
+.books-dialog-list {
+  overflow-y: auto;
+  padding: var(--space-xs);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+}
+
+.books-dialog-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-md);
+  background: var(--color-paper);
   cursor: pointer;
-  white-space: nowrap;
-  line-height: 1.3;
   transition: all var(--dur-fast) var(--ease-out);
 }
 
-.btn-browse:hover {
-  background: var(--color-paper-3);
+.books-dialog-item:hover {
   border-color: var(--color-accent);
   box-shadow: 0 0 12px var(--color-glow-2);
+}
+
+.books-dialog-item.checked {
+  border-color: var(--color-accent);
+  background: var(--color-paper-3);
+}
+
+.books-dialog-check {
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-rule);
+  color: var(--color-accent);
+  font-size: var(--text-xs);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.books-dialog-item.checked .books-dialog-check {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-paper);
+}
+
+.books-dialog-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.books-dialog-name {
+  color: var(--color-ink-2);
+  font-size: var(--text-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.books-dialog-path {
+  color: var(--color-ink-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.books-dialog-empty {
+  padding: var(--space-xl) var(--space-lg);
+  color: var(--color-ink-3);
+  font-size: var(--text-sm);
+  text-align: center;
 }
 
 /* ═══════════════════════════════════════════════

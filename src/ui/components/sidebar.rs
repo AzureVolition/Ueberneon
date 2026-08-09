@@ -1,5 +1,6 @@
 use dioxus::prelude::*;
 
+use crate::ui::components::error::{ErrorInfo, ErrorSeverity, ErrorSignal, ErrorSource};
 use crate::ui::state::SettingsTab;
 use crate::ui::state::*;
 
@@ -11,7 +12,8 @@ pub fn Sidebar(
     sidebar_view: Signal<SidebarView>,
     active_conversation_id: Signal<String>,
     streaming_project_id: Signal<Vec<String>>,
-    on_new_project: EventHandler<(String, String)>,
+    error_signal: Signal<ErrorSignal>,
+    on_new_project: EventHandler<String>,
     on_new_conversation: EventHandler<()>,
     on_select_project: EventHandler<String>,
     on_select_conversation: EventHandler<String>,
@@ -23,11 +25,64 @@ pub fn Sidebar(
     // ── 新建项目表单状态 ──
     let mut show_new_project_form = use_signal(|| false);
     let mut new_project_name = use_signal(String::new);
-    let mut new_project_path = use_signal(String::new);
 
     // ── 右键菜单状态 ──
     let mut project_context_menu = use_signal(|| Option::<(f64, f64, String)>::None);
     let mut conv_context_menu = use_signal(|| Option::<(f64, f64, String)>::None);
+
+    // ── 书引入弹窗状态 ──
+    let mut books_dialog = use_signal(|| Option::<String>::None);
+    let books_list =
+        use_signal(|| crate::db::with_db(|conn| crate::books::list(conn).unwrap_or_default()));
+    let mut selected_books = use_signal(|| std::collections::HashSet::<String>::new());
+
+    // 引入/移除一本书
+    let mut toggle_book = {
+        let dialog = books_dialog;
+        let mut selected = selected_books;
+        let mut err = error_signal;
+        move |book_id: String, on: bool| {
+            let Some(pid) = dialog.read().clone() else {
+                return;
+            };
+            let result = crate::db::with_db(|conn| {
+                if on {
+                    crate::books::add_to_project(conn, &pid, &book_id)
+                } else {
+                    crate::books::remove_from_project(conn, &pid, &book_id)
+                }
+            });
+            match result {
+                Ok(()) => {
+                    if on {
+                        selected.write().insert(book_id);
+                    } else {
+                        selected.write().remove(&book_id);
+                    }
+                }
+                Err(e) => {
+                    err.write().push(ErrorInfo::new(
+                        "book-link-failed",
+                        "update books failed",
+                        e,
+                        ErrorSeverity::Warning,
+                        ErrorSource::General,
+                    ));
+                }
+            }
+        }
+    };
+
+    // 重新扫描全局书库
+    let refresh_books = {
+        let mut list = books_list;
+        move |_| {
+            let _ = crate::db::with_db(|conn| crate::books::sync_from_disk(conn));
+            list.set(crate::db::with_db(|conn| {
+                crate::books::list(conn).unwrap_or_default()
+            }));
+        }
+    };
 
     let view = sidebar_view.read().clone();
 
@@ -47,6 +102,8 @@ pub fn Sidebar(
         let val = guard.as_ref().map(|(x, y, target_id)| {
             let is_default = *target_id == crate::db::DEFAULT_PROJECT_ID;
             let tid = target_id.clone();
+            let tid_books = tid.clone();
+            let tid_delete = tid.clone();
             let pos_x = *x;
             let pos_y = *y;
             // 当前项目的颜色键
@@ -88,11 +145,25 @@ pub fn Sidebar(
                             }
                         }
                         div { class: "context-menu-divider" }
+                        div {
+                            class: "context-menu-item",
+                            onclick: move |_| {
+                                project_context_menu.set(None);
+                                let ids = crate::db::with_db(|conn| {
+                                    crate::books::project_book_ids(conn, &tid_books)
+                                        .unwrap_or_default()
+                                });
+                                selected_books.set(ids.into_iter().collect());
+                                books_dialog.set(Some(tid_books.clone()));
+                            },
+                            "books"
+                        }
+                        div { class: "context-menu-divider" }
                         if !is_default {
                             div {
                                 class: "context-menu-item danger",
                                 onclick: move |_| {
-                                    on_delete_project.call(tid.clone());
+                                    on_delete_project.call(tid_delete.clone());
                                     project_context_menu.set(None);
                                 },
                                 "delete project"
@@ -205,7 +276,6 @@ pub fn Sidebar(
                                         *show = !*show;
                                         if *show {
                                             new_project_name.set(String::new());
-                                            new_project_path.set(String::new());
                                         }
                                     },
                                     if *show_new_project_form.read() { "−" } else { "+ NEW" }
@@ -227,44 +297,6 @@ pub fn Sidebar(
                                     }
                                 }
                                 div {
-                                    class: "project-form-field",
-                                    label { "path" }
-                                    div {
-                                        class: "project-form-field-row",
-                                        input {
-                                            class: "project-form-input",
-                                            value: "{new_project_path}",
-                                            placeholder: "/path/to/project",
-                                            oninput: move |evt| new_project_path.set(evt.value()),
-                                        }
-                                        button {
-                                            class: "btn btn-browse",
-                                            onclick: move |_| {
-                                                let mut name_signal = new_project_name;
-                                                let mut path_signal = new_project_path;
-                                                spawn(async move {
-                                                    if let Some(folder) = rfd::AsyncFileDialog::new()
-                                                        .set_title("select project folder")
-                                                        .pick_folder()
-                                                        .await
-                                                    {
-                                                        let path = folder.path();
-                                                        let path_str = path.display().to_string();
-                                                        path_signal.set(path_str);
-                                                        if let Some(folder_name) = path
-                                                            .file_name()
-                                                            .and_then(|n| n.to_str())
-                                                        {
-                                                            name_signal.set(folder_name.to_string());
-                                                        }
-                                                    }
-                                                });
-                                            },
-                                            "browse"
-                                        }
-                                    }
-                                }
-                                div {
                                     class: "project-form-actions",
                                     button {
                                         class: "btn btn-cancel",
@@ -278,9 +310,8 @@ pub fn Sidebar(
                                         class: "btn btn-send",
                                         onclick: move |_| {
                                             let name = new_project_name.read().trim().to_string();
-                                            let path = new_project_path.read().trim().to_string();
-                                            if !name.is_empty() && !path.is_empty() {
-                                                on_new_project.call((name, path));
+                                            if !name.is_empty() {
+                                                on_new_project.call(name);
                                                 show_new_project_form.set(false);
                                                 new_project_name.set(String::new());
                                             }
@@ -479,6 +510,86 @@ pub fn Sidebar(
                     span {
                         class: "sidebar-settings-label",
                         "settings"
+                    }
+                }
+            }
+
+            // ── 书引入弹窗 ──
+            if let Some(pid) = books_dialog.read().clone() {
+                {
+                    let proj_name = projects
+                        .read()
+                        .iter()
+                        .find(|p| p.id == pid)
+                        .map(|p| p.name.clone())
+                        .unwrap_or_default();
+                    let books = books_list.read().clone();
+                    let selected = selected_books.read().clone();
+                    rsx! {
+                        div {
+                            class: "books-dialog-overlay",
+                            onclick: move |_| books_dialog.set(None),
+                            div {
+                                class: "books-dialog",
+                                onclick: move |evt| evt.stop_propagation(),
+                                div {
+                                    class: "books-dialog-header",
+                                    span { class: "books-dialog-title", "books · {proj_name}" }
+                                    div {
+                                        class: "books-dialog-actions",
+                                        button {
+                                            class: "btn btn-cancel",
+                                            onclick: refresh_books.clone(),
+                                            "refresh"
+                                        }
+                                        button {
+                                            class: "btn btn-cancel",
+                                            onclick: move |_| books_dialog.set(None),
+                                            "close"
+                                        }
+                                    }
+                                }
+                                if books.is_empty() {
+                                    div {
+                                        class: "books-dialog-empty",
+                                        "no books found. put a folder under ~/.ueberneon/books/ and press refresh."
+                                    }
+                                } else {
+                                    div {
+                                        class: "books-dialog-list",
+                                        for book in books.iter() {
+                                            {
+                                                let bid = book.id.clone();
+                                                let bname = book.name.clone();
+                                                let bpath = book.path.clone();
+                                                let checked = selected.contains(&bid);
+                                                rsx! {
+                                                    div {
+                                                        class: if checked {
+                                                            "books-dialog-item checked"
+                                                        } else {
+                                                            "books-dialog-item"
+                                                        },
+                                                        onclick: move |_| {
+                                                            toggle_book(bid.clone(), !checked);
+                                                        },
+                                                        span {
+                                                            class: "books-dialog-check",
+                                                            if checked { "✓" } else { "" }
+                                                        }
+                                                        div {
+                                                            class: "books-dialog-info",
+                                                            span { class: "books-dialog-name", "{bname}" }
+                                                            span { class: "books-dialog-path", "{bpath}" }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
