@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::manager::AgentManager;
 use crate::agent::{ActionMode, AgentHandler, AgentMode};
 use crate::settings;
+use crate::ui::components::books_panel::BooksPanel;
 use crate::ui::components::chat_panel::ChatPanel;
 use crate::ui::components::dashboard_panel::DashboardPanel;
 use crate::ui::components::input_bar::InputBar;
@@ -232,7 +233,8 @@ pub fn App() -> Element {
             .collect()
     });
     let mut active_project_id = use_signal(|| Option::<String>::None);
-    let mut sidebar_view = use_signal(|| SidebarView::ProjectList);
+    let mut sidebar_view = use_signal(|| SidebarView::Home);
+    let mut conv_origin = use_signal(|| SidebarView::Home);
     let mut active_conversation_id = use_signal(|| String::new());
     let mut runtimes = use_signal(|| HashMap::<String, ConversationRuntime>::new());
     let is_streaming = use_signal(|| false);
@@ -306,6 +308,13 @@ pub fn App() -> Element {
     let on_select_project = {
         let ss = streaming_states.clone();
         move |project_id: String| {
+            // 记录会话页返回位置:从学习计划进入回学习计划,其余回首页
+            let origin = if matches!(*sidebar_view.read(), SidebarView::PlansList) {
+                SidebarView::PlansList
+            } else {
+                SidebarView::Home
+            };
+            conv_origin.set(origin);
             active_project_id.set(Some(project_id.clone()));
             sidebar_view.set(SidebarView::ConversationList(project_id.clone()));
 
@@ -346,18 +355,22 @@ pub fn App() -> Element {
         }
     };
 
-    // 启动时自动选中默认项目并加载其对话
-    let mut booted = use_signal(|| false);
-    let mut startup_select = on_select_project.clone();
-    use_effect(move || {
-        if !*booted.read() {
-            booted.set(true);
-            startup_select(crate::db::DEFAULT_PROJECT_ID.to_string());
-        }
-    });
-
     let on_back_to_projects = move |_| {
-        sidebar_view.set(SidebarView::ProjectList);
+        let origin = conv_origin.read().clone();
+        sidebar_view.set(origin);
+        active_project_id.set(None);
+        active_conversation_id.set(String::new());
+        runtimes.write().insert(
+            active_conversation_id(),
+            ConversationRuntime {
+                messages: Vec::new(),
+                ..Default::default()
+            },
+        );
+    };
+
+    let on_back_home = move |_| {
+        sidebar_view.set(SidebarView::Home);
         active_project_id.set(None);
         active_conversation_id.set(String::new());
         runtimes.write().insert(
@@ -533,7 +546,7 @@ pub fn App() -> Element {
         }
         let is_current = active_project_id.read().as_deref() == Some(&project_id);
         if is_current {
-            sidebar_view.set(SidebarView::ProjectList);
+            sidebar_view.set(SidebarView::PlansList);
             active_project_id.set(None);
             runtimes.write().insert(
                 active_conversation_id(),
@@ -649,6 +662,7 @@ pub fn App() -> Element {
                 on_select_project,
                 on_select_conversation,
                 on_back_to_projects,
+                on_back_home: on_back_home.clone(),
                 on_delete_project,
                 on_delete_conversation,
                 on_change_indicator_color,
@@ -727,6 +741,11 @@ pub fn App() -> Element {
                                     }
                                 }
                             }
+                        }
+                    }
+                    SidebarView::Library => {
+                        rsx! {
+                            BooksPanel { error_signal: error_signal }
                         }
                     }
                     _ => {

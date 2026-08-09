@@ -4,10 +4,11 @@
 // 项目通过 project_books 多对多关联「引入」书，并在 <项目>/books/<书名> 建符号链接，
 // 使 Agent 在项目工作区内即可读取书的内容；书的内容始终只存在全局书库，不复制进项目。
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU16, Ordering};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use rusqlite::{Connection, params};
 
 use crate::layout;
@@ -19,6 +20,20 @@ pub struct BookRow {
     pub name: String,
     pub path: String,
     pub created_at: String,
+}
+
+/// 引用一本书的项目(仅 id + 名称)
+#[derive(Debug, Clone)]
+pub struct ProjectRef {
+    pub id: String,
+    pub name: String,
+}
+
+/// 一本书及其被哪些项目引入
+#[derive(Debug, Clone)]
+pub struct BookWithProjects {
+    pub book: BookRow,
+    pub projects: Vec<ProjectRef>,
 }
 
 static ID_COUNTER: AtomicU16 = AtomicU16::new(0);
@@ -73,6 +88,54 @@ pub fn list_by_project(conn: &Connection, project_id: &str) -> rusqlite::Result<
     rows.collect()
 }
 
+/// 列出全部书及其引用项目(书按名称、项目按名称排序;无引用的书 projects 为空)
+pub fn list_with_projects(conn: &Connection) -> rusqlite::Result<Vec<BookWithProjects>> {
+    let mut stmt = conn.prepare(
+        "SELECT b.id, b.name, b.path, b.created_at, p.id, p.name
+         FROM books b
+         LEFT JOIN project_books pb ON pb.book_id = b.id
+         LEFT JOIN projects p ON p.id = pb.project_id
+         ORDER BY b.name, p.name",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            BookRow {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                path: r.get(2)?,
+                created_at: r.get(3)?,
+            },
+            r.get::<_, Option<String>>(4)?,
+            r.get::<_, Option<String>>(5)?,
+        ))
+    })?;
+
+    let mut items: Vec<BookWithProjects> = Vec::new();
+    let mut index: HashMap<String, usize> = HashMap::new();
+    for row in rows {
+        let (book, project_id, project_name) = row?;
+        if let Some(&i) = index.get(&book.id) {
+            if let (Some(pid), Some(pname)) = (project_id, project_name) {
+                items[i].projects.push(ProjectRef {
+                    id: pid,
+                    name: pname,
+                });
+            }
+        } else {
+            let mut projects = Vec::new();
+            if let (Some(pid), Some(pname)) = (project_id, project_name) {
+                projects.push(ProjectRef {
+                    id: pid,
+                    name: pname,
+                });
+            }
+            index.insert(book.id.clone(), items.len());
+            items.push(BookWithProjects { book, projects });
+        }
+    }
+    Ok(items)
+}
+
 /// 某项目已引入书的 id 集合
 pub fn project_book_ids(conn: &Connection, project_id: &str) -> rusqlite::Result<Vec<String>> {
     let mut stmt = conn.prepare("SELECT book_id FROM project_books WHERE project_id = ?1")?;
@@ -80,8 +143,60 @@ pub fn project_book_ids(conn: &Connection, project_id: &str) -> rusqlite::Result
     rows.collect()
 }
 
-/// 把 ~/.ueberneon/books/ 下的书同步进 books 表（只增不改，不删记录），
-/// 并补齐各项目已引入书的符号链接。
+/// 导入一个 PDF 文件为书：
+/// - 书名 = 文件名去扩展名并 trim，与现有 books.name 重名报错；
+/// - 创建 ~/.ueberneon/books/<book_id>/ 目录，复制 PDF 为 original.pdf；
+/// - 写入 books 表（目录名用 id，避免复杂字符进路径）。
+/// 任一步失败会清理已创建的目录，不留半成品。
+pub fn import_pdf_file(conn: &Connection, source: &Path) -> Result<String> {
+    import_pdf_file_at(conn, source, &layout::books_root())
+}
+
+/// 导入入口（测试可注入书库根目录）
+fn import_pdf_file_at(conn: &Connection, source: &Path, root: &Path) -> Result<String> {
+    let name = source
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("invalid pdf file name: {}", source.display()))?;
+
+    let exists: i64 = conn.query_row(
+        "SELECT count(*) FROM books WHERE name = ?1",
+        params![name],
+        |r| r.get(0),
+    )?;
+    if exists > 0 {
+        return Err(anyhow!("book already exists: {name}"));
+    }
+
+    let id = generate_id();
+    let dir = root.join(&id);
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("failed to create book dir: {}", dir.display()))?;
+    let pdf_path = layout::book_pdf_path(&dir);
+    if let Err(e) = std::fs::copy(source, &pdf_path) {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err(anyhow!(
+            "failed to copy pdf {} -> {}: {e}",
+            source.display(),
+            pdf_path.display()
+        ));
+    }
+
+    conn.execute(
+        "INSERT INTO books (id, name, path, created_at) VALUES (?1, ?2, ?3, ?4)",
+        params![id, name, dir.display().to_string(), now_rfc3339()],
+    )
+    .context("insert book row failed")?;
+    Ok(id)
+}
+
+/// 书库对账（books 表为唯一来源）：
+/// - 确保 books 根目录存在；
+/// - 为每本已有记录补齐缺失的书目录；
+/// - 补齐各项目已引入书的符号链接。
+/// 不再扫描 books/ 下任意文件夹生成新书（手动放置的文件夹不会被发现）。
 pub fn sync_from_disk(conn: &Connection) -> Result<()> {
     let root = layout::books_root();
     std::fs::create_dir_all(&root)
@@ -91,34 +206,16 @@ pub fn sync_from_disk(conn: &Connection) -> Result<()> {
 
 /// 同步入口（测试可注入根目录）
 fn sync_from_disk_with_root(conn: &Connection, root: &Path) -> Result<()> {
-    for entry in std::fs::read_dir(root)
-        .with_context(|| format!("failed to read books dir: {}", root.display()))?
-    {
-        let entry = entry?;
-        let file_type = entry.file_type()?;
-        if !file_type.is_dir() {
-            continue;
+    std::fs::create_dir_all(root)
+        .with_context(|| format!("failed to create books dir: {}", root.display()))?;
+
+    let books = list(conn)?;
+    for book in &books {
+        let dir = PathBuf::from(&book.path);
+        if !dir.is_dir() {
+            std::fs::create_dir_all(&dir)
+                .with_context(|| format!("failed to create book dir: {}", dir.display()))?;
         }
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with('.') {
-            continue;
-        }
-        let path = entry.path();
-        conn.execute(
-            "INSERT OR IGNORE INTO books (id, name, path, created_at) VALUES (?1, ?2, ?3, ?4)",
-            params![
-                generate_id(),
-                name,
-                path.display().to_string(),
-                now_rfc3339()
-            ],
-        )
-        .context("insert book row failed")?;
-        conn.execute(
-            "UPDATE books SET path = ?1 WHERE name = ?2",
-            params![path.display().to_string(), name],
-        )
-        .context("update book path failed")?;
     }
 
     sync_all_project_links(conn)?;
@@ -280,21 +377,29 @@ mod tests {
     }
 
     #[test]
-    fn sync_discovers_books() {
+    fn sync_reconciles_existing_books_only() {
         let conn = test_conn();
         let root =
             std::env::temp_dir().join(format!("ueberneon-books-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join("代数")).unwrap();
-        std::fs::create_dir_all(root.join(".hidden")).unwrap();
+        std::fs::create_dir_all(root.join("manual-folder")).unwrap();
+
+        conn.execute(
+            "INSERT INTO books (id, name, path, created_at) VALUES ('b1', '代数', ?1, ?2)",
+            params![root.join("book-b1").display().to_string(), now_rfc3339()],
+        )
+        .unwrap();
 
         sync_from_disk_with_root(&conn, &root).unwrap();
         let books = list(&conn).unwrap();
-        assert_eq!(books.len(), 1);
-        assert_eq!(books[0].name, "代数");
-        assert!(books[0].path.ends_with("代数"));
+        assert_eq!(books.len(), 1, "manual folder must not become a book");
+        assert!(
+            root.join("book-b1").is_dir(),
+            "missing book dir should be created"
+        );
+        assert!(root.join("manual-folder").is_dir());
 
-        // 幂等：再次同步不会重复
+        // 幂等
         sync_from_disk_with_root(&conn, &root).unwrap();
         assert_eq!(list(&conn).unwrap().len(), 1);
 
@@ -307,12 +412,19 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("ueberneon-books-link-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join("library").join("analysis")).unwrap();
+        std::fs::create_dir_all(root.join("library").join("book-b1")).unwrap();
         std::fs::create_dir_all(root.join("projects").join("p1")).unwrap();
 
         let project_path = root.join("projects").join("p1");
         insert_project(&conn, "p1", project_path.to_str().unwrap());
-        sync_from_disk_with_root(&conn, &root.join("library")).unwrap();
+        conn.execute(
+            "INSERT INTO books (id, name, path, created_at) VALUES ('b1', 'analysis', ?1, ?2)",
+            params![
+                root.join("library").join("book-b1").display().to_string(),
+                now_rfc3339()
+            ],
+        )
+        .unwrap();
 
         let books = list(&conn).unwrap();
         assert_eq!(books.len(), 1);
@@ -334,6 +446,83 @@ mod tests {
     }
 
     #[test]
+    fn list_with_projects_groups_and_sorts() {
+        let conn = test_conn();
+        let root =
+            std::env::temp_dir().join(format!("ueberneon-books-refs-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("library").join("book-dai")).unwrap();
+        std::fs::create_dir_all(root.join("library").join("book-geo")).unwrap();
+        std::fs::create_dir_all(root.join("projects").join("pa")).unwrap();
+        std::fs::create_dir_all(root.join("projects").join("pb")).unwrap();
+
+        conn.execute(
+            "INSERT INTO books (id, name, path, created_at) VALUES ('dai', '代数', ?1, ?2)",
+            params![
+                root.join("library").join("book-dai").display().to_string(),
+                now_rfc3339()
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO books (id, name, path, created_at) VALUES ('geo', '几何', ?1, ?2)",
+            params![
+                root.join("library").join("book-geo").display().to_string(),
+                now_rfc3339()
+            ],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO projects (id, name, path, created_at) VALUES ('pa', 'alpha', ?1, ?2)",
+            params![
+                root.join("projects").join("pa").display().to_string(),
+                now_rfc3339()
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO projects (id, name, path, created_at) VALUES ('pb', 'beta', ?1, ?2)",
+            params![
+                root.join("projects").join("pb").display().to_string(),
+                now_rfc3339()
+            ],
+        )
+        .unwrap();
+
+        let books = list(&conn).unwrap();
+        let dai = books.iter().find(|b| b.name == "代数").unwrap().id.clone();
+        let geo = books.iter().find(|b| b.name == "几何").unwrap().id.clone();
+
+        add_to_project(&conn, "pa", &dai).unwrap();
+        add_to_project(&conn, "pb", &dai).unwrap();
+        add_to_project(&conn, "pb", &geo).unwrap();
+
+        let items = list_with_projects(&conn).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].book.name, "代数");
+        assert_eq!(
+            items[0]
+                .projects
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "beta"]
+        );
+        assert_eq!(items[1].book.name, "几何");
+        assert_eq!(
+            items[1]
+                .projects
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["beta"]
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn duplicate_book_name_rejected() {
         let conn = test_conn();
         conn.execute(
@@ -348,5 +537,68 @@ mod tests {
             )
             .unwrap_err();
         assert!(err.to_string().contains("UNIQUE"));
+    }
+
+    #[test]
+    fn import_pdf_file_creates_id_dir_and_copy() {
+        let conn = test_conn();
+        let root =
+            std::env::temp_dir().join(format!("ueberneon-books-import-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let src = root.join("高等数学.pdf");
+        std::fs::write(&src, b"fake pdf content").unwrap();
+
+        let id = import_pdf_file_at(&conn, &src, &root).unwrap();
+        let row = get(&conn, &id).unwrap().expect("book row should exist");
+        assert_eq!(row.name, "高等数学");
+        let dir = std::path::PathBuf::from(&row.path);
+        assert_eq!(dir.file_name().unwrap().to_string_lossy(), id);
+        assert_eq!(dir.join("original.pdf"), layout::book_pdf_path(&dir));
+        assert_eq!(
+            std::fs::read(dir.join("original.pdf")).unwrap(),
+            b"fake pdf content"
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn import_pdf_file_rejects_duplicate_name() {
+        let conn = test_conn();
+        let root =
+            std::env::temp_dir().join(format!("ueberneon-books-import-dup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let src = root.join("math.pdf");
+        std::fs::write(&src, b"x").unwrap();
+
+        import_pdf_file_at(&conn, &src, &root).unwrap();
+        let err = import_pdf_file_at(&conn, &src, &root).unwrap_err();
+        assert!(err.to_string().contains("already exists"));
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn import_pdf_file_missing_source_cleans_dir() {
+        let conn = test_conn();
+        let root =
+            std::env::temp_dir().join(format!("ueberneon-books-import-bad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let src = root.join("missing.pdf");
+
+        let err = import_pdf_file_at(&conn, &src, &root).unwrap_err();
+        assert!(err.to_string().contains("failed to copy pdf"));
+        assert!(list(&conn).unwrap().is_empty(), "no partial book row");
+        let leftovers: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path() != src)
+            .collect();
+        assert!(leftovers.is_empty(), "no leftover book dir");
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

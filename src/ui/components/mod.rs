@@ -1,5 +1,6 @@
 pub mod agent_config_panel;
 pub mod app;
+pub mod books_panel;
 pub mod chat_panel;
 pub mod dashboard_panel;
 pub mod dropdown;

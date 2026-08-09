@@ -31,6 +31,17 @@ pub fn books_root() -> PathBuf {
     ueberneon_home().join("books")
 }
 
+/// 单本书的目录:~/.ueberneon/books/<book_id>/
+/// 目录名使用 books 表 id,显示名只存在 books.name,避免复杂字符进路径。
+pub fn book_dir(book_id: &str) -> PathBuf {
+    books_root().join(book_id)
+}
+
+/// 书目录内的原始 PDF 路径
+pub fn book_pdf_path(book_dir: &Path) -> PathBuf {
+    book_dir.join("original.pdf")
+}
+
 /// 默认项目目录 ~/.ueberneon/projects/ueberneon-default
 pub fn default_project_dir() -> PathBuf {
     projects_root().join("ueberneon-default")

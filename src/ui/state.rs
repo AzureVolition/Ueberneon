@@ -42,7 +42,12 @@ impl Default for ConversationRuntime {
 /// 侧边栏视图状态
 #[derive(Clone, PartialEq)]
 pub enum SidebarView {
-    ProjectList,
+    /// 三入口首页:ueberneon / 学习计划 / 书库
+    Home,
+    /// 学习计划(用户新建项目)列表
+    PlansList,
+    /// 书库(只读列表 + 引用关系)
+    Library,
     ConversationList(String),
     Settings(SettingsTab),
 }

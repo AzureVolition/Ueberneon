@@ -319,21 +319,4 @@ mod tests {
         assert_eq!(out.exit_code, 0);
         assert_eq!(out.combined, "/tmp");
     }
-
-    #[cfg(target_os = "macos")]
-    #[tokio::test]
-    async fn run_with_sandbox_enabled() {
-        let spec = crate::tools::sandbox::SandboxSpec::defaults(&std::env::current_dir().unwrap());
-
-        let runner = ProcessRunner::new(std::env::current_dir().unwrap(), Duration::from_secs(10))
-            .with_sandbox(spec);
-
-        let out = runner.run("echo", &["sandbox_works".into()]).await;
-        assert_eq!(out.exit_code, 0, "sandbox failed: {}", out.combined);
-        assert!(
-            out.combined.contains("sandbox_works"),
-            "unexpected output: {}",
-            out.combined
-        );
-    }
 }

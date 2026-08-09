@@ -81,7 +81,13 @@ pub fn SqlPanel() -> Element {
     // 点击表名
     let mut select_table = {
         move |name: String| {
-            let sql = format!("SELECT * FROM \"{}\"", name);
+            // 有 id 列的表按 id 倒序,默认展示最新数据
+            let order = if table_has_id(&name) {
+                " ORDER BY id DESC"
+            } else {
+                ""
+            };
+            let sql = format!("SELECT * FROM \"{}\"{}", name, order);
             sql_input.set(sql.clone());
             selected_table.set(name);
             run_query(sql, 1);
@@ -289,6 +295,19 @@ fn load_table_list() -> Result<Vec<TableInfo>, String> {
             tables.push(row.map_err(|e| format!("row: {e}"))?);
         }
         Ok(tables)
+    })
+}
+
+/// 表是否有名为 id 的列
+fn table_has_id(name: &str) -> bool {
+    crate::db::with_db(|conn| {
+        let Ok(mut stmt) = conn.prepare(&format!("PRAGMA table_info(\"{}\")", name)) else {
+            return false;
+        };
+        let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(1)) else {
+            return false;
+        };
+        rows.filter_map(|r| r.ok()).any(|column| column == "id")
     })
 }
 

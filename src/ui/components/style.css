@@ -631,6 +631,16 @@ body {
   box-shadow: 0 0 6px var(--color-glow-2);
 }
 
+/* ── Home 三入口导航 ── */
+.home-nav {
+  margin-top: var(--space-2xs);
+}
+
+.home-nav .sidebar-nav-item {
+  padding: var(--space-sm) var(--space-md);
+  font-size: var(--text-md);
+}
+
 /* ── Settings footer row ── */
 .sidebar-settings-row {
   display: flex;
@@ -638,6 +648,7 @@ body {
   gap: var(--space-sm);
   padding: var(--space-sm) var(--space-md);
   border-top: 1px solid var(--color-rule);
+  margin-top: auto;
   cursor: pointer;
   user-select: none;
   transition: background var(--dur-fast) var(--ease-out);
@@ -869,6 +880,147 @@ body {
   color: var(--color-ink-3);
   font-size: var(--text-sm);
   text-align: center;
+}
+
+/* ═══════════════════════════════════════════════
+   BOOKS PANEL (main area)
+   ═══════════════════════════════════════════════ */
+.books-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: var(--space-xl);
+  gap: var(--space-lg);
+  overflow-y: auto;
+}
+
+.books-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-md);
+}
+
+.books-panel-heading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+}
+
+.books-panel-title {
+  font-size: var(--text-xl);
+  font-weight: 600;
+  color: var(--color-ink-1);
+}
+
+.books-panel-subtitle {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-ink-3);
+}
+
+.books-panel-header .btn {
+  padding: var(--space-xs) var(--space-md);
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  letter-spacing: var(--tracking-micro);
+  text-transform: uppercase;
+}
+
+.books-panel-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.books-panel-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-lg);
+  padding: var(--space-md) var(--space-lg);
+  background: var(--color-paper-2);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease-out);
+}
+
+.books-panel-item:hover {
+  border-color: var(--color-accent);
+}
+
+.books-panel-item-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.books-panel-item-name {
+  color: var(--color-ink-1);
+  font-size: var(--text-md);
+  font-weight: 500;
+}
+
+.books-panel-item-title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.books-panel-item-badge {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-micro);
+  text-transform: uppercase;
+  color: var(--color-ink-3);
+  border: 1px solid var(--color-rule);
+  border-radius: 999px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+
+.books-panel-item-path {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.books-panel-item-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-2xs);
+  flex-shrink: 0;
+}
+
+.books-panel-item-refs {
+  font-size: var(--text-xs);
+  color: var(--color-accent);
+}
+
+.books-panel-item-refs.empty {
+  color: var(--color-ink-3);
+}
+
+.books-panel-item-created {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--color-ink-3);
+}
+
+.books-panel-empty {
+  padding: var(--space-2xl) var(--space-lg);
+  text-align: center;
+  color: var(--color-ink-3);
+  font-size: var(--text-sm);
+  border: 1px dashed var(--color-rule);
+  border-radius: var(--radius-lg);
 }
 
 /* ═══════════════════════════════════════════════

@@ -18,6 +18,7 @@ pub fn Sidebar(
     on_select_project: EventHandler<String>,
     on_select_conversation: EventHandler<String>,
     on_back_to_projects: EventHandler<()>,
+    on_back_home: EventHandler<()>,
     on_delete_project: EventHandler<String>,
     on_delete_conversation: EventHandler<String>,
     on_change_indicator_color: EventHandler<(String, String)>,
@@ -235,8 +236,8 @@ pub fn Sidebar(
                             class: "sidebar-header",
                             div {
                                 class: "sidebar-nav-back",
-                                onclick: move |_| on_back_to_projects.call(()),
-                                span { class: "sidebar-nav-label", "projects /" }
+                                onclick: move |_| on_back_home.call(()),
+                                span { class: "sidebar-nav-label", "ueberneon /" }
                                 span { class: "sidebar-nav-project", "settings" }
                             }
                         }
@@ -261,14 +262,88 @@ pub fn Sidebar(
                         }
                     }
                 }
-                SidebarView::ProjectList => {
+                SidebarView::Home => {
+                    let is_ueberneon_active = matches!(
+                        &view,
+                        SidebarView::ConversationList(pid) if *pid == crate::db::DEFAULT_PROJECT_ID
+                    );
+                    let is_plans_active = matches!(&view, SidebarView::PlansList);
+                    let is_library_active = matches!(&view, SidebarView::Library);
                     rsx! {
                         div {
                             class: "sidebar-header",
                             h3 { "ueber neon" }
+                        }
+                        div {
+                            class: "sidebar-nav-section home-nav",
+                            div {
+                                class: if is_ueberneon_active {
+                                    "sidebar-nav-item active"
+                                } else {
+                                    "sidebar-nav-item"
+                                },
+                                onclick: move |_| {
+                                    project_context_menu.set(None);
+                                    conv_context_menu.set(None);
+                                    on_select_project.call(crate::db::DEFAULT_PROJECT_ID.to_string());
+                                },
+                                oncontextmenu: move |evt| {
+                                    evt.prevent_default();
+                                    let coords = evt.client_coordinates();
+                                    project_context_menu.set(Some((
+                                        coords.x,
+                                        coords.y,
+                                        crate::db::DEFAULT_PROJECT_ID.to_string(),
+                                    )));
+                                },
+                                span { class: "sidebar-nav-item-icon", "◈" }
+                                span { "ueberneon" }
+                                if is_ueberneon_active {
+                                    span { class: "sidebar-nav-item-indicator" }
+                                }
+                            }
+                            div {
+                                class: if is_plans_active {
+                                    "sidebar-nav-item active"
+                                } else {
+                                    "sidebar-nav-item"
+                                },
+                                onclick: move |_| sidebar_view.set(SidebarView::PlansList),
+                                span { class: "sidebar-nav-item-icon", "▤" }
+                                span { "学习计划" }
+                                if is_plans_active {
+                                    span { class: "sidebar-nav-item-indicator" }
+                                }
+                            }
+                            div {
+                                class: if is_library_active {
+                                    "sidebar-nav-item active"
+                                } else {
+                                    "sidebar-nav-item"
+                                },
+                                onclick: move |_| sidebar_view.set(SidebarView::Library),
+                                span { class: "sidebar-nav-item-icon", "▦" }
+                                span { "书库" }
+                                if is_library_active {
+                                    span { class: "sidebar-nav-item-indicator" }
+                                }
+                            }
+                        }
+                    }
+                }
+                SidebarView::PlansList => {
+                    rsx! {
+                        div {
+                            class: "sidebar-header",
+                            div {
+                                class: "sidebar-nav-back",
+                                onclick: move |_| on_back_home.call(()),
+                                span { class: "sidebar-nav-label", "ueberneon /" }
+                                span { class: "sidebar-nav-project", "学习计划" }
+                            }
                             div {
                                 class: "sidebar-header-row",
-                                span { class: "sidebar-label", "PROJECTS" }
+                                span { class: "sidebar-label", "学习计划" }
                                 button {
                                     class: "btn btn-new-chat",
                                     onclick: move |_| {
@@ -324,7 +399,7 @@ pub fn Sidebar(
 
                         div {
                             class: "conversation-list",
-                            for proj in projects.read().iter() {
+                            for proj in projects.read().iter().filter(|p| p.id != crate::db::DEFAULT_PROJECT_ID) {
                                 {
                                     let proj_id = proj.id.clone();
                                     let proj_name = proj.name.clone();
@@ -386,11 +461,25 @@ pub fn Sidebar(
                         }
                     }
                 }
+                SidebarView::Library => {
+                    rsx! {
+                        div {
+                            class: "sidebar-header",
+                            div {
+                                class: "sidebar-nav-back",
+                                onclick: move |_| on_back_home.call(()),
+                                span { class: "sidebar-nav-label", "ueberneon /" }
+                                span { class: "sidebar-nav-project", "书库" }
+                            }
+                        }
+                    }
+                }
                 SidebarView::ConversationList(ref project_id) => {
                     let proj_name = projects.read().iter()
                         .find(|p| p.id == *project_id)
                         .map(|p| p.name.clone())
                         .unwrap_or_default();
+                    let is_default_proj = *project_id == crate::db::DEFAULT_PROJECT_ID;
 
                     rsx! {
                         div {
@@ -398,7 +487,10 @@ pub fn Sidebar(
                             div {
                                 class: "sidebar-nav-back",
                                 onclick: move |_| on_back_to_projects.call(()),
-                                span { class: "sidebar-nav-label", "projects /" }
+                                span {
+                                    class: "sidebar-nav-label",
+                                    if is_default_proj { "ueberneon /" } else { "plans /" }
+                                }
                                 span { class: "sidebar-nav-project", "{proj_name}" }
                             }
                             div {
