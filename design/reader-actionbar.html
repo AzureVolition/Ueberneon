@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <title>reader action bar · 8 states</title>
+    <link rel="stylesheet" href="reader-actionbar.css" />
+  </head>
+  <body>
+    <p class="demo__eyebrow">READER · SELECTION · ACTIONS</p>
+    <h1 class="demo__title">reader action bar</h1>
+    <p class="demo__note">任何选区双指按击都会出现此栏；普通选区只有“复制”，公式选区才追加“精确复制公式”。</p>
+
+    <section class="demo__section" aria-labelledby="anchored-head">
+      <h2 class="demo__section-head" id="anchored-head">anchored · near selection</h2>
+      <div class="demo__stage">
+        <div class="demo__page-line"></div>
+        <div class="demo__page-line demo__page-line--short"></div>
+        <div class="demo__page-line demo__page-line--selection"></div>
+        <div class="demo__page-line"></div>
+        <div class="demo__page-line demo__page-line--short"></div>
+        <div
+          class="reader-actionbar is-open is-static"
+          role="toolbar"
+          aria-label="选区操作"
+        >
+          <button class="reader-actionbar__btn" type="button">
+            复制
+          </button>
+          <span class="reader-actionbar__divider" aria-hidden="true"></span>
+          <button
+            class="reader-actionbar__btn reader-actionbar__btn--formula"
+            type="button"
+          >
+            精确复制公式
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <section class="demo__section" aria-labelledby="states-head">
+      <h2 class="demo__section-head" id="states-head">states · 8/8</h2>
+      <div class="demo__rows">
+        <div class="demo__row">
+          <span class="demo__row-label">plain</span>
+          <div class="reader-actionbar is-static" role="toolbar" aria-label="选区操作">
+            <button class="reader-actionbar__btn" type="button">
+              复制
+            </button>
+          </div>
+        </div>
+
+        <div class="demo__row">
+          <span class="demo__row-label">default</span>
+          <div class="reader-actionbar is-static" role="toolbar" aria-label="选区操作">
+            <button class="reader-actionbar__btn" type="button">
+              复制
+            </button>
+            <span class="reader-actionbar__divider" aria-hidden="true"></span>
+            <button
+              class="reader-actionbar__btn reader-actionbar__btn--formula"
+              type="button"
+            >
+              精确复制公式
+            </button>
+          </div>
+        </div>
+
+        <div class="demo__row">
+          <span class="demo__row-label">hover</span>
+          <div class="reader-actionbar is-static" role="toolbar" aria-label="选区操作">
+            <button
+              class="reader-actionbar__btn is-hover"
+              type="button"
+            >
+              复制
+            </button>
+            <span class="reader-actionbar__divider" aria-hidden="true"></span>
+            <button
+              class="reader-actionbar__btn reader-actionbar__btn--formula is-hover"
+              type="button"
+            >
+              精确复制公式
+            </button>
+          </div>
+        </div>
+
+        <div class="demo__row">
+          <span class="demo__row-label">focus</span>
+          <div class="reader-actionbar is-static" role="toolbar" aria-label="选区操作">
+            <button
+              class="reader-actionbar__btn is-focus"
+              type="button"
+            >
+              复制
+            </button>
+            <span class="reader-actionbar__divider" aria-hidden="true"></span>
+            <button
+              class="reader-actionbar__btn reader-actionbar__btn--formula"
+              type="button"
+            >
+              精确复制公式
+            </button>
+          </div>
+        </div>
+
+        <div class="demo__row">
+          <span class="demo__row-label">active</span>
+          <div class="reader-actionbar is-static" role="toolbar" aria-label="选区操作">
+            <button
+              class="reader-actionbar__btn is-active"
+              type="button"
+            >
+              复制
+            </button>
+            <span class="reader-actionbar__divider" aria-hidden="true"></span>
+            <button
+              class="reader-actionbar__btn reader-actionbar__btn--formula is-active"
+              type="button"
+            >
+              精确复制公式
+            </button>
+          </div>
+        </div>
+
+        <div class="demo__row">
+          <span class="demo__row-label">disabled</span>
+          <div class="reader-actionbar is-static" role="toolbar" aria-label="选区操作">
+            <button class="reader-actionbar__btn" type="button">
+              复制
+            </button>
+            <span class="reader-actionbar__divider" aria-hidden="true"></span>
+            <button
+              class="reader-actionbar__btn reader-actionbar__btn--formula is-disabled"
+              type="button"
+              disabled
+              aria-disabled="true"
+              title="当前选区不是公式"
+            >
+              精确复制公式
+            </button>
+          </div>
+        </div>
+
+        <div class="demo__row">
+          <span class="demo__row-label">loading</span>
+          <div class="reader-actionbar is-static" role="toolbar" aria-label="选区操作">
+            <button class="reader-actionbar__btn" type="button">
+              复制
+            </button>
+            <span class="reader-actionbar__divider" aria-hidden="true"></span>
+            <button
+              class="reader-actionbar__btn reader-actionbar__btn--formula is-loading"
+              type="button"
+              aria-busy="true"
+            >
+              识别中…
+            </button>
+          </div>
+        </div>
+
+        <div class="demo__row">
+          <span class="demo__row-label">error</span>
+          <div class="reader-actionbar is-static" role="toolbar" aria-label="选区操作">
+            <button class="reader-actionbar__btn" type="button">
+              复制
+            </button>
+            <span class="reader-actionbar__divider" aria-hidden="true"></span>
+            <button
+              class="reader-actionbar__btn reader-actionbar__btn--formula is-error"
+              type="button"
+              aria-invalid="true"
+              title="识别失败，可重试"
+            >
+              识别失败，重试
+            </button>
+          </div>
+        </div>
+
+        <div class="demo__row">
+          <span class="demo__row-label">success</span>
+          <div class="reader-actionbar is-static" role="toolbar" aria-label="选区操作">
+            <button class="reader-actionbar__btn" type="button">
+              复制
+            </button>
+            <span class="reader-actionbar__divider" aria-hidden="true"></span>
+            <button
+              class="reader-actionbar__btn reader-actionbar__btn--formula is-success"
+              type="button"
+            >
+              已复制 LaTeX
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </body>
+</html>

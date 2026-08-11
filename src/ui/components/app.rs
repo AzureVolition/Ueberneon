@@ -15,6 +15,7 @@ use crate::ui::components::chat_panel::ChatPanel;
 use crate::ui::components::dashboard_panel::DashboardPanel;
 use crate::ui::components::input_bar::InputBar;
 use crate::ui::components::plan_panel::PlanPanel;
+use crate::ui::components::reader_panel::ReaderPanel;
 use crate::ui::components::settings_panel::SettingsPanel;
 use crate::ui::components::sidebar::Sidebar;
 use crate::ui::state::SettingsTab;
@@ -382,6 +383,8 @@ pub fn App() -> Element {
         );
     };
 
+    let on_back_reader = move |_| sidebar_view.set(SidebarView::Library);
+
     let on_new_project = move |name: String| {
         let result =
             crate::db::with_db(|conn| crate::db::metadata::project::create_managed(conn, &name));
@@ -650,26 +653,38 @@ pub fn App() -> Element {
                 let d = settings::get().appearance.ui_density;
                 if d == "compact" { "app-container density-compact" } else { "app-container" }
             },
-            Sidebar {
-                projects,
-                active_project_id,
-                sidebar_view,
-                active_conversation_id,
-                streaming_project_id,
-                error_signal,
-                on_new_project,
-                on_new_conversation,
-                on_select_project,
-                on_select_conversation,
-                on_back_to_projects,
-                on_back_home: on_back_home.clone(),
-                on_delete_project,
-                on_delete_conversation,
-                on_change_indicator_color,
-            }
-            div {
-                class: "main-area",
-                match sidebar_view() {
+            match sidebar_view() {
+                SidebarView::Reader(book_id) => {
+                    rsx! {
+                        ReaderPanel {
+                            book_id: book_id.clone(),
+                            error_signal: error_signal,
+                            on_back: on_back_reader,
+                        }
+                    }
+                }
+                _ => {
+                    rsx! {
+                        Sidebar {
+                            projects,
+                            active_project_id,
+                            sidebar_view,
+                            active_conversation_id,
+                            streaming_project_id,
+                            error_signal,
+                            on_new_project,
+                            on_new_conversation,
+                            on_select_project,
+                            on_select_conversation,
+                            on_back_to_projects,
+                            on_back_home: on_back_home.clone(),
+                            on_delete_project,
+                            on_delete_conversation,
+                            on_change_indicator_color,
+                        }
+                        div {
+                            class: "main-area",
+                            match sidebar_view() {
                     SidebarView::Settings(ref tab) => {
                         let project_path = crate::db::with_db(|conn| {
                             let pid = active_project_id.read().clone();
@@ -690,7 +705,7 @@ pub fn App() -> Element {
                                 })
                         });
                         match tab {
-                            SettingsTab::Providers | SettingsTab::General | SettingsTab::Appearance | SettingsTab::Sql | SettingsTab::Tools | SettingsTab::Skills => {
+                            SettingsTab::Providers | SettingsTab::General | SettingsTab::Appearance | SettingsTab::FormulaOcr | SettingsTab::Sql | SettingsTab::Tools | SettingsTab::Skills => {
                                 rsx! {
                                     SettingsPanel {
                                         tab: tab.clone(),
@@ -745,7 +760,13 @@ pub fn App() -> Element {
                     }
                     SidebarView::Library => {
                         rsx! {
-                            BooksPanel { error_signal: error_signal }
+                            BooksPanel {
+                                error_signal: error_signal,
+                                on_open_book: {
+                                    let mut sv = sidebar_view;
+                                    move |id: String| sv.set(SidebarView::Reader(id))
+                                },
+                            }
                         }
                     }
                     _ => {
@@ -1066,6 +1087,9 @@ pub fn App() -> Element {
             }  // ← _ => arm
             }  // ← match
             }  // ← main-area
+                }  // ← rsx!
+            }  // ← _ => arm
+            }  // ← match
 
             if let Some(ref err) = error_signal.read().modal.clone() {
                 ErrorModal { error: err.clone(), on_dismiss: move |_| error_signal.write().dismiss_modal() }

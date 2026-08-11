@@ -9,12 +9,17 @@ pub mod agent {
 }
 
 pub mod books;
+pub mod calibration;
 pub mod db;
+pub mod formula_ocr;
 pub mod layout;
 pub mod model;
+pub mod pdf;
+pub mod pdfium;
 pub mod permission;
 pub mod settings;
 pub mod skills;
 pub mod store;
 pub mod tools;
+pub mod translate;
 pub mod ui;

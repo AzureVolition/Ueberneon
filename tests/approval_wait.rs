@@ -7,8 +7,8 @@
 //! Provider 产生工具调用流、fake CheckableTool 执行；临时 HOME 隔离 DB
 //! （accept_message/execute 会落库到 ~/.ueberneon/data.db）。
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use llm::provider::{Chunk, ChunkStream, Provider, ProviderError, Request, ToolCall};
@@ -21,8 +21,8 @@ use ueberneon::state_agent::{
     Agent, AgentCore, AgentHandler, ApprovalChain, InterruptState, Running, Static, StreamResult,
     Tool, ToolContext, ToolResult, UserApprovalGate,
 };
-use ueberneon::tools::internal::common::checkable_tool::CheckableTool;
 use ueberneon::tools::Registry;
+use ueberneon::tools::internal::common::checkable_tool::CheckableTool;
 
 // ── fake 组件 ───────────────────────────────────────────────────────────────
 
@@ -113,11 +113,7 @@ fn setup_test_home() {
     }
 }
 
-fn make_agent(
-    provider: Box<dyn Provider>,
-    registry: Registry,
-    tag: &str,
-) -> Agent<Static> {
+fn make_agent(provider: Box<dyn Provider>, registry: Registry, tag: &str) -> Agent<Static> {
     let core = AgentCore::new(
         provider,
         registry,
@@ -177,7 +173,10 @@ async fn drive_to_executing(
         )
         .await
         .expect("accept_message should succeed");
-    let stream_result = running.stream_message().await.expect("stream should succeed");
+    let stream_result = running
+        .stream_message()
+        .await
+        .expect("stream should succeed");
     let StreamResult::Continue(executing) = stream_result else {
         panic!("expected Continue (tool call) but got Done");
     };
@@ -223,12 +222,14 @@ async fn allow_executes_tool() {
     });
     let cancel = CancellationToken::new();
 
-    let (executing, tx, _cancel) = drive_to_executing(make_agent(provider, registry, "allow"), cancel.clone()).await;
+    let (executing, tx, _cancel) =
+        drive_to_executing(make_agent(provider, registry, "allow"), cancel.clone()).await;
 
     // 并发注入 allow（等 execute 进入等待）
     let inject = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(100)).await;
-        tx.try_send(("call_1".to_string(), true)).expect("send allow");
+        tx.try_send(("call_1".to_string(), true))
+            .expect("send allow");
     });
     let result = executing.execute().await;
     inject.await.expect("inject task panicked");
@@ -261,11 +262,13 @@ async fn deny_rejects_tool() {
     });
     let cancel = CancellationToken::new();
 
-    let (executing, tx, _cancel) = drive_to_executing(make_agent(provider, registry, "deny"), cancel.clone()).await;
+    let (executing, tx, _cancel) =
+        drive_to_executing(make_agent(provider, registry, "deny"), cancel.clone()).await;
 
     let inject = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(100)).await;
-        tx.try_send(("call_1".to_string(), false)).expect("send deny");
+        tx.try_send(("call_1".to_string(), false))
+            .expect("send deny");
     });
     let result = executing.execute().await;
     inject.await.expect("inject task panicked");
@@ -298,7 +301,8 @@ async fn channel_close_auto_denies() {
     });
     let cancel = CancellationToken::new();
 
-    let (executing, tx, _cancel) = drive_to_executing(make_agent(provider, registry, "close"), cancel.clone()).await;
+    let (executing, tx, _cancel) =
+        drive_to_executing(make_agent(provider, registry, "close"), cancel.clone()).await;
     // drop 唯一 Sender → 子线程 recv None → closed → 主线程自动拒绝
     drop(tx);
 
@@ -331,7 +335,8 @@ async fn cancel_aborts_wait() {
     });
     let cancel = CancellationToken::new();
 
-    let (executing, _tx, cancel) = drive_to_executing(make_agent(provider, registry, "cancel"), cancel.clone()).await;
+    let (executing, _tx, cancel) =
+        drive_to_executing(make_agent(provider, registry, "cancel"), cancel.clone()).await;
 
     let cancel_task = tokio::spawn({
         let cancel = cancel.clone();
@@ -384,8 +389,10 @@ async fn pre_approved_second_tool_runs_in_order() {
     // 与真实 UI 流程一致（审批卡渲染后可点击），走 Notify 唤醒路径。
     let inject = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(100)).await;
-        tx.try_send(("call_b".to_string(), true)).expect("send allow b");
-        tx.try_send(("call_a".to_string(), true)).expect("send allow a");
+        tx.try_send(("call_b".to_string(), true))
+            .expect("send allow b");
+        tx.try_send(("call_a".to_string(), true))
+            .expect("send allow a");
     });
     let result = executing.execute().await;
     inject.await.expect("inject task panicked");

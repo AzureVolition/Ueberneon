@@ -1,7 +1,7 @@
-use std::time::Duration;
+use crate::provider::ProviderError;
 use backon::{ExponentialBuilder, Retryable};
 use reqwest::StatusCode;
-use crate::provider::ProviderError;
+use std::time::Duration;
 
 const MAX_RETRIES: usize = 10;
 const BASE_DELAY: Duration = Duration::from_millis(500);
@@ -52,9 +52,7 @@ pub async fn send_with_retry(
             }
 
             // 连接错误 → 可重试
-            Err(e) if is_conn_reset(&e) => {
-                Err(ProviderError::Network(e))
-            }
+            Err(e) if is_conn_reset(&e) => Err(ProviderError::Network(e)),
 
             // 其他网络错误
             Err(e) => Err(ProviderError::Network(e)),

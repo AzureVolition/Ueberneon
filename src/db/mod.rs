@@ -453,6 +453,27 @@ fn rebuild_schema(conn: &Connection) -> anyhow::Result<()> {
         ],
     )?;
 
+    // ── 内置 translate SubAgent ────────────────────────────────────────────
+
+    // 幂等插入翻译子 agent（阅读器选区翻译使用）。
+    // 使用 OR IGNORE：已存在（含用户已配置 provider/模型）时不覆盖。
+    conn.execute(
+        "INSERT OR IGNORE INTO agent_configs (id, name, agent_type, system_prompt, temperature, max_tokens, tools, description, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        rusqlite::params![
+            crate::translate::TRANSLATE_AGENT_ID,
+            "translate",
+            "SubAgent",
+            "你是学术文献翻译助手。请把用户提供的文本翻译成简体中文，保持术语准确、语句通顺；只输出译文，不要解释、不要复述原文。",
+            0.2,
+            Some(2048u32),
+            "[]",
+            "阅读器选区翻译助手：把选中文本翻译成简体中文（公式以占位符原样保留）",
+            chrono::Local::now().to_rfc3339(),
+            chrono::Local::now().to_rfc3339(),
+        ],
+    )?;
+
     Ok(())
 }
 

@@ -7,6 +7,7 @@ pub mod dropdown;
 pub mod error;
 pub mod input_bar;
 pub mod plan_panel;
+pub mod reader_panel;
 pub mod settings_panel;
 pub mod sidebar;
 pub mod skills_panel;

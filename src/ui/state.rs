@@ -48,6 +48,8 @@ pub enum SidebarView {
     PlansList,
     /// 书库(只读列表 + 引用关系)
     Library,
+    /// 全屏阅读器(book_id)
+    Reader(String),
     ConversationList(String),
     Settings(SettingsTab),
 }
@@ -60,6 +62,7 @@ pub enum SettingsTab {
     SubAgents,
     General,
     Appearance,
+    FormulaOcr,
     Tools,
     Skills,
     Sql,
@@ -73,6 +76,7 @@ impl SettingsTab {
             SettingsTab::SubAgents => "sub agents",
             SettingsTab::General => "general",
             SettingsTab::Appearance => "appearance",
+            SettingsTab::FormulaOcr => "formula ocr",
             SettingsTab::Tools => "tools",
             SettingsTab::Skills => "skills",
             SettingsTab::Sql => "sql",
@@ -86,6 +90,7 @@ impl SettingsTab {
             SettingsTab::SubAgents => "⊞",
             SettingsTab::General => "◎",
             SettingsTab::Appearance => "◐",
+            SettingsTab::FormulaOcr => "∑",
             SettingsTab::Tools => "⊡",
             SettingsTab::Skills => "◇",
             SettingsTab::Sql => "📋",

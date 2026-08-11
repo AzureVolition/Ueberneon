@@ -2,7 +2,7 @@ use std::fmt;
 
 use chrono::{DateTime, Utc};
 use futures::stream::Stream;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 
 pub type ChunkStream = Pin<Box<dyn Stream<Item = Result<Chunk, ProviderError>> + Send>>;
@@ -37,9 +37,9 @@ pub struct Message {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_name: Option<String>,        // tool result 消息的工具名
+    pub tool_name: Option<String>, // tool result 消息的工具名
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
-    pub images: Vec<String>,         // data:image/...;base64,...
+    pub images: Vec<String>, // data:image/...;base64,...
     /// 消息创建时间（LLM 返回/工具执行完毕的时间），用于 DB 排序
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub timestamp: Option<DateTime<Utc>>,
@@ -49,7 +49,7 @@ pub struct Message {
 pub struct ToolCall {
     pub id: String,
     pub name: String,
-    pub arguments: String,   // raw JSON string
+    pub arguments: String, // raw JSON string
     pub diff: String,
     pub added: u32,
     pub removed: u32,
@@ -59,7 +59,7 @@ pub struct ToolCall {
 pub struct ToolSchema {
     pub name: String,
     pub description: String,
-    pub parameters: serde_json::Value,  // JSON Schema
+    pub parameters: serde_json::Value, // JSON Schema
 }
 
 #[derive(Clone, Debug)]
@@ -73,9 +73,18 @@ pub struct Request {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Chunk {
     Text(String),
-    Reasoning { text: String, signature: Option<String> },
-    ToolCallStart { id: String, name: String },
-    ToolCallDelta { id: String, arguments: String },
+    Reasoning {
+        text: String,
+        signature: Option<String>,
+    },
+    ToolCallStart {
+        id: String,
+        name: String,
+    },
+    ToolCallDelta {
+        id: String,
+        arguments: String,
+    },
     ToolCallComplete(ToolCall),
     Usage(Usage),
 }
@@ -125,7 +134,9 @@ impl std::fmt::Display for ProviderError {
             }
             Self::Network(e) => write!(f, "network: {e}"),
             Self::StreamInterrupted(e) => write!(f, "stream interrupted: {e}"),
-            Self::Auth { provider, status, .. } => {
+            Self::Auth {
+                provider, status, ..
+            } => {
                 write!(f, "auth failed for {provider} (HTTP {status})")
             }
             Self::Json(e) => write!(f, "json: {e}"),
@@ -145,7 +156,9 @@ impl std::error::Error for ProviderError {
 }
 
 impl From<serde_json::Error> for ProviderError {
-    fn from(e: serde_json::Error) -> Self { Self::Json(e) }
+    fn from(e: serde_json::Error) -> Self {
+        Self::Json(e)
+    }
 }
 
 impl fmt::Display for Role {
@@ -158,5 +171,3 @@ impl fmt::Display for Role {
         }
     }
 }
-
-

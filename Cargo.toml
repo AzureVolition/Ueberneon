@@ -41,3 +41,10 @@ rfd = "0.17"
 rusqlite = { version = "0.31", features = ["bundled", "trace"] }
 inventory = "0.3"
 once_cell = "1.21.4"
+libloading = "0.8"
+image = { version = "0.25", default-features = false, features = ["png"] }
+ndarray = "0.17"
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["load-dynamic", "ndarray"] }
+
+[build-dependencies]
+sha2 = "0.10"

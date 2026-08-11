@@ -226,6 +226,7 @@ pub fn Sidebar(
                         SettingsTab::SubAgents,
                         SettingsTab::General,
                         SettingsTab::Appearance,
+                        SettingsTab::FormulaOcr,
                         SettingsTab::Tools,
                         SettingsTab::Skills,
                         SettingsTab::Sql,
@@ -473,6 +474,10 @@ pub fn Sidebar(
                             }
                         }
                     }
+                }
+                SidebarView::Reader(_) => {
+                    // 全屏阅读器由 app.rs 直接渲染,侧边栏不显示
+                    rsx! {}
                 }
                 SidebarView::ConversationList(ref project_id) => {
                     let proj_name = projects.read().iter()

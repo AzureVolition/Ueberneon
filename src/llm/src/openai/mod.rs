@@ -4,16 +4,16 @@
 //! DeepSeek: thinking.type="enabled" + reasoning_effort
 //! MiniMax:  thinking.type="adaptive"|"disabled" (无 effort 标尺)
 
-use std::time::Duration;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::provider::{ChunkStream, Message, Provider, ProviderError, Request, Role, ToolSchema};
-use crate::retry;
 use crate::repair;
+use crate::retry;
 
 mod stream;
 use stream::stream_with_reconnect;
@@ -23,15 +23,15 @@ use stream::stream_with_reconnect;
 /// OpenAI 兼容的 provider 实例。
 pub struct OpenAiProvider {
     name: String,
-    base_url: String,       // "https://api.deepseek.com"
+    base_url: String, // "https://api.deepseek.com"
     model: String,
     api_key: String,
     client: Client,
-    deepseek: bool,         // DeepSeek: thinking.type="enabled"
-    minimax: bool,          // MiniMax: thinking.type 只有 "adaptive" | "disabled"
-    effort: String,         // reasoning_effort: low | medium | high
+    deepseek: bool, // DeepSeek: thinking.type="enabled"
+    minimax: bool,  // MiniMax: thinking.type 只有 "adaptive" | "disabled"
+    effort: String, // reasoning_effort: low | medium | high
     vision: bool,
-    vision_detail: String,  // low | high | ""
+    vision_detail: String, // low | high | ""
     idle_timeout: Duration,
 }
 
@@ -62,7 +62,11 @@ impl OpenAiProvider {
         let minimax = !deepseek && base_url.contains("api.minimaxi.com");
 
         let effort = effort.unwrap_or_else(|| {
-            if deepseek { "high".into() } else { String::new() }
+            if deepseek {
+                "high".into()
+            } else {
+                String::new()
+            }
         });
 
         Ok(Self {
@@ -108,7 +112,8 @@ impl Provider for OpenAiProvider {
             &format!("{}/chat/completions", self.base_url),
             &self.api_key,
             &body,
-        ).await?;
+        )
+        .await?;
 
         // 3. 启动流解析 + 重连 goroutine
         let (tx, rx) = mpsc::channel(64);
@@ -128,7 +133,8 @@ impl Provider for OpenAiProvider {
                 resp,
                 &tx,
                 idle_timeout,
-            ).await;
+            )
+            .await;
         });
 
         Ok(Box::pin(ReceiverStream::new(rx)))
@@ -179,85 +185,95 @@ impl OpenAiProvider {
         // 先修复 tool-call 配对（中断恢复场景）
         let msgs = repair::sanitize_tool_pairing(msgs);
 
-        msgs.iter().map(|m| {
-            let mut obj = serde_json::json!({
-                "role": m.role,
-            });
+        msgs.iter()
+            .map(|m| {
+                let mut obj = serde_json::json!({
+                    "role": m.role,
+                });
 
-            // ── vision (多模态) ──
-            if self.vision && m.role == Role::User && !m.images.is_empty() {
-                let mut content: Vec<Value> = Vec::new();
-                if let Some(ref text) = m.content {
-                    if !text.is_empty() {
-                        content.push(serde_json::json!({"type": "text", "text": text}));
-                    }
-                }
-                for img in &m.images {
-                    let mut image_obj = serde_json::json!({
-                        "type": "image_url",
-                        "image_url": {"url": img},
-                    });
-                    if !self.vision_detail.is_empty() {
-                        image_obj["image_url"]["detail"] = serde_json::json!(self.vision_detail);
-                    }
-                    content.push(image_obj);
-                }
-                obj["content"] = serde_json::json!(content);
-            } else {
-                obj["content"] = serde_json::json!(m.content);
-            }
-
-            // ── DeepSeek: reasoning_content 回传 ──
-            // tool_calls 回合必须带回 reasoning_content，否则 DeepSeek 400
-            if self.deepseek
-                && m.role == Role::Assistant
-                && !m.tool_calls.is_empty()
-                && m.reasoning_content.is_some()
-            {
-                obj["reasoning_content"] = serde_json::json!(m.reasoning_content);
-            }
-
-            // ── tool_calls ──
-            if !m.tool_calls.is_empty() {
-                let calls: Vec<Value> = m.tool_calls.iter().map(|tc| {
-                    serde_json::json!({
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.name,
-                            "arguments": tc.arguments,
+                // ── vision (多模态) ──
+                if self.vision && m.role == Role::User && !m.images.is_empty() {
+                    let mut content: Vec<Value> = Vec::new();
+                    if let Some(ref text) = m.content {
+                        if !text.is_empty() {
+                            content.push(serde_json::json!({"type": "text", "text": text}));
                         }
-                    })
-                }).collect();
-                obj["tool_calls"] = serde_json::json!(calls);
-            }
+                    }
+                    for img in &m.images {
+                        let mut image_obj = serde_json::json!({
+                            "type": "image_url",
+                            "image_url": {"url": img},
+                        });
+                        if !self.vision_detail.is_empty() {
+                            image_obj["image_url"]["detail"] =
+                                serde_json::json!(self.vision_detail);
+                        }
+                        content.push(image_obj);
+                    }
+                    obj["content"] = serde_json::json!(content);
+                } else {
+                    obj["content"] = serde_json::json!(m.content);
+                }
 
-            // ── tool result ──
-            if let Some(ref id) = m.tool_call_id {
-                obj["tool_call_id"] = serde_json::json!(id);
-            }
-            if let Some(ref name) = m.tool_name {
-                obj["name"] = serde_json::json!(name);
-            }
+                // ── DeepSeek: reasoning_content 回传 ──
+                // tool_calls 回合必须带回 reasoning_content，否则 DeepSeek 400
+                if self.deepseek
+                    && m.role == Role::Assistant
+                    && !m.tool_calls.is_empty()
+                    && m.reasoning_content.is_some()
+                {
+                    obj["reasoning_content"] = serde_json::json!(m.reasoning_content);
+                }
 
-            obj
-        }).collect()
+                // ── tool_calls ──
+                if !m.tool_calls.is_empty() {
+                    let calls: Vec<Value> = m
+                        .tool_calls
+                        .iter()
+                        .map(|tc| {
+                            serde_json::json!({
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.name,
+                                    "arguments": tc.arguments,
+                                }
+                            })
+                        })
+                        .collect();
+                    obj["tool_calls"] = serde_json::json!(calls);
+                }
+
+                // ── tool result ──
+                if let Some(ref id) = m.tool_call_id {
+                    obj["tool_call_id"] = serde_json::json!(id);
+                }
+                if let Some(ref name) = m.tool_name {
+                    obj["name"] = serde_json::json!(name);
+                }
+
+                obj
+            })
+            .collect()
     }
 
     fn build_tools(&self, tools: &[ToolSchema]) -> Option<Value> {
         if tools.is_empty() {
             return None;
         }
-        let arr: Vec<Value> = tools.iter().map(|t| {
-            serde_json::json!({
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": t.parameters,
-                }
+        let arr: Vec<Value> = tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters,
+                    }
+                })
             })
-        }).collect();
+            .collect();
         Some(serde_json::json!(arr))
     }
 }

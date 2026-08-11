@@ -1,0 +1,283 @@
+/* ═══════════════════════════════════════════════════════════════
+   READER SELECTION ACTION BAR — demo stylesheet
+   Hallmark · component: reader-actionbar · genre: modern-minimal
+   theme: Lumen (Night Foundry · restrained register)
+   states: default · hover · focus · active · disabled · loading · error · success
+   visible: only when the current selection is judged to be a formula
+   contrast: pass (46–50)
+   pre-emit critique: P5 H4 E5 S5 R4 V5
+
+   Production copy lives in src/ui/components/style.css.
+   This file exists for the 8-state preview only.
+   ═══════════════════════════════════════════════════════════════ */
+@import url("../tokens.css");
+
+/* ── demo page shell ── */
+html,
+body {
+  overflow-x: clip;
+  background: var(--color-paper);
+  color: var(--color-ink-2);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  margin: 0;
+  padding: var(--space-xl) var(--space-lg) var(--space-3xl);
+}
+
+.demo__eyebrow {
+  margin: 0 0 var(--space-xs);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-micro);
+  text-transform: uppercase;
+  color: var(--color-ink-3);
+}
+
+.demo__title {
+  margin: 0 0 var(--space-lg);
+  font-family: var(--font-display);
+  font-size: var(--text-xl);
+  font-weight: 400;
+  letter-spacing: var(--tracking-tight);
+  color: var(--color-ink);
+  text-transform: lowercase;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.demo__note {
+  margin: calc(var(--space-sm) * -1) 0 var(--space-lg);
+  font-size: var(--text-sm);
+  color: var(--color-ink-3);
+}
+
+.demo__section {
+  margin-top: var(--space-2xl);
+}
+
+.demo__section-head {
+  margin: 0 0 var(--space-md);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-micro);
+  text-transform: uppercase;
+  color: var(--color-ink-3);
+}
+
+/* ── anchored example over a mock page ── */
+.demo__stage {
+  position: relative;
+  padding: var(--space-lg);
+  background: var(--color-paper-2);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-lg);
+  min-height: 220px;
+}
+
+.demo__page-line {
+  height: 8px;
+  margin: 12px 0;
+  border-radius: 2px;
+  background: var(--color-rule);
+}
+
+.demo__page-line--short {
+  width: 62%;
+}
+
+.demo__page-line--selection {
+  background: var(--color-accent-tint);
+  box-shadow: inset 0 0 0 1px var(--color-accent);
+}
+
+/* ── 8-state matrix ── */
+.demo__rows {
+  display: grid;
+  gap: var(--space-md);
+}
+
+.demo__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-lg);
+  flex-wrap: wrap;
+}
+
+.demo__row-label {
+  width: 96px;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-micro);
+  text-transform: uppercase;
+  color: var(--color-ink-4);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   COMPONENT — reader action bar (copy of production block)
+   ═══════════════════════════════════════════════════════════════ */
+.reader-actionbar {
+  position: fixed;
+  z-index: var(--z-dropdown);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  padding: var(--space-2xs);
+  background: var(--color-paper-3);
+  border: 1px solid var(--color-rule-2);
+  border-radius: var(--radius-md);
+  box-shadow: 0 6px 20px -6px var(--color-shadow);
+  font-family: var(--font-body);
+  transform-origin: 12px 50%;
+  transform: translateY(-2px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease-out),
+              transform var(--dur-fast) var(--ease-out);
+}
+
+.reader-actionbar.is-open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+}
+
+.reader-actionbar.is-static {
+  position: static;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.reader-actionbar__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  min-height: 28px;
+  padding: 0 var(--space-md);
+  border: 1px solid var(--color-rule-2);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-ink-2);
+  font-family: var(--font-body);
+  font-size: var(--text-xs);
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: background-color var(--dur-fast) var(--ease-out),
+              color var(--dur-fast) var(--ease-out),
+              border-color var(--dur-fast) var(--ease-out),
+              transform 100ms var(--ease-out);
+}
+
+.reader-actionbar__btn:hover,
+.reader-actionbar__btn.is-hover {
+  background: var(--color-paper);
+  color: var(--color-ink);
+}
+
+.reader-actionbar__btn:focus-visible,
+.reader-actionbar__btn.is-focus {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.reader-actionbar__btn:active,
+.reader-actionbar__btn.is-active {
+  transform: translateY(1px);
+}
+
+/* 复制与精确复制公式同格式。
+   --formula 类只用于逻辑与 OCR 状态(loading/error/success),不改变视觉。 */
+
+.reader-actionbar__btn.is-disabled,
+.reader-actionbar__btn[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+  background: var(--color-paper-2);
+  color: var(--color-ink-4);
+  border-color: transparent;
+  transform: none;
+}
+
+.reader-actionbar__btn.is-disabled:hover,
+.reader-actionbar__btn[disabled]:hover {
+  background: var(--color-paper-2);
+  color: var(--color-ink-4);
+}
+
+.reader-actionbar__btn.is-loading {
+  background: var(--color-paper);
+  color: var(--color-ink-3);
+  cursor: progress;
+}
+
+.reader-actionbar__btn.is-loading::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid var(--color-rule-2);
+  border-top-color: var(--color-status-running);
+  border-radius: 50%;
+  animation: reader-actionbar-spin 0.9s linear infinite;
+}
+
+@keyframes reader-actionbar-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.reader-actionbar__btn.is-error {
+  background: var(--color-danger-tint);
+  color: var(--color-error);
+  border-color: var(--color-error);
+}
+
+.reader-actionbar__btn.is-success {
+  background: var(--color-paper);
+  color: var(--color-success);
+}
+
+.reader-actionbar__btn.is-success::after {
+  content: "✓";
+  font-family: var(--font-body);
+  line-height: 1;
+}
+
+.reader-actionbar__divider {
+  width: 1px;
+  height: 16px;
+  margin: 0 var(--space-2xs);
+  background: var(--color-rule-2);
+}
+
+@media (pointer: coarse) {
+  .reader-actionbar__btn {
+    min-height: 44px;
+  }
+  .reader-actionbar__divider {
+    height: 24px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reader-actionbar {
+    transition: opacity var(--dur-fast) linear;
+  }
+  .reader-actionbar__btn {
+    transition: background-color var(--dur-fast) linear,
+                color var(--dur-fast) linear,
+                border-color var(--dur-fast) linear;
+  }
+  .reader-actionbar__btn:active {
+    transform: none;
+  }
+  .reader-actionbar__btn.is-loading::before {
+    animation-duration: 1.5s;
+  }
+}

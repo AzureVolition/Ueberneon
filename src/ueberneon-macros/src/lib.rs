@@ -1,6 +1,5 @@
-
 use proc_macro::TokenStream;
-use syn::{Path, Meta, Meta::NameValue};
+use syn::{Meta, Meta::NameValue, Path};
 
 /// 派生宏 —— 自动实现 `ToolMeta` trait。
 ///
@@ -25,31 +24,35 @@ fn expand_tool(input: &syn::DeriveInput) -> Result<TokenStream, syn::Error> {
     // 确保是 struct
     match &input.data {
         syn::Data::Struct(_) => {}
-        _ => return Err(syn::Error::new_spanned(tool_name, "ToolMetaImpl only supports structs")),
+        _ => {
+            return Err(syn::Error::new_spanned(
+                tool_name,
+                "ToolMetaImpl only supports structs",
+            ));
+        }
     }
 
     // 解析 #[tool(...)] 辅助属性
     let is_read_only = has_tool_flag(&input.attrs, "read_only");
     let name_str = tool_name.to_string();
     let desc_str = description.as_str();
-    let args = ToolArgs::get_tool_schema_struct(&input.attrs)
-        .unwrap_or_else(|e| panic!("{}", e));
+    let args = ToolArgs::get_tool_schema_struct(&input.attrs).unwrap_or_else(|e| panic!("{}", e));
     let args_type = args.args_type.expect("args type is required");
 
     let snake_upper = to_upper_snake(&name_str);
     let schema_var_name = syn::Ident::new(
         &format!("TOOL_SCHEMA_JSON_{}", snake_upper),
-        tool_name.span()
+        tool_name.span(),
     );
     let expanded = quote::quote! {
-        
+
         static #schema_var_name: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
             let schema = ::schemars::schema_for!(#args_type);
             serde_json::to_string_pretty(&schema).unwrap()
         });
-        
+
         impl ::llm::tool::ToolMeta for #tool_name {
-            
+
             fn name(&self) -> &str {
                 #name_str
             }
@@ -89,11 +92,17 @@ fn has_tool_flag(attrs: &[syn::Attribute], key: &str) -> bool {
     for attr in attrs {
         if attr.path().is_ident("tool") {
             if let Ok(meta) = attr.meta.require_list() {
-                let found = meta.parse_nested_meta(|m| {
-                    if m.path.is_ident(key) { Ok(()) } else { Err(m.error("")) }
-                }).is_ok();
+                let found = meta
+                    .parse_nested_meta(|m| {
+                        if m.path.is_ident(key) {
+                            Ok(())
+                        } else {
+                            Err(m.error(""))
+                        }
+                    })
+                    .is_ok();
                 if found {
-                    return true
+                    return true;
                 }
             }
         }
@@ -104,17 +113,18 @@ fn has_tool_flag(attrs: &[syn::Attribute], key: &str) -> bool {
 // 自定义属性解析：`#[tool(args = "SomeType")]`
 #[derive(Default)]
 struct ToolArgs {
-    args_type: Option<Path>,  // 存储类型路径，例如 `MyParams`
+    args_type: Option<Path>, // 存储类型路径，例如 `MyParams`
 }
 
 impl ToolArgs {
-    
     fn get_tool_schema_struct(attrs: &[syn::Attribute]) -> Result<Self, syn::Error> {
         let mut result = Self::default();
-        
+
         for attr in attrs {
-            if !attr.path().is_ident("tool") {continue;}
-            
+            if !attr.path().is_ident("tool") {
+                continue;
+            }
+
             let meta = attr.parse_args::<Meta>()?;
 
             if let NameValue(nv) = meta {
@@ -126,12 +136,10 @@ impl ToolArgs {
                     }
                 }
             }
-            
         }
         Ok(result)
     }
 }
-
 
 /// 从 `#[doc = "..."]` 属性中提取第一行文档注释。
 fn extract_doc(attrs: &[syn::Attribute]) -> String {
@@ -172,7 +180,6 @@ fn to_upper_snake(s: &str) -> String {
     // 上面简单实现已基本满足。
     result
 }
-
 
 #[cfg(test)]
 mod tests {

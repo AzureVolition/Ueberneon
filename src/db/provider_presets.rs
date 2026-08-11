@@ -168,6 +168,16 @@ static PRESETS: &[ProviderPreset] = &[
         models_url: "",
         context_window: 131_072,
     },
+    // ── Ollama (本地) ──
+    ProviderPreset {
+        id: "ollama-local",
+        name: "Ollama (本地)",
+        kind: "openai",
+        base_url: "http://localhost:11434/v1",
+        models: &[],
+        models_url: "",
+        context_window: 131_072,
+    },
     // ── Ollama Cloud ──
     ProviderPreset {
         id: "ollama-cloud",

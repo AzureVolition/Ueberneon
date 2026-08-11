@@ -5,29 +5,32 @@ use crate::provider::{Message, Role};
 pub fn sanitize_tool_pairing(msgs: &[Message]) -> Vec<Message> {
     let mut out = Vec::new();
     let mut i = 0;
-    
+
     while i < msgs.len() {
         let m = &msgs[i];
-        
+
         if m.role == Role::Assistant && !m.tool_calls.is_empty() {
             // 推进到后续 tool 消息的末尾
             let mut j = i + 1;
             while j < msgs.len() && msgs[j].role == Role::Tool {
                 j += 1;
             }
-            
+
             // 修复截断的 JSON args
             let mut repaired = m.clone();
             for tc in &mut repaired.tool_calls {
-                if !tc.arguments.is_empty() && serde_json::from_str::<serde_json::Value>(&tc.arguments).is_err() {
+                if !tc.arguments.is_empty()
+                    && serde_json::from_str::<serde_json::Value>(&tc.arguments).is_err()
+                {
                     tc.arguments = close_truncated_json(&tc.arguments);
                 }
             }
             out.push(repaired);
-            
+
             // 配对 tool 结果，缺失的补占位
             for tc in &m.tool_calls {
-                let found = msgs[i+1..j].iter()
+                let found = msgs[i + 1..j]
+                    .iter()
                     .find(|tm| tm.tool_call_id.as_deref() == Some(&tc.id));
                 match found {
                     Some(tm) => out.push(tm.clone()),
@@ -42,17 +45,17 @@ pub fn sanitize_tool_pairing(msgs: &[Message]) -> Vec<Message> {
             i = j;
             continue;
         }
-        
+
         // 孤立的 tool 消息 — 跳过
         if m.role == Role::Tool {
             i += 1;
             continue;
         }
-        
+
         out.push(m.clone());
         i += 1;
     }
-    
+
     out
 }
 fn close_truncated_json(s: &str) -> String {
@@ -74,14 +77,20 @@ fn close_truncated_json(s: &str) -> String {
             '"' => in_str = true,
             '{' => stack.push('}'),
             '[' => stack.push(']'),
-            '}' | ']' => { stack.pop(); }
+            '}' | ']' => {
+                stack.pop();
+            }
             _ => {}
         }
     }
 
     let mut out = s.to_string();
-    if esc { out.pop(); }
-    if in_str { out.push('"'); }
+    if esc {
+        out.pop();
+    }
+    if in_str {
+        out.push('"');
+    }
 
     let trimmed = out.trim_end();
     if trimmed.ends_with(',') {

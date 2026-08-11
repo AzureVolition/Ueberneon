@@ -14,6 +14,9 @@ use std::sync::OnceLock;
 pub struct AppSettings {
     pub general: GeneralSettings,
     pub appearance: AppearanceSettings,
+    /// 公式识别(ONNX)配置:模型目录,支持运行时切换其它模型。
+    #[serde(default)]
+    pub formula_ocr: FormulaOcrSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +43,14 @@ pub struct AppearanceSettings {
     pub ui_density: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct FormulaOcrSettings {
+    /// 模型目录,包含 libonnxruntime.dylib / model.onnx / dict.json / preprocess.json。
+    /// 为空时使用构建期嵌入的资源或 UEBERNEON_FORMULA_DIR 环境变量。
+    pub model_dir: Option<String>,
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -55,6 +66,7 @@ impl Default for AppSettings {
                 code_font: "jetbrains-mono".into(),
                 ui_density: "comfortable".into(),
             },
+            formula_ocr: FormulaOcrSettings::default(),
         }
     }
 }
@@ -127,4 +139,22 @@ pub fn update(f: impl FnOnce(&mut AppSettings)) {
 pub fn with<T>(f: impl FnOnce(&AppSettings) -> T) -> T {
     let guard = global().lock().expect("settings lock poisoned");
     f(&guard)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formula_ocr_defaults_to_none() {
+        let s = AppSettings::default();
+        assert!(s.formula_ocr.model_dir.is_none());
+    }
+
+    #[test]
+    fn old_settings_json_without_formula_ocr_still_loads() {
+        let old = r#"{"general":{"default_agent_config_id":"","default_action_mode":"regular","default_agent_mode":"ask","default_subagent_provider_instance_id":"","default_subagent_model":""},"appearance":{"font_size":"md","code_font":"jetbrains-mono","ui_density":"comfortable"}}"#;
+        let parsed: AppSettings = serde_json::from_str(old).unwrap();
+        assert!(parsed.formula_ocr.model_dir.is_none());
+    }
 }

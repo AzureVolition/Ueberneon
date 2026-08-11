@@ -205,7 +205,10 @@ pub fn SettingsPanel(
             } else {
                 add_alias.read().trim().to_string()
             };
-            let raw_key = add_key.read().trim().to_string();
+            let mut raw_key = add_key.read().trim().to_string();
+            if raw_key.is_empty() && preset.id == "ollama-local" {
+                raw_key = "ollama".into();
+            }
             if raw_key.is_empty() {
                 err_sig.set(Some("api key is required".into()));
                 return;
@@ -412,6 +415,9 @@ pub fn SettingsPanel(
     let mut current_font = use_signal(|| settings::get().appearance.font_size.clone());
     let mut current_code = use_signal(|| settings::get().appearance.code_font.clone());
     let mut current_density = use_signal(|| settings::get().appearance.ui_density.clone());
+    let mut formula_model_dir = use_signal(|| settings::get().formula_ocr.model_dir.clone());
+    let mut formula_dir_error = use_signal(|| Option::<String>::None);
+    let mut discovered_models = use_signal(|| crate::formula_ocr::discover_models());
     let font_options = [
         ("xs", "xs (12px)"),
         ("sm", "sm (14px)"),
@@ -574,7 +580,13 @@ pub fn SettingsPanel(
                                         input {
                                             class: "settings-input",
                                             r#type: "password",
-                                            placeholder: "sk-...",
+                                            placeholder: if add_provider_id.read().as_str()
+                                                == "ollama-local"
+                                            {
+                                                "本地 Ollama 可留空或填 ollama"
+                                            } else {
+                                                "sk-..."
+                                            },
                                             value: "{add_key}",
                                             oninput: move |evt| add_key.set(evt.value()),
                                         }
@@ -876,6 +888,11 @@ pub fn SettingsPanel(
                                 }
                             }
                             div { class: "settings-section",
+                                div { class: "settings-hint",
+                                    span { "内置 translate 子代理用于阅读器选区翻译，配置好 provider 和模型后即可使用（例如 Ollama (本地) + kaelri/hy-mt2:7b）。" }
+                                }
+                            }
+                            div { class: "settings-section",
                                 AgentConfigPanel { filter_agent_type: "SubAgent".to_string(), readonly: true, edit_mode: "provider_only".to_string(), on_change }
                             }
                         }
@@ -1016,6 +1033,96 @@ pub fn SettingsPanel(
                                                     }
                                                 },
                                                 "{label}"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    SettingsTab::FormulaOcr => {
+                        let on_clear = {
+                            let mut dir = formula_model_dir;
+                            let mut err = formula_dir_error;
+                            move |_| {
+                                settings::update(|c| c.formula_ocr.model_dir = None);
+                                dir.set(None);
+                                err.set(None);
+                            }
+                        };
+                        let current_dir = formula_model_dir();
+                        let dir_error = formula_dir_error();
+                        let model_entries = discovered_models()
+                            .iter()
+                            .map(|m| {
+                                let dir = m.dir.clone();
+                                let name = m.name.clone();
+                                let path = dir.display().to_string();
+                                let active = current_dir.as_deref() == Some(path.as_str());
+                                (dir, name, path, active)
+                            })
+                            .collect::<Vec<_>>();
+                        rsx! {
+                            div { class: "settings-header",
+                                h2 { class: "settings-title", "formula ocr" }
+                                span { class: "settings-subtitle", "local ONNX model for LaTeX recognition" }
+                            }
+                            div { class: "settings-section",
+                                div { class: "settings-field",
+                                    label { class: "settings-field-label", "本地模型" }
+                                    div { class: "formula-model-list",
+                                        for (dir, name, path, active) in model_entries {
+                                            button {
+                                                class: if active {
+                                                    "formula-model-item is-active"
+                                                } else {
+                                                    "formula-model-item"
+                                                },
+                                                onclick: move |_| {
+                                                    let s = dir.display().to_string();
+                                                    settings::update(|c| {
+                                                        c.formula_ocr.model_dir = Some(s.clone())
+                                                    });
+                                                    formula_model_dir.set(Some(s));
+                                                    formula_dir_error.set(None);
+                                                },
+                                                span { class: "formula-model-item-name", "{name}" }
+                                                span { class: "formula-model-item-path", "{path}" }
+                                            }
+                                        }
+                                        if discovered_models().is_empty() {
+                                            div { class: "formula-model-empty",
+                                                "未发现模型:把模型目录放到 ~/.ueberneon/formula-models/ 后刷新"
+                                            }
+                                        }
+                                    }
+                                    div { class: "mode-pill-row",
+                                        button {
+                                            class: "mode-pill",
+                                            onclick: move |_| {
+                                                discovered_models
+                                                    .set(crate::formula_ocr::discover_models())
+                                            },
+                                            "刷新模型列表"
+                                        }
+                                    }
+                                }
+                                div { class: "settings-field",
+                                    label { class: "settings-field-label", "model directory" }
+                                    if let Some(d) = current_dir.as_ref() {
+                                        div { class: "formula-model-path", "{d}" }
+                                    } else {
+                                        div { class: "formula-model-path is-empty", "未配置:公式复制回退文本层重建" }
+                                    }
+                                    if let Some(e) = dir_error.as_ref() {
+                                        div { class: "formula-model-error", "{e}" }
+                                    }
+                                    div { class: "mode-pill-row",
+                                        if current_dir.is_some() {
+                                            button {
+                                                class: "mode-pill",
+                                                onclick: on_clear,
+                                                "清除配置"
                                             }
                                         }
                                     }

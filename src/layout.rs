@@ -42,6 +42,21 @@ pub fn book_pdf_path(book_dir: &Path) -> PathBuf {
     book_dir.join("original.pdf")
 }
 
+/// 书目录内的知识库文本目录:<book_dir>/pages/
+pub fn book_pages_dir(book_dir: &Path) -> PathBuf {
+    book_dir.join("pages")
+}
+
+/// 单页 MD 文件路径:<pages_dir>/0001.md(页码从 1 开始,四位补零)
+pub fn book_page_md_path(pages_dir: &Path, page_1based: u32) -> PathBuf {
+    pages_dir.join(format!("{page_1based:04}.md"))
+}
+
+/// 解析完成标记:<book_dir>/parsed.json
+pub fn book_parse_marker_path(book_dir: &Path) -> PathBuf {
+    book_dir.join("parsed.json")
+}
+
 /// 默认项目目录 ~/.ueberneon/projects/ueberneon-default
 pub fn default_project_dir() -> PathBuf {
     projects_root().join("ueberneon-default")
