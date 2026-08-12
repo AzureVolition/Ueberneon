@@ -23,8 +23,6 @@ const MIN_BYTES: u64 = 1_000_000;
 fn main() {
     println!("cargo:rerun-if-env-changed=PDFIUM_BUNDLE_LIB");
     println!("cargo:rerun-if-env-changed=PDFIUM_BUILD_CACHE_DIR");
-    println!("cargo:rerun-if-env-changed=UEBERNEON_FORMULA_BUNDLE_DIR");
-    println!("cargo:rerun-if-env-changed=UEBERNEON_FORMULA_CACHE_DIR");
 
     let target = env::var("TARGET").unwrap_or_default();
     if target != "aarch64-apple-darwin" {
@@ -63,94 +61,6 @@ fn main() {
     fs::create_dir_all(&out_dir).expect("创建 OUT_DIR 失败");
     fs::copy(&source, out_dir.join("libpdfium.dylib"))
         .expect("复制 libpdfium.dylib 到 OUT_DIR 失败");
-
-    write_formula_bundle(&out_dir);
-}
-
-/// 公式 OCR 资源(可选):libonnxruntime.dylib + model.onnx + dict.json + preprocess.json。
-/// 未配置时生成空资源,运行时代码会优雅回退到文本层重建。
-fn write_formula_bundle(out_dir: &Path) {
-    let bundle = resolve_formula_bundle();
-    let read = |name: &str, p: Option<&Path>| -> Vec<u8> {
-        match p {
-            Some(p) => fs::read(p)
-                .unwrap_or_else(|e| panic!("读取公式资源 {name} 失败 {}: {e}", p.display())),
-            None => Vec::new(),
-        }
-    };
-    let code = format!(
-        "pub static ONNXRUNTIME_DYLIB: &[u8] = &{:#?};\n\
-         pub static FORMULA_MODEL: &[u8] = &{:#?};\n\
-         pub static FORMULA_DICT: &[u8] = &{:#?};\n\
-         pub static FORMULA_PREPROCESS: &[u8] = &{:#?};\n",
-        read("libonnxruntime.dylib", bundle.lib.as_deref()),
-        read("model.onnx", bundle.model.as_deref()),
-        read("dict.json", bundle.dict.as_deref()),
-        read("preprocess.json", bundle.preprocess.as_deref()),
-    );
-    fs::write(out_dir.join("bundled_formula.rs"), code).expect("写入 bundled_formula.rs 失败");
-}
-
-struct FormulaBundle {
-    lib: Option<PathBuf>,
-    model: Option<PathBuf>,
-    dict: Option<PathBuf>,
-    preprocess: Option<PathBuf>,
-}
-
-fn resolve_formula_bundle() -> FormulaBundle {
-    const NAMES: [&str; 4] = [
-        "libonnxruntime.dylib",
-        "model.onnx",
-        "dict.json",
-        "preprocess.json",
-    ];
-
-    if let Ok(dir) = env::var("UEBERNEON_FORMULA_BUNDLE_DIR") {
-        let dir = PathBuf::from(&dir);
-        for name in NAMES {
-            assert!(
-                dir.join(name).is_file(),
-                "UEBERNEON_FORMULA_BUNDLE_DIR 缺少 {name}: {}",
-                dir.join(name).display()
-            );
-        }
-        return FormulaBundle {
-            lib: Some(dir.join(NAMES[0])),
-            model: Some(dir.join(NAMES[1])),
-            dict: Some(dir.join(NAMES[2])),
-            preprocess: Some(dir.join(NAMES[3])),
-        };
-    }
-
-    let cache_root = env::var_os("UEBERNEON_FORMULA_CACHE_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            let cargo_home = env::var_os("CARGO_HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| {
-                    let home = env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-                    PathBuf::from(home).join(".cargo")
-                });
-            cargo_home
-                .join("ueberneon-formula")
-                .join("pp-formulanet-plus-s")
-        });
-    let paths: Vec<PathBuf> = NAMES.iter().map(|n| cache_root.join(n)).collect();
-    if paths.iter().all(|p| p.is_file()) {
-        return FormulaBundle {
-            lib: Some(paths[0].clone()),
-            model: Some(paths[1].clone()),
-            dict: Some(paths[2].clone()),
-            preprocess: Some(paths[3].clone()),
-        };
-    }
-    FormulaBundle {
-        lib: None,
-        model: None,
-        dict: None,
-        preprocess: None,
-    }
 }
 
 /// 确保缓存里有可用的 dylib,返回其路径。

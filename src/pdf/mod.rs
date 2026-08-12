@@ -1,17 +1,26 @@
-// ── 书级 PDF 辅助 ──
+// ── PDF 模块 ──
 //
-// 知识库文本提取:把书的 original.pdf 逐页提取为 pages/NNNN.md,
-// 完成后写入 parsed.json 标记;阅读器“本页文本”视图也从这里读取。
-// 阅读器本身的页面渲染直接走 pdfium::PdfDocument,不经过 MD。
+// 汇总所有 PDF 相关实现:
+//   - pdfium:   自研 PDFium FFI 封装(渲染 + 字符盒)
+//   - calibration: 文档级排版参数自动校准
+//   - mod.rs:   书级辅助(知识库文本提取 pages/NNNN.md、overlay 构建)
+
+pub mod calibration;
+pub mod pdfium;
+pub mod toc;
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::SystemTime;
 
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 
 use crate::layout;
-use crate::pdfium;
+
+/// 字符盒宽度下限（pt）：退化包围盒也保留可命中的最小宽度。
+const MIN_WIDTH_PT: f64 = 0.3;
 
 /// parsed.json 内容
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -43,6 +52,9 @@ pub struct OverlayLine {
     pub height_pct: f64,
     /// 行高(cqw 容器宽度单位)
     pub height_cqw: f64,
+    /// 行内非空格字符的字号中位数(点);全小写行字号与正文一致,
+    /// 不会因为字形包围盒偏矮而被误判为小字。
+    pub font_size_pt: f64,
     /// 行内词,按 left 排序
     pub words: Vec<OverlayWord>,
 }
@@ -57,7 +69,7 @@ pub struct OverlayLine {
 /// 内容顺序(即阅读顺序,多栏 PDF 不交错);每个字符仍有独立坐标,
 /// 显示位置不受顺序影响;过滤控制字符(保留空格)。
 pub fn build_text_overlay(
-    chars: &[crate::pdfium::TextChar],
+    chars: &[crate::pdf::pdfium::TextChar],
     page_width_pt: f64,
     page_height_pt: f64,
 ) -> Vec<OverlayLine> {
@@ -109,6 +121,12 @@ pub fn build_text_overlay(
     if items.is_empty() {
         return Vec::new();
     }
+    let font_by_index: std::collections::HashMap<usize, f64> = chars
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.font_size > 0.0)
+        .map(|(i, c)| (i, c.font_size))
+        .collect();
 
     // 按 PDFium 内容顺序贪心分行(保持阅读顺序,不按视觉坐标重排):
     // 与当前行垂直带重叠 >= 25% 即并入,否则另起一行。
@@ -203,6 +221,18 @@ pub fn build_text_overlay(
     let mut out: Vec<OverlayLine> = Vec::with_capacity(lines.len());
     for a in lines {
         let height_pt = (a.bottom_px - a.top_px).max(0.001);
+        let mut fonts: Vec<f64> = a
+            .chars
+            .iter()
+            .filter_map(|(idx, _, _, _, _, _)| font_by_index.get(idx).copied())
+            .filter(|f| *f > 0.0)
+            .collect();
+        fonts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let font_size_pt = if fonts.is_empty() {
+            0.0
+        } else {
+            fonts[(fonts.len() - 1) / 2]
+        };
         let mut words = group_words(page_width_pt, a.chars);
         let height_cqw = words.iter().map(|w| w.height_cqw).fold(0.0, f64::max);
         // 退化词(纯空格等)补齐行高,保证拖选时命中区域连续
@@ -215,6 +245,7 @@ pub fn build_text_overlay(
             top_pct: a.top_px / page_height_pt * 100.0,
             height_pct: height_pt / page_height_pt * 100.0,
             height_cqw,
+            font_size_pt,
             words,
         });
     }
@@ -228,10 +259,8 @@ fn group_words(
     page_width_pt: f64,
     mut chars: Vec<(usize, f64, f64, f64, f64, char)>,
 ) -> Vec<OverlayWord> {
-    const WORD_GAP_PT: f64 = 1.0;
-    const MIN_WIDTH_PT: f64 = 0.3;
-
     chars.sort_by(|a, b| a.0.cmp(&b.0));
+    let gap_threshold = word_gap_threshold(&chars);
 
     let mut words: Vec<OverlayWord> = Vec::new();
     // 非空格词:text, left, right, 首字形 left, 末字形 right, top_px, height
@@ -262,7 +291,7 @@ fn group_words(
                 cur.as_mut()
             {
                 let gap = left - *cur_right;
-                if gap > WORD_GAP_PT {
+                if gap > gap_threshold {
                     words.push(make_word(cur.take().unwrap(), page_width_pt));
                     cur = Some((
                         ch.to_string(),
@@ -303,6 +332,47 @@ fn group_words(
         words.push(make_space_word(s, page_width_pt));
     }
     words
+}
+
+/// 按行统计出一个自适应断词阈值：
+/// - 字母间隙中位数 ×3（宽字距的书不把词拆散）；
+/// - 下限为字号中位数 ×0.3（防止小间隙也误拆）；
+/// - 至少 1pt，封顶 12pt（避免整行合成一个词）。
+fn word_gap_threshold(chars: &[(usize, f64, f64, f64, f64, char)]) -> f64 {
+    const BASE_GAP_PT: f64 = 1.0;
+    const GAP_MULT: f64 = 3.0;
+    const HEIGHT_RATIO: f64 = 0.3;
+    const MAX_GAP_PT: f64 = 12.0;
+
+    let mut gaps: Vec<f64> = Vec::new();
+    let mut heights: Vec<f64> = Vec::new();
+    let mut prev_right: Option<f64> = None;
+    for (_, left, right, _, height_cqw, ch) in chars {
+        if *ch == ' ' {
+            prev_right = None;
+            continue;
+        }
+        let right = right.max(left + MIN_WIDTH_PT);
+        heights.push(*height_cqw);
+        if let Some(pr) = prev_right {
+            let gap = left - pr;
+            if gap > 0.0 {
+                gaps.push(gap);
+            }
+        }
+        prev_right = Some(right);
+    }
+
+    let median = |mut v: Vec<f64>| -> Option<f64> {
+        if v.is_empty() {
+            return None;
+        }
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        Some(v[(v.len() - 1) / 2])
+    };
+    let from_gap = median(gaps).unwrap_or(0.0) * GAP_MULT;
+    let from_height = median(heights).unwrap_or(0.0) * HEIGHT_RATIO;
+    (from_gap.max(from_height).max(BASE_GAP_PT)).min(MAX_GAP_PT)
 }
 
 /// 空格串词:高亮范围极小,文本保留空格供复制。
@@ -402,6 +472,116 @@ pub fn page_text_file(book_dir: &Path, page_1based: u32) -> Option<String> {
     fs::read_to_string(layout::book_page_md_path(&pages_dir, page_1based)).ok()
 }
 
+// ── 页面 PNG 磁盘缓存 ──
+//
+// 渲染好的页面 PNG 按 书/页码/缩放 缓存到 <书目录>/cache/pages/，
+// 重新打开或回看时直接读文件，跳过 PDFium 渲染 + PNG 编码；
+// PDF 源文件（大小/mtime）变化时整体失效。
+
+const MAX_CACHED_PAGE_PNGS: usize = 200;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PageCacheManifest {
+    pdf_size: u64,
+    pdf_mtime: u64,
+}
+
+static PAGE_CACHE_LOCK: Mutex<()> = Mutex::new(());
+
+pub fn page_cache_dir(book_dir: &Path) -> PathBuf {
+    book_dir.join("cache").join("pages")
+}
+
+fn page_cache_manifest_path(book_dir: &Path) -> PathBuf {
+    page_cache_dir(book_dir).join("cache.json")
+}
+
+/// PDF 源文件标识：大小 + mtime（毫秒），用于缓存失效判断。
+pub fn pdf_source_key(book_dir: &Path) -> Option<(u64, u64)> {
+    let meta = fs::metadata(layout::book_pdf_path(book_dir)).ok()?;
+    let mtime = meta
+        .modified()
+        .ok()?
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .ok()?
+        .as_millis() as u64;
+    Some((meta.len(), mtime))
+}
+
+/// 打开书前调用：缓存与当前 PDF 不一致时清空并写新标记。
+pub fn prepare_page_cache(book_dir: &Path) {
+    let Some((pdf_size, pdf_mtime)) = pdf_source_key(book_dir) else {
+        return;
+    };
+    let _guard = PAGE_CACHE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let dir = page_cache_dir(book_dir);
+    let valid = fs::read_to_string(page_cache_manifest_path(book_dir))
+        .ok()
+        .and_then(|s| serde_json::from_str::<PageCacheManifest>(&s).ok())
+        .map(|m| m.pdf_size == pdf_size && m.pdf_mtime == pdf_mtime)
+        .unwrap_or(false);
+    if valid {
+        return;
+    }
+    let _ = fs::remove_dir_all(&dir);
+    let _ = fs::create_dir_all(&dir);
+    let manifest = PageCacheManifest {
+        pdf_size,
+        pdf_mtime,
+    };
+    let tmp = dir.join("cache.json.tmp");
+    let _ = fs::write(&tmp, serde_json::to_string(&manifest).unwrap_or_default());
+    let _ = fs::rename(&tmp, page_cache_manifest_path(book_dir));
+}
+
+/// 读缓存 PNG（page 为 1-based）。
+pub fn cached_page_png(book_dir: &Path, page_1based: u32, scale: f32) -> Option<Vec<u8>> {
+    let path = page_cache_dir(book_dir).join(format!("p{page_1based:04}@s{scale:.1}.png"));
+    fs::read(path).ok()
+}
+
+/// 写缓存 PNG 并做上限清理（保留页码最大、最近阅读的页）。
+pub fn save_page_png(book_dir: &Path, page_1based: u32, scale: f32, png: &[u8]) {
+    let _guard = PAGE_CACHE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let dir = page_cache_dir(book_dir);
+    if !dir.is_dir() {
+        let _ = fs::create_dir_all(&dir);
+    }
+    let path = dir.join(format!("p{page_1based:04}@s{scale:.1}.png"));
+    let tmp = dir.join(format!("p{page_1based:04}.tmp-{}", std::process::id()));
+    if fs::write(&tmp, png).is_ok() {
+        let _ = fs::rename(&tmp, &path);
+    }
+
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return;
+    };
+    let mut pages: Vec<u32> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            name.strip_prefix('p')
+                .and_then(|s| s.split('@').next())
+                .and_then(|s| s.parse::<u32>().ok())
+        })
+        .collect();
+    if pages.len() > MAX_CACHED_PAGE_PNGS {
+        pages.sort_unstable();
+        let overflow = pages.len() - MAX_CACHED_PAGE_PNGS;
+        for p in pages.into_iter().take(overflow) {
+            let prefix = format!("p{p:04}@");
+            if let Ok(entries) = fs::read_dir(&dir) {
+                for e in entries.flatten() {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    if name.starts_with(&prefix) {
+                        let _ = fs::remove_file(e.path());
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn now_rfc3339() -> String {
     chrono::Local::now().to_rfc3339()
 }
@@ -411,7 +591,13 @@ mod tests {
     use super::*;
 
     fn temp_book_dir() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("ueberneon-pdf-test-{}", std::process::id()));
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "ueberneon-pdf-test-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -455,10 +641,32 @@ mod tests {
     }
 
     #[test]
+    fn page_png_cache_roundtrip_and_invalidates_on_pdf_change() {
+        let dir = temp_book_dir();
+        fs::write(layout::book_pdf_path(&dir), b"version-1").unwrap();
+        prepare_page_cache(&dir);
+        assert!(cached_page_png(&dir, 1, 3.0).is_none());
+
+        save_page_png(&dir, 1, 3.0, b"png-bytes");
+        assert_eq!(
+            cached_page_png(&dir, 1, 3.0).as_deref(),
+            Some(&b"png-bytes"[..])
+        );
+        // 不同缩放是独立缓存键
+        assert!(cached_page_png(&dir, 1, 2.0).is_none());
+
+        // PDF 源变化（大小不同）→ 缓存整体失效
+        fs::write(layout::book_pdf_path(&dir), b"version-1-is-changed").unwrap();
+        prepare_page_cache(&dir);
+        assert!(cached_page_png(&dir, 1, 3.0).is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn extract_pdf_to_md_writes_pages_and_marker() {
         let dir = temp_book_dir();
         let pdf_path = dir.join("original.pdf");
-        fs::write(&pdf_path, include_bytes!("../tests/fixtures/sample.pdf")).unwrap();
+        fs::write(&pdf_path, include_bytes!("../../tests/fixtures/sample.pdf")).unwrap();
 
         let marker = extract_pdf_to_md(&pdf_path, &dir).unwrap();
         assert_eq!(marker.page_count, 1);
@@ -480,7 +688,7 @@ mod tests {
         let pdf_path = dir.join("original.pdf");
         fs::write(
             &pdf_path,
-            include_bytes!("../tests/fixtures/sample-cjk.pdf"),
+            include_bytes!("../../tests/fixtures/sample-cjk.pdf"),
         )
         .unwrap();
 
@@ -495,12 +703,13 @@ mod tests {
 
     #[test]
     fn overlay_converts_bottom_left_origin_to_top_left_percent() {
-        let chars = vec![crate::pdfium::TextChar {
+        let chars = vec![crate::pdf::pdfium::TextChar {
             ch: 'A',
             left: 10.0,
             bottom: 20.0,
             right: 20.0,
             top: 30.0,
+            font_size: 10.0,
         }];
         let lines = build_text_overlay(&chars, 100.0, 200.0);
         assert_eq!(lines.len(), 1);
@@ -536,26 +745,29 @@ mod tests {
     #[test]
     fn overlay_caps_wide_space_hit_area() {
         let chars = vec![
-            crate::pdfium::TextChar {
+            crate::pdf::pdfium::TextChar {
                 ch: 'a',
                 left: 0.0,
                 bottom: 90.0,
                 right: 10.0,
                 top: 100.0,
+                font_size: 10.0,
             },
-            crate::pdfium::TextChar {
+            crate::pdf::pdfium::TextChar {
                 ch: ' ',
                 left: 10.0,
                 bottom: 90.0,
                 right: 80.0,
                 top: 100.0,
+                font_size: 10.0,
             },
-            crate::pdfium::TextChar {
+            crate::pdf::pdfium::TextChar {
                 ch: 'b',
                 left: 80.0,
                 bottom: 90.0,
                 right: 90.0,
                 top: 100.0,
+                font_size: 10.0,
             },
         ];
         let lines = build_text_overlay(&chars, 100.0, 100.0);
@@ -573,26 +785,29 @@ mod tests {
     #[test]
     fn overlay_groups_lines_preserves_content_order() {
         let chars = vec![
-            crate::pdfium::TextChar {
+            crate::pdf::pdfium::TextChar {
                 ch: 'a',
                 left: 30.0,
                 bottom: 90.0,
                 right: 40.0,
                 top: 100.0,
+                font_size: 10.0,
             },
-            crate::pdfium::TextChar {
+            crate::pdf::pdfium::TextChar {
                 ch: 'b',
                 left: 10.0,
                 bottom: 90.0,
                 right: 20.0,
                 top: 100.0,
+                font_size: 10.0,
             },
-            crate::pdfium::TextChar {
+            crate::pdf::pdfium::TextChar {
                 ch: 'c',
                 left: 5.0,
                 bottom: 40.0,
                 right: 15.0,
                 top: 50.0,
+                font_size: 10.0,
             },
         ];
         let lines = build_text_overlay(&chars, 100.0, 200.0);
@@ -606,26 +821,29 @@ mod tests {
     #[test]
     fn overlay_filters_control_chars_and_keeps_space() {
         let chars = vec![
-            crate::pdfium::TextChar {
+            crate::pdf::pdfium::TextChar {
                 ch: '\n',
                 left: 0.0,
                 bottom: 0.0,
                 right: 1.0,
                 top: 1.0,
+                font_size: 10.0,
             },
-            crate::pdfium::TextChar {
+            crate::pdf::pdfium::TextChar {
                 ch: ' ',
                 left: 10.0,
                 bottom: 90.0,
                 right: 11.0,
                 top: 100.0,
+                font_size: 10.0,
             },
-            crate::pdfium::TextChar {
+            crate::pdf::pdfium::TextChar {
                 ch: 'A',
                 left: 20.0,
                 bottom: 90.0,
                 right: 30.0,
                 top: 100.0,
+                font_size: 10.0,
             },
         ];
         let lines = build_text_overlay(&chars, 100.0, 200.0);
@@ -641,22 +859,24 @@ mod tests {
     }
 
     #[test]
-    fn overlay_groups_same_baseline_with_different_heights() {
+    fn overlay_merges_same_baseline_with_different_heights() {
         // 大写 H 更高,小写 e 更矮,但基线相同(bottom 相同),应同属一行
         let chars = vec![
-            crate::pdfium::TextChar {
+            crate::pdf::pdfium::TextChar {
                 ch: 'H',
                 left: 0.0,
                 bottom: 100.0,
                 right: 10.0,
                 top: 112.0,
+                font_size: 10.0,
             },
-            crate::pdfium::TextChar {
+            crate::pdf::pdfium::TextChar {
                 ch: 'e',
                 left: 12.0,
                 bottom: 100.0,
                 right: 20.0,
                 top: 106.0,
+                font_size: 10.0,
             },
         ];
         let lines = build_text_overlay(&chars, 100.0, 200.0);
@@ -668,42 +888,112 @@ mod tests {
             "top_pct={}",
             line.top_pct
         );
-        // H 与 e 间隙 >1pt 分成两个词;e 的行内偏移:
-        // top_px_e=(200-106)=94, line_top_px=88 -> (94-88)/100*100=6
-        assert_eq!(line.words.len(), 2);
-        assert_eq!(line.words[0].text, "H");
-        assert_eq!(line.words[1].text, "e");
+        // H 与 e 的 2pt 间隙小于自适应阈值(字号中位数 9pt ×0.3),合并为一个词
+        assert_eq!(line.words.len(), 1);
+        assert_eq!(line.words[0].text, "He");
         assert!(
-            (line.words[1].top_cqw - 94.0).abs() < 1e-9,
+            (line.words[0].top_cqw - 88.0).abs() < 1e-9,
             "top_cqw={}",
-            line.words[1].top_cqw
+            line.words[0].top_cqw
         );
+    }
+
+    #[test]
+    fn overlay_merges_wide_letter_spacing_into_full_word() {
+        // 宽字距的书:字母间隙 1.5pt,固定 1pt 阈值会把词拆散;自适应应合并
+        let chars = vec![
+            crate::pdf::pdfium::TextChar {
+                ch: 'L',
+                left: 0.0,
+                bottom: 90.0,
+                right: 6.0,
+                top: 100.0,
+                font_size: 10.0,
+            },
+            crate::pdf::pdfium::TextChar {
+                ch: 'a',
+                left: 7.5,
+                bottom: 90.0,
+                right: 13.5,
+                top: 100.0,
+                font_size: 10.0,
+            },
+            crate::pdf::pdfium::TextChar {
+                ch: 't',
+                left: 15.0,
+                bottom: 90.0,
+                right: 19.0,
+                top: 100.0,
+                font_size: 10.0,
+            },
+        ];
+        let lines = build_text_overlay(&chars, 100.0, 200.0);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].words.len(), 1, "宽字距的词不应被拆散");
+        assert_eq!(lines[0].words[0].text, "Lat");
+    }
+
+    #[test]
+    fn overlay_splits_real_word_boundary_without_space_char() {
+        // 没有空格字形的 PDF:词间隙明显大于字母间隙,仍应断词
+        let chars = vec![
+            crate::pdf::pdfium::TextChar {
+                ch: 'a',
+                left: 0.0,
+                bottom: 90.0,
+                right: 5.0,
+                top: 100.0,
+                font_size: 10.0,
+            },
+            crate::pdf::pdfium::TextChar {
+                ch: 'b',
+                left: 6.0,
+                bottom: 90.0,
+                right: 11.0,
+                top: 100.0,
+                font_size: 10.0,
+            },
+            crate::pdf::pdfium::TextChar {
+                ch: 'c',
+                left: 17.0,
+                bottom: 90.0,
+                right: 22.0,
+                top: 100.0,
+                font_size: 10.0,
+            },
+        ];
+        let lines = build_text_overlay(&chars, 100.0, 200.0);
+        let texts: Vec<&str> = lines[0].words.iter().map(|w| w.text.as_str()).collect();
+        assert_eq!(texts, vec!["ab", "c"], "词间隙应断词,字母间隙应合并");
     }
 
     #[test]
     fn overlay_keeps_degenerate_space_in_line() {
         // 空格包围盒零宽(退化),仍应出现在行内并保持位置
         let chars = vec![
-            crate::pdfium::TextChar {
+            crate::pdf::pdfium::TextChar {
                 ch: 'A',
                 left: 20.0,
                 bottom: 90.0,
                 right: 30.0,
                 top: 100.0,
+                font_size: 10.0,
             },
-            crate::pdfium::TextChar {
+            crate::pdf::pdfium::TextChar {
                 ch: ' ',
                 left: 40.0,
                 bottom: 95.0,
                 right: 40.0,
                 top: 95.0,
+                font_size: 10.0,
             },
-            crate::pdfium::TextChar {
+            crate::pdf::pdfium::TextChar {
                 ch: 'B',
                 left: 45.0,
                 bottom: 90.0,
                 right: 55.0,
                 top: 100.0,
+                font_size: 10.0,
             },
         ];
         let lines = build_text_overlay(&chars, 100.0, 200.0);
@@ -729,24 +1019,26 @@ mod tests {
     fn overlay_keeps_descender_in_same_line() {
         // g 有下伸部(bottom 更低),但与 e 同一基线,x-height 重叠足够,应同行
         let chars = vec![
-            crate::pdfium::TextChar {
+            crate::pdf::pdfium::TextChar {
                 ch: 'e',
                 left: 0.0,
                 bottom: 100.0,
                 right: 8.0,
                 top: 106.0,
+                font_size: 10.0,
             },
-            crate::pdfium::TextChar {
+            crate::pdf::pdfium::TextChar {
                 ch: 'g',
                 left: 10.0,
                 bottom: 92.0,
                 right: 18.0,
                 top: 106.0,
+                font_size: 10.0,
             },
         ];
         let lines = build_text_overlay(&chars, 100.0, 200.0);
         assert_eq!(lines.len(), 1, "下伸部字母被错误拆行");
         let texts: Vec<&str> = lines[0].words.iter().map(|w| w.text.as_str()).collect();
-        assert_eq!(texts, vec!["e", "g"]);
+        assert_eq!(texts, vec!["eg"], "同词字母不应被拆开");
     }
 }

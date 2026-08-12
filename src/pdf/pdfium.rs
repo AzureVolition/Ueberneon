@@ -17,7 +17,7 @@ use std::env;
 use std::ffi::CString;
 use std::fmt;
 use std::fs;
-use std::os::raw::{c_char, c_int, c_uint, c_void};
+use std::os::raw::{c_char, c_int, c_uint, c_ulong, c_void};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -41,6 +41,10 @@ type FPDF_PAGE = *mut c_void;
 type FPDF_BITMAP = *mut c_void;
 #[allow(non_camel_case_types)]
 type FPDF_TEXTPAGE = *mut c_void;
+#[allow(non_camel_case_types)]
+type FPDF_BOOKMARK = *mut c_void;
+#[allow(non_camel_case_types)]
+type FPDF_DEST = *mut c_void;
 
 /// FPDFBitmap_BGRx:4 字节/像素,无 alpha。
 /// 注意:PDFium chromium/7961 起该值从 0 改为 3(0 = FPDFBitmap_Unknown)。
@@ -87,6 +91,19 @@ pub struct TextChar {
     pub bottom: f64,
     pub right: f64,
     pub top: f64,
+    /// PDFium 报告的字号(点)。用于区分“小字层”(真实小字号)与
+    /// 全小写正文行(字形包围盒偏矮但字号相同)。
+    pub font_size: f64,
+}
+
+/// PDF 书签条目（目录树节点）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Bookmark {
+    pub title: String,
+    /// 0-based 页面索引（无目标页时为 None）。
+    pub page_index: Option<u32>,
+    /// 树深度，根为 0。
+    pub level: u32,
 }
 
 // ── 函数指针类型 ──
@@ -109,7 +126,13 @@ type FnTextCountChars = unsafe extern "C" fn(FPDF_TEXTPAGE) -> c_int;
 type FnTextGetUnicode = unsafe extern "C" fn(FPDF_TEXTPAGE, c_int) -> c_uint;
 type FnTextGetCharBox =
     unsafe extern "C" fn(FPDF_TEXTPAGE, c_int, *mut f64, *mut f64, *mut f64, *mut f64) -> c_int;
+type FnTextGetFontSize = unsafe extern "C" fn(FPDF_TEXTPAGE, c_int) -> f64;
 type FnTextClosePage = unsafe extern "C" fn(FPDF_TEXTPAGE);
+type FnBookmarkGetFirstChild = unsafe extern "C" fn(FPDF_DOCUMENT, FPDF_BOOKMARK) -> FPDF_BOOKMARK;
+type FnBookmarkGetNextSibling = unsafe extern "C" fn(FPDF_DOCUMENT, FPDF_BOOKMARK) -> FPDF_BOOKMARK;
+type FnBookmarkGetTitle = unsafe extern "C" fn(FPDF_BOOKMARK, *mut u8, c_ulong) -> c_ulong;
+type FnBookmarkGetDest = unsafe extern "C" fn(FPDF_DOCUMENT, FPDF_BOOKMARK) -> FPDF_DEST;
+type FnDestGetDestPageIndex = unsafe extern "C" fn(FPDF_DOCUMENT, FPDF_DEST) -> c_int;
 
 #[derive(Clone, Copy)]
 struct Bindings {
@@ -128,7 +151,13 @@ struct Bindings {
     text_count_chars: FnTextCountChars,
     text_get_unicode: FnTextGetUnicode,
     text_get_char_box: FnTextGetCharBox,
+    text_get_font_size: FnTextGetFontSize,
     text_close_page: FnTextClosePage,
+    bookmark_get_first_child: FnBookmarkGetFirstChild,
+    bookmark_get_next_sibling: FnBookmarkGetNextSibling,
+    bookmark_get_title: FnBookmarkGetTitle,
+    bookmark_get_dest: FnBookmarkGetDest,
+    dest_get_dest_page_index: FnDestGetDestPageIndex,
 }
 
 // ── Pdfium 实例 ──
@@ -176,7 +205,19 @@ impl Pdfium {
                 text_count_chars: binding(&library, b"FPDFText_CountChars\0").map_err(bind_err)?,
                 text_get_unicode: binding(&library, b"FPDFText_GetUnicode\0").map_err(bind_err)?,
                 text_get_char_box: binding(&library, b"FPDFText_GetCharBox\0").map_err(bind_err)?,
+                text_get_font_size: binding(&library, b"FPDFText_GetFontSize\0")
+                    .map_err(bind_err)?,
                 text_close_page: binding(&library, b"FPDFText_ClosePage\0").map_err(bind_err)?,
+                bookmark_get_first_child: binding(&library, b"FPDFBookmark_GetFirstChild\0")
+                    .map_err(bind_err)?,
+                bookmark_get_next_sibling: binding(&library, b"FPDFBookmark_GetNextSibling\0")
+                    .map_err(bind_err)?,
+                bookmark_get_title: binding(&library, b"FPDFBookmark_GetTitle\0")
+                    .map_err(bind_err)?,
+                bookmark_get_dest: binding(&library, b"FPDFBookmark_GetDest\0")
+                    .map_err(bind_err)?,
+                dest_get_dest_page_index: binding(&library, b"FPDFDest_GetDestPageIndex\0")
+                    .map_err(bind_err)?,
             }
         };
 
@@ -297,12 +338,14 @@ impl Pdfium {
                 if ok == 0 {
                     continue;
                 }
+                let font_size = (self.bindings.text_get_font_size)(text_page, i);
                 chars.push(TextChar {
                     ch,
                     left,
                     bottom,
                     right,
                     top,
+                    font_size,
                 });
             }
 
@@ -310,6 +353,66 @@ impl Pdfium {
             (self.bindings.close_page)(page);
             Ok(chars)
         }
+    }
+
+    fn bookmarks(&self, doc: FPDF_DOCUMENT) -> Result<Vec<Bookmark>, PdfiumError> {
+        let mut out = Vec::new();
+        unsafe {
+            let root = (self.bindings.bookmark_get_first_child)(doc, std::ptr::null_mut());
+            self.collect_bookmarks(doc, root, 0, &mut out);
+        }
+        Ok(out)
+    }
+
+    fn collect_bookmarks(
+        &self,
+        doc: FPDF_DOCUMENT,
+        mut bm: FPDF_BOOKMARK,
+        level: u32,
+        out: &mut Vec<Bookmark>,
+    ) {
+        while !bm.is_null() {
+            let (title, page_index) = unsafe {
+                let title = self.bookmark_title(bm);
+                let dest = (self.bindings.bookmark_get_dest)(doc, bm);
+                let page_index = if dest.is_null() {
+                    None
+                } else {
+                    let idx = (self.bindings.dest_get_dest_page_index)(doc, dest);
+                    if idx < 0 { None } else { Some(idx as u32) }
+                };
+                (title, page_index)
+            };
+            out.push(Bookmark {
+                title,
+                page_index,
+                level,
+            });
+            let child = unsafe { (self.bindings.bookmark_get_first_child)(doc, bm) };
+            if !child.is_null() {
+                self.collect_bookmarks(doc, child, level + 1, out);
+            }
+            bm = unsafe { (self.bindings.bookmark_get_next_sibling)(doc, bm) };
+        }
+    }
+
+    /// FPDFBookmark_GetTitle 返回 UTF-16LE 字节（含可能的结尾 NUL）。
+    fn bookmark_title(&self, bm: FPDF_BOOKMARK) -> String {
+        let needed = unsafe { (self.bindings.bookmark_get_title)(bm, std::ptr::null_mut(), 0) };
+        if needed == 0 {
+            return String::new();
+        }
+        let mut buf = vec![0u8; (needed as usize).saturating_add(2)];
+        let written = unsafe {
+            (self.bindings.bookmark_get_title)(bm, buf.as_mut_ptr(), buf.len() as c_ulong)
+        };
+        let len = (written as usize).min(buf.len());
+        let units: Vec<u16> = buf[..len]
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        let end = units.iter().position(|&u| u == 0).unwrap_or(units.len());
+        String::from_utf16_lossy(&units[..end])
     }
 
     fn page_size(&self, doc: FPDF_DOCUMENT, page_index: u32) -> Result<(f32, f32), PdfiumError> {
@@ -402,9 +505,19 @@ fn with_pdfium<T>(f: impl FnOnce(&Pdfium) -> Result<T, PdfiumError>) -> Result<T
     let pdfium = match PDFIUM.get() {
         Some(p) => p,
         None => {
-            let init = Mutex::new(Pdfium::load()?);
-            let _ = PDFIUM.set(init);
-            PDFIUM.get().expect("PDFIUM OnceLock 刚写入,必然可取到")
+            // 初始化必须串行：FPDF_InitLibrary 不是线程安全的，
+            // 并发首次调用（例如多个测试/多个渲染任务同时 open）会导致崩溃。
+            let _init_guard = PDFIUM_INIT
+                .lock()
+                .map_err(|_| PdfiumError::Init("pdfium init mutex poisoned".into()))?;
+            match PDFIUM.get() {
+                Some(p) => p,
+                None => {
+                    let init = Mutex::new(Pdfium::load()?);
+                    let _ = PDFIUM.set(init);
+                    PDFIUM.get().expect("PDFIUM OnceLock 刚写入,必然可取到")
+                }
+            }
         }
     };
     let guard = pdfium
@@ -412,6 +525,9 @@ fn with_pdfium<T>(f: impl FnOnce(&Pdfium) -> Result<T, PdfiumError>) -> Result<T
         .map_err(|_| PdfiumError::Init("pdfium mutex poisoned".into()))?;
     f(&guard)
 }
+
+/// 串行化 PDFium 首次初始化（FPDF_InitLibrary 非线程安全）。
+static PDFIUM_INIT: Mutex<()> = Mutex::new(());
 
 /// 打开 PDF 文件,返回文档句柄(所有页面操作都会串行访问 PDFium)。
 pub fn open(path: &Path) -> Result<PdfDocument, PdfiumError> {
@@ -455,6 +571,11 @@ impl PdfDocument {
             )));
         }
         with_pdfium(|pdf| pdf.page_text_chars(self.handle, page_index))
+    }
+
+    /// 读取 PDF 书签树（目录），按文档顺序深度优先展开。
+    pub fn bookmarks(&self) -> Result<Vec<Bookmark>, PdfiumError> {
+        with_pdfium(|pdf| pdf.bookmarks(self.handle))
     }
 
     /// 以 scale(像素/点,1.0 = 72dpi)渲染第 page_index 页为 PNG 字节。
@@ -504,16 +625,18 @@ fn resolve_library_path() -> Result<PathBuf, PdfiumError> {
         )));
     }
 
-    let cache_dir = layout::home_dir()
-        .join("Library/Caches/ueberneon")
-        .join(format!("pdfium-{PDFIUM_VERSION}"));
+    let cache_dir = library_cache_dir();
     let dest = cache_dir.join("libpdfium.dylib");
     if is_plausible(&dest) {
         return Ok(dest);
     }
 
     fs::create_dir_all(&cache_dir).map_err(PdfiumError::Io)?;
-    let tmp = cache_dir.join(format!(".libpdfium.{}.tmp", std::process::id()));
+    let tmp = cache_dir.join(format!(
+        ".libpdfium.{}.{:?}.tmp",
+        std::process::id(),
+        std::thread::current().id()
+    ));
     fs::write(&tmp, EMBEDDED_PDFIUM).map_err(PdfiumError::Io)?;
     fs::rename(&tmp, &dest).map_err(PdfiumError::Io)?;
 
@@ -521,6 +644,20 @@ fn resolve_library_path() -> Result<PathBuf, PdfiumError> {
         Ok(dest)
     } else {
         Err(PdfiumError::Init("嵌入的 PDFium 动态库解压后异常".into()))
+    }
+}
+
+/// 动态库缓存目录：测试构建用系统临时目录，避免依赖 ~/Library/Caches。
+fn library_cache_dir() -> PathBuf {
+    if cfg!(test) {
+        std::env::temp_dir().join(format!(
+            "ueberneon-pdfium-{PDFIUM_VERSION}-{}",
+            std::process::id()
+        ))
+    } else {
+        layout::home_dir()
+            .join("Library/Caches/ueberneon")
+            .join(format!("pdfium-{PDFIUM_VERSION}"))
     }
 }
 
@@ -533,13 +670,16 @@ fn is_plausible(path: &Path) -> bool {
 }
 
 fn encode_png(width: u32, height: u32, rgb: Vec<u8>) -> Result<Vec<u8>, PdfiumError> {
-    use image::{DynamicImage, ImageFormat, RgbImage};
+    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+    use image::{DynamicImage, RgbImage};
 
     let img = RgbImage::from_raw(width, height, rgb)
         .ok_or_else(|| PdfiumError::Render("PNG 像素缓冲区尺寸不匹配".into()))?;
     let mut out = Vec::new();
+    let encoder =
+        PngEncoder::new_with_quality(&mut out, CompressionType::Fast, FilterType::Adaptive);
     DynamicImage::ImageRgb8(img)
-        .write_to(&mut std::io::Cursor::new(&mut out), ImageFormat::Png)
+        .write_with_encoder(encoder)
         .map_err(|e| PdfiumError::Render(format!("PNG 编码失败:{e}")))?;
     Ok(out)
 }
@@ -549,7 +689,7 @@ mod tests {
     use super::*;
 
     fn sample_pdf() -> PathBuf {
-        let bytes = include_bytes!("../tests/fixtures/sample.pdf");
+        let bytes = include_bytes!("../../tests/fixtures/sample.pdf");
         let dir =
             std::env::temp_dir().join(format!("ueberneon-pdfium-test-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();

@@ -50,6 +50,17 @@ fn gen_id() -> String {
     format!("inst-{ts:x}-{pid:x}")
 }
 
+/// 生成自定义 provider 的 ID（用户不需要自己填）。
+fn gen_provider_id() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let pid = std::process::id();
+    format!("prov-{ts:x}-{pid:x}")
+}
+
 #[component]
 pub fn SettingsPanel(
     tab: SettingsTab,
@@ -92,7 +103,6 @@ pub fn SettingsPanel(
     let mut add_instance_error = use_signal(|| Option::<String>::None);
 
     // 自定义 provider 字段
-    let mut custom_id = use_signal(String::new);
     let mut custom_name = use_signal(String::new);
     let mut custom_url = use_signal(String::new);
 
@@ -112,12 +122,6 @@ pub fn SettingsPanel(
                 Some(i) => (i.provider_id, decode_key(&i.api_key)),
                 None => return,
             };
-            if key.is_empty() {
-                fetch_errors
-                    .write()
-                    .insert(inst_id.clone(), "api key required".into());
-                return;
-            }
             refreshing.set(Some(inst_id.clone()));
             fetch_errors.write().remove(&inst_id);
             let pid2 = pid.clone();
@@ -205,10 +209,7 @@ pub fn SettingsPanel(
             } else {
                 add_alias.read().trim().to_string()
             };
-            let mut raw_key = add_key.read().trim().to_string();
-            if raw_key.is_empty() && preset.id == "ollama-local" {
-                raw_key = "ollama".into();
-            }
+            let raw_key = add_key.read().trim().to_string();
             if raw_key.is_empty() {
                 err_sig.set(Some("api key is required".into()));
                 return;
@@ -232,7 +233,6 @@ pub fn SettingsPanel(
                 base_url: preset.base_url.to_string(),
                 models_url: preset.models_url.to_string(),
                 balance_url: String::new(),
-                context_window: preset.context_window,
                 is_preset: true,
             };
             let preset_id = preset.id.to_string();
@@ -298,22 +298,14 @@ pub fn SettingsPanel(
         let mut refresh_sig = refreshing;
         let oc = on_change;
         move |_| {
-            let id = custom_id.read().trim().to_string();
+            let id = gen_provider_id();
             let name = custom_name.read().trim().to_string();
             let url = custom_url.read().trim().to_string();
-            if id.is_empty() || name.is_empty() || url.is_empty() {
+            if name.is_empty() || url.is_empty() {
                 return;
             }
             let raw_key = add_key.read().trim().to_string();
-            if raw_key.is_empty() {
-                err_sig.set(Some("api key is required".into()));
-                return;
-            }
-            let alias = if add_alias.read().trim().is_empty() {
-                name.clone()
-            } else {
-                add_alias.read().trim().to_string()
-            };
+            let alias = name.clone();
             // 检查 alias 是否重复（直接查 DB，确保一致性）
             let alias_dup = crate::db::with_db(|conn| {
                 provider_instance::list_all(conn)
@@ -332,9 +324,8 @@ pub fn SettingsPanel(
                 name: name.clone(),
                 kind: "openai".to_string(),
                 base_url: url.clone(),
-                models_url: format!("{url}/models"),
+                models_url: String::new(),
                 balance_url: String::new(),
-                context_window: 0,
                 is_preset: false,
             };
             err_sig.set(None);
@@ -386,7 +377,6 @@ pub fn SettingsPanel(
                                 oc.call(());
                                 show_add_form.set(false);
                                 add_step.set(AddStep::SelectProvider);
-                                custom_id.set(String::new());
                                 custom_name.set(String::new());
                                 custom_url.set(String::new());
                                 add_alias.set(String::new());
@@ -465,7 +455,7 @@ pub fn SettingsPanel(
                                                 span { class: "settings-modal-title", "add provider instance" }
                                                 button {
                                                     class: "settings-modal-close",
-                                                    onclick: move |_| { show_add_form.set(false); add_step.set(AddStep::SelectProvider); add_alias.set(String::new()); add_key.set(String::new()); custom_id.set(String::new()); custom_name.set(String::new()); custom_url.set(String::new()); add_instance_error.set(None); },
+                                                    onclick: move |_| { show_add_form.set(false); add_step.set(AddStep::SelectProvider); add_alias.set(String::new()); add_key.set(String::new()); custom_name.set(String::new()); custom_url.set(String::new()); add_instance_error.set(None); },
                                                     "✕"
                                                 }
                                             }
@@ -521,10 +511,6 @@ pub fn SettingsPanel(
                                 // 自定义 provider
                                 div { class: "provider-custom-form",
                                     div { class: "settings-field",
-                                        label { class: "settings-field-label", "provider id" }
-                                        input { class: "settings-input", placeholder: "e.g. my-provider", value: "{custom_id}", oninput: move |evt| custom_id.set(evt.value()) }
-                                    }
-                                    div { class: "settings-field",
                                         label { class: "settings-field-label", "display name" }
                                         input { class: "settings-input", placeholder: "e.g. My Provider", value: "{custom_name}", oninput: move |evt| custom_name.set(evt.value()) }
                                     }
@@ -533,11 +519,7 @@ pub fn SettingsPanel(
                                         input { class: "settings-input", placeholder: "https://api.example.com/v1", value: "{custom_url}", oninput: move |evt| custom_url.set(evt.value()) }
                                     }
                                     div { class: "settings-field",
-                                        label { class: "settings-field-label", "alias" }
-                                        input { class: "settings-input", placeholder: "display name", value: "{add_alias}", oninput: move |evt| add_alias.set(evt.value()) }
-                                    }
-                                    div { class: "settings-field",
-                                        label { class: "settings-field-label", "api key" }
+                                        label { class: "settings-field-label", "api key (optional)" }
                                         input { class: "settings-input", r#type: "password", placeholder: "sk-...", value: "{add_key}", oninput: move |evt| add_key.set(evt.value()) }
                                     }
                                     div { class: "form-feedback",
@@ -548,7 +530,7 @@ pub fn SettingsPanel(
                                         }
                                     }
                                     div { class: "provider-custom-form-actions",
-                                        button { class: "btn btn-cancel", onclick: move |_| { show_add_form.set(false); add_step.set(AddStep::SelectProvider); add_alias.set(String::new()); add_key.set(String::new()); custom_id.set(String::new()); custom_name.set(String::new()); custom_url.set(String::new()); add_instance_error.set(None); }, "cancel" }
+                                        button { class: "btn btn-cancel", onclick: move |_| { show_add_form.set(false); add_step.set(AddStep::SelectProvider); add_alias.set(String::new()); add_key.set(String::new()); custom_name.set(String::new()); custom_url.set(String::new()); add_instance_error.set(None); }, "cancel" }
                                         {
                                             let validating = refreshing().is_some();
                                             rsx! {
@@ -580,13 +562,7 @@ pub fn SettingsPanel(
                                         input {
                                             class: "settings-input",
                                             r#type: "password",
-                                            placeholder: if add_provider_id.read().as_str()
-                                                == "ollama-local"
-                                            {
-                                                "本地 Ollama 可留空或填 ollama"
-                                            } else {
-                                                "sk-..."
-                                            },
+                                            placeholder: "sk-...",
                                             value: "{add_key}",
                                             oninput: move |evt| add_key.set(evt.value()),
                                         }
@@ -889,7 +865,7 @@ pub fn SettingsPanel(
                             }
                             div { class: "settings-section",
                                 div { class: "settings-hint",
-                                    span { "内置 translate 子代理用于阅读器选区翻译，配置好 provider 和模型后即可使用（例如 Ollama (本地) + kaelri/hy-mt2:7b）。" }
+                                    span { "内置 translate 子代理用于阅读器选区翻译，配置好 provider 和模型后即可使用（本地服务用自定义 provider，例如 http://localhost:11434/v1）。" }
                                 }
                             }
                             div { class: "settings-section",
@@ -1092,7 +1068,7 @@ pub fn SettingsPanel(
                                         }
                                         if discovered_models().is_empty() {
                                             div { class: "formula-model-empty",
-                                                "未发现模型:把模型目录放到 ~/.ueberneon/formula-models/ 后刷新"
+                                                "未发现模型:下载模型包(含 manifest.json / model.onnx / tokenizer.json / libonnxruntime.dylib),把整个目录放到 ~/.ueberneon/formula-models/ 后刷新"
                                             }
                                         }
                                     }

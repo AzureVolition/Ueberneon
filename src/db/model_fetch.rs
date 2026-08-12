@@ -7,10 +7,6 @@ use crate::db::metadata::provider::{self, ProviderRow};
 
 /// 向 provider 的 GET /v1/models 发起请求，返回模型 ID 列表
 pub async fn fetch_models(provider: &ProviderRow, api_key: &str) -> Result<Vec<String>, String> {
-    if api_key.is_empty() {
-        return Err("api key is required to fetch models".into());
-    }
-
     // 构建候选 URL
     let urls = build_fetch_urls(&provider.base_url, &provider.models_url);
 
@@ -33,10 +29,11 @@ async fn try_fetch(
     url: &str,
     api_key: &str,
 ) -> Result<Vec<String>, String> {
-    let resp = client
-        .get(url)
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("Accept", "application/json")
+    let mut req = client.get(url).header("Accept", "application/json");
+    if !api_key.is_empty() {
+        req = req.header("Authorization", format!("Bearer {api_key}"));
+    }
+    let resp = req
         .timeout(std::time::Duration::from_secs(10))
         .send()
         .await

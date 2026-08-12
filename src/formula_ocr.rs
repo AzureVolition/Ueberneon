@@ -1,23 +1,17 @@
 // ── 公式 OCR 后端 ──
 //
-// 本地 ONNX Runtime(PP-FormulaNet_plus-S)识别公式选区并输出 LaTeX。
-// 模型与运行库由 build.rs 嵌入;若构建时未提供资源,`backend()` 返回
-// NotConfigured,上层回退到文本层重建。后端通过 trait 暴露,未来可替换
-// 为 UniMERNet / Mathpix 等实现。
+// 本地 ONNX 模型(UniMERNet 风格,manifest 驱动)识别公式选区并输出 LaTeX。
+// 用户下载模型包后放到 ~/.ueberneon/formula-models/<模型名>/ 即可被发现,
+// 不需要任何构建脚本或嵌入资源。未配置时 `backend()` 返回 NotConfigured,
+// 上层回退到文本层重建。后端通过 trait 暴露,未来可替换其它实现。
 
 use std::collections::HashSet;
 use std::env;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-use serde::{Deserialize, Serialize};
-
-// build.rs 生成的嵌入资源(可能为空切片,表示未配置)。
-include!(concat!(env!("OUT_DIR"), "/bundled_formula.rs"));
-
-const FORMULA_CACHE_VERSION: &str = "formula-ocr-v1";
+use serde::Deserialize;
 
 #[derive(Debug, Clone)]
 pub enum FormulaOcrError {
@@ -93,12 +87,6 @@ static BACKEND_STATE: OnceLock<Mutex<Option<BackendSlot>>> = OnceLock::new();
 fn backend_key() -> String {
     match configured_model_dir() {
         Some(dir) => format!("dir:{}", dir.display()),
-        None if !ONNXRUNTIME_DYLIB.is_empty()
-            && !FORMULA_MODEL.is_empty()
-            && !FORMULA_DICT.is_empty() =>
-        {
-            "embedded".into()
-        }
         None => "none".into(),
     }
 }
@@ -121,125 +109,20 @@ pub fn backend_arc() -> Result<std::sync::Arc<dyn FormulaRecognizer>, FormulaOcr
     let backend = match configured_model_dir() {
         Some(dir) if dir.join("manifest.json").is_file() => UniMernetRecognizer::load(&dir)
             .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn FormulaRecognizer>),
-        _ => OrtFormulaRecognizer::load()
-            .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn FormulaRecognizer>),
+        Some(dir) => Err(FormulaOcrError::NotConfigured(format!(
+            "模型目录缺少 manifest.json:{}",
+            dir.display()
+        ))),
+        None => Err(FormulaOcrError::NotConfigured(
+            "未找到公式识别模型:请把包含 manifest.json / model.onnx / tokenizer.json \
+             / libonnxruntime.dylib 的模型目录放到 ~/.ueberneon/formula-models/ 后刷新"
+                .to_string(),
+        )),
     };
     *state = Some(BackendSlot { key, backend });
     match state.as_ref().unwrap().backend.as_ref() {
         Ok(b) => Ok(b.clone()),
         Err(e) => Err(e.clone()),
-    }
-}
-
-/// 预处理参数(由 scripts/export_formula_onnx.py 导出并固化)。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct PreprocessConfig {
-    /// 等比缩放后的目标高度(像素)
-    pub height: u32,
-    /// RGB 归一化均值
-    pub mean: [f32; 3],
-    /// RGB 归一化标准差
-    pub std: [f32; 3],
-}
-
-impl Default for PreprocessConfig {
-    fn default() -> Self {
-        Self {
-            height: 48,
-            mean: [0.485, 0.456, 0.406],
-            std: [0.229, 0.224, 0.225],
-        }
-    }
-}
-
-pub struct OrtFormulaRecognizer {
-    session: Mutex<ort::session::Session>,
-    dict: Vec<String>,
-    config: PreprocessConfig,
-}
-
-impl OrtFormulaRecognizer {
-    pub fn load() -> Result<Self, FormulaOcrError> {
-        let lib_path = ensure_asset("libonnxruntime.dylib", &ONNXRUNTIME_DYLIB)?;
-        ort::init_from(&lib_path)
-            .map_err(|e| FormulaOcrError::Ort(format!("init_from({lib_path:?}): {e}")))?
-            .commit();
-        let model_path = ensure_asset("model.onnx", &FORMULA_MODEL)?;
-        let dict_bytes = asset_bytes("dict.json", &FORMULA_DICT)?;
-        let dict: Vec<String> = serde_json::from_slice(&dict_bytes)
-            .map_err(|e| FormulaOcrError::Json(format!("词表:{e}")))?;
-        let preprocess_bytes = asset_bytes("preprocess.json", &FORMULA_PREPROCESS)?;
-        let config: PreprocessConfig = serde_json::from_slice(&preprocess_bytes)
-            .map_err(|e| FormulaOcrError::Json(format!("预处理参数:{e}")))?;
-        let session = ort::session::Session::builder()
-            .map_err(|e| FormulaOcrError::Ort(format!("builder:{e}")))?
-            .with_intra_threads(4)
-            .map_err(|e| FormulaOcrError::Ort(format!("intra_threads:{e}")))?
-            .commit_from_file(&model_path)
-            .map_err(|e| FormulaOcrError::Ort(format!("commit_from_file:{e}")))?;
-        Ok(Self {
-            session: Mutex::new(session),
-            dict,
-            config,
-        })
-    }
-}
-
-impl FormulaRecognizer for OrtFormulaRecognizer {
-    fn recognize_rgba(
-        &self,
-        rgba: &[u8],
-        width: u32,
-        height: u32,
-    ) -> Result<String, FormulaOcrError> {
-        let img = image::RgbaImage::from_raw(width, height, rgba.to_vec())
-            .ok_or_else(|| FormulaOcrError::Decode("RGBA 尺寸与缓冲区不一致".into()))?;
-        if img.width() == 0 || img.height() == 0 {
-            return Err(FormulaOcrError::Decode("空图像".into()));
-        }
-
-        // 等比缩放到目标高度(模型动态宽度)。
-        let target_h = self.config.height.max(1);
-        let nw =
-            (((img.width() as f32 * target_h as f32) / img.height() as f32).round() as u32).max(1);
-        let resized =
-            image::imageops::resize(&img, nw, target_h, image::imageops::FilterType::Triangle);
-
-        // NCHW float 归一化。
-        let (mean, std) = (self.config.mean, self.config.std);
-        let mut input = ndarray::Array4::<f32>::zeros((1, 3, target_h as usize, nw as usize));
-        for (x, y, px) in resized.enumerate_pixels() {
-            let r = px.0[0] as f32 / 255.0;
-            let g = px.0[1] as f32 / 255.0;
-            let b = px.0[2] as f32 / 255.0;
-            input[[0, 0, y as usize, x as usize]] = (r - mean[0]) / std[0];
-            input[[0, 1, y as usize, x as usize]] = (g - mean[1]) / std[1];
-            input[[0, 2, y as usize, x as usize]] = (b - mean[2]) / std[2];
-        }
-
-        let tensor = ort::value::TensorRef::from_array_view(&input)
-            .map_err(|e| FormulaOcrError::Ort(format!("tensor:{e}")))?;
-        let mut guard = self
-            .session
-            .lock()
-            .map_err(|_| FormulaOcrError::Ort("session mutex poisoned".into()))?;
-        let outputs = guard
-            .run(ort::inputs![tensor])
-            .map_err(|e| FormulaOcrError::Ort(format!("run:{e}")))?;
-        let output = outputs
-            .into_iter()
-            .next()
-            .map(|(_, v)| v)
-            .ok_or_else(|| FormulaOcrError::Ort("模型无输出".into()))?;
-        let tensor = output
-            .downcast::<ort::value::TensorValueType<f32>>()
-            .map_err(|e| FormulaOcrError::Ort(format!("downcast:{e}")))?;
-        let logits = tensor
-            .try_extract_array::<f32>()
-            .map_err(|e| FormulaOcrError::Ort(format!("output:{e}")))?;
-        let ids = greedy_argmax(&logits);
-        Ok(decode_ids(&ids, &self.dict))
     }
 }
 
@@ -556,64 +439,6 @@ fn decode_bpe_ids(ids: &[i64], tokens: &[String], special: &HashSet<String>) -> 
     out.trim().to_string()
 }
 
-/// 按最后一维贪心解码;支持 [1, T, V] 或 [T, V] 输出。
-fn greedy_argmax(logits: &ndarray::ArrayViewD<f32>) -> Vec<usize> {
-    let shape = logits.shape();
-    let mut ids = Vec::new();
-    if shape.len() == 3 {
-        if let Ok(v) = logits.to_owned().into_dimensionality::<ndarray::Ix3>() {
-            let (_, seq, vocab) = v.dim();
-            for t in 0..seq {
-                let slice = v.slice(ndarray::s![0, t, ..]);
-                if let Some((i, _)) = argmax(&slice, vocab) {
-                    ids.push(i);
-                }
-            }
-        }
-    } else if shape.len() == 2 {
-        if let Ok(v) = logits.to_owned().into_dimensionality::<ndarray::Ix2>() {
-            let (seq, vocab) = v.dim();
-            for t in 0..seq {
-                let slice = v.slice(ndarray::s![t, ..]);
-                if let Some((i, _)) = argmax(&slice, vocab) {
-                    ids.push(i);
-                }
-            }
-        }
-    }
-    ids
-}
-
-fn argmax(slice: &ndarray::ArrayView1<f32>, len: usize) -> Option<(usize, f32)> {
-    if len == 0 {
-        return None;
-    }
-    slice
-        .iter()
-        .enumerate()
-        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-        .map(|(i, v)| (i, *v))
-}
-
-/// 把词表 id 序列解码为 LaTeX;遇到 EOS 停止,跳过空白/blank 标记。
-fn decode_ids(ids: &[usize], dict: &[String]) -> String {
-    let mut out = String::new();
-    for &id in ids {
-        let Some(tok) = dict.get(id) else {
-            continue;
-        };
-        let t = tok.trim();
-        if t.is_empty() || t == "blank" {
-            continue;
-        }
-        if matches!(t, "<eos>" | "</s>" | "[EOS]" | "<pad>" | "[PAD]") {
-            break;
-        }
-        out.push_str(tok);
-    }
-    out.trim().to_string()
-}
-
 /// 模型目录来源:设置里的 model_dir 优先,其次 UEBERNEON_FORMULA_DIR 环境变量。
 fn configured_model_dir() -> Option<PathBuf> {
     if let Some(dir) = crate::settings::get().formula_ocr.model_dir {
@@ -629,73 +454,6 @@ fn configured_model_dir() -> Option<PathBuf> {
         }
     }
     None
-}
-
-/// 读取资源:配置目录优先,其次构建期嵌入字节。
-fn asset_bytes(name: &str, embedded: &[u8]) -> Result<Vec<u8>, FormulaOcrError> {
-    if let Some(dir) = configured_model_dir() {
-        let p = dir.join(name);
-        if p.is_file() {
-            return fs::read(&p).map_err(|e| FormulaOcrError::Io(format!("读取 {p:?}:{e}")));
-        }
-    }
-    if !embedded.is_empty() {
-        return Ok(embedded.to_vec());
-    }
-    Err(FormulaOcrError::NotConfigured(format!(
-        "缺少 {name};请在设置的“公式识别”中选择模型目录,或运行 scripts/export_formula_onnx.py 后重新构建"
-    )))
-}
-
-/// 把嵌入/本地资源解压到缓存目录(临时文件 + rename,并发安全)。
-fn ensure_asset(name: &str, bytes: &[u8]) -> Result<PathBuf, FormulaOcrError> {
-    if let Some(dir) = configured_model_dir() {
-        let p = dir.join(name);
-        if p.is_file() {
-            return Ok(p);
-        }
-    }
-    if bytes.is_empty() {
-        return Err(FormulaOcrError::NotConfigured(format!(
-            "缺少 {name};请在设置的“公式识别”中选择模型目录,或运行 scripts/export_formula_onnx.py 后重新构建"
-        )));
-    }
-    let cache_root = cache_root();
-    fs::create_dir_all(&cache_root)
-        .map_err(|e| FormulaOcrError::Io(format!("创建缓存目录 {}:{e}", cache_root.display())))?;
-    let dest = cache_root.join(name);
-    if dest.is_file() {
-        if let Ok(meta) = fs::metadata(&dest) {
-            if meta.len() == bytes.len() as u64 {
-                return Ok(dest);
-            }
-        }
-    }
-    let tmp = cache_root.join(format!("{name}.tmp-{}", std::process::id()));
-    let mut f = fs::File::create(&tmp)
-        .map_err(|e| FormulaOcrError::Io(format!("创建临时文件 {tmp:?}:{e}")))?;
-    f.write_all(bytes)
-        .map_err(|e| FormulaOcrError::Io(format!("写入 {tmp:?}:{e}")))?;
-    f.flush()
-        .map_err(|e| FormulaOcrError::Io(format!("flush {tmp:?}:{e}")))?;
-    drop(f);
-    if dest.exists() {
-        fs::remove_file(&dest)
-            .map_err(|e| FormulaOcrError::Io(format!("清理旧文件 {dest:?}:{e}")))?;
-    }
-    fs::rename(&tmp, &dest)
-        .map_err(|e| FormulaOcrError::Io(format!("rename {tmp:?} -> {dest:?}:{e}")))?;
-    Ok(dest)
-}
-
-fn cache_root() -> PathBuf {
-    if let Ok(dir) = env::var("UEBERNEON_CACHE_DIR") {
-        return PathBuf::from(dir).join(FORMULA_CACHE_VERSION);
-    }
-    let home = env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(home)
-        .join("Library/Caches/ueberneon")
-        .join(FORMULA_CACHE_VERSION)
 }
 
 /// 文本层重建的兜底映射:Unicode 数学字符 → LaTeX 命令。
@@ -792,27 +550,6 @@ mod tests {
         assert_eq!(latex_escape_unicode("Θ=π/2"), "\\Theta=\\pi/2");
         assert_eq!(latex_escape_unicode("p∗"), "p*");
         assert_eq!(latex_escape_unicode("普通文本"), "普通文本");
-    }
-
-    #[test]
-    fn decode_ids_skips_blank_and_stops_at_eos() {
-        let dict = vec![
-            "".into(),
-            "\\frac".into(),
-            "{".into(),
-            "<eos>".into(),
-            "x".into(),
-        ];
-        assert_eq!(decode_ids(&[1, 2, 4, 0, 3, 1], &dict), "\\frac{x");
-    }
-
-    #[test]
-    fn greedy_argmax_handles_2d_and_3d() {
-        let arr =
-            ndarray::Array2::<f32>::from_shape_vec((2, 3), vec![0.1, 0.9, 0.2, 0.8, 0.1, 0.1])
-                .unwrap();
-        let ids = greedy_argmax(&arr.view().into_dyn());
-        assert_eq!(ids, vec![1, 0]);
     }
 
     #[test]

@@ -157,7 +157,6 @@ fn rebuild_schema(conn: &Connection) -> anyhow::Result<()> {
             base_url        TEXT NOT NULL,
             models_url      TEXT DEFAULT '',
             balance_url     TEXT DEFAULT '',
-            context_window  INTEGER,
             is_preset       INTEGER NOT NULL DEFAULT 0
         );
 
@@ -386,9 +385,15 @@ fn rebuild_schema(conn: &Connection) -> anyhow::Result<()> {
     // 幂等插入所有内置 provider 预设
     for preset in provider_presets::all_presets() {
         conn.execute(
-            "INSERT OR IGNORE INTO providers (id, name, kind, base_url, models_url, context_window, is_preset)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)",
-            rusqlite::params![preset.id, preset.name, preset.kind, preset.base_url, preset.models_url, preset.context_window],
+            "INSERT OR IGNORE INTO providers (id, name, kind, base_url, models_url, is_preset)
+             VALUES (?1, ?2, ?3, ?4, ?5, 1)",
+            rusqlite::params![
+                preset.id,
+                preset.name,
+                preset.kind,
+                preset.base_url,
+                preset.models_url
+            ],
         )?;
         // 插入预设模型列表
         if !preset.models.is_empty() {
@@ -464,7 +469,7 @@ fn rebuild_schema(conn: &Connection) -> anyhow::Result<()> {
             crate::translate::TRANSLATE_AGENT_ID,
             "translate",
             "SubAgent",
-            "你是学术文献翻译助手。请把用户提供的文本翻译成简体中文，保持术语准确、语句通顺；只输出译文，不要解释、不要复述原文。",
+            "把用户提供的文本翻译成简体中文，保持术语准确、语句通顺。只输出译文，不要解释、不要复述原文。",
             0.2,
             Some(2048u32),
             "[]",

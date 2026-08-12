@@ -11,7 +11,7 @@ use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 
-use crate::pdf::OverlayLine;
+use super::OverlayLine;
 
 const SAMPLE_PAGES: usize = 5;
 const CALIBRATION_VERSION: u32 = 1;
@@ -133,7 +133,7 @@ fn save(book_dir: &Path, mtime: u64, cal: DocCalibration) -> Result<(), String> 
 pub fn ensure_for_book(
     book_id: &str,
     book_dir: &Path,
-    doc: &crate::pdfium::PdfDocument,
+    doc: &crate::pdf::pdfium::PdfDocument,
 ) -> Result<DocCalibration, String> {
     let mtime = source_mtime(book_dir);
     if let Some(cal) = load(book_dir) {
@@ -149,7 +149,7 @@ pub fn ensure_for_book(
 // ── 校准计算 ──
 
 /// 采样前几页并计算四项参数。
-pub fn compute(doc: &crate::pdfium::PdfDocument) -> Result<DocCalibration, String> {
+pub fn compute(doc: &crate::pdf::pdfium::PdfDocument) -> Result<DocCalibration, String> {
     let count = doc.page_count();
     let pages = (count as usize).min(SAMPLE_PAGES);
     if pages == 0 {

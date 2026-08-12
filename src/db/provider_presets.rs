@@ -11,7 +11,6 @@ pub struct ProviderPreset {
     pub base_url: &'static str,
     pub models: &'static [&'static str],
     pub models_url: &'static str,
-    pub context_window: u32,
 }
 
 /// 返回所有内置 provider 预设列表
@@ -28,7 +27,6 @@ static PRESETS: &[ProviderPreset] = &[
         base_url: "https://api.deepseek.com",
         models: &[],
         models_url: "",
-        context_window: 1_000_000,
     },
     // ── OpenAI ──
     ProviderPreset {
@@ -38,7 +36,6 @@ static PRESETS: &[ProviderPreset] = &[
         base_url: "https://api.openai.com/v1",
         models: &[],
         models_url: "",
-        context_window: 128_000,
     },
     // ── Anthropic ──
     ProviderPreset {
@@ -48,7 +45,6 @@ static PRESETS: &[ProviderPreset] = &[
         base_url: "https://api.anthropic.com",
         models: &[],
         models_url: "",
-        context_window: 200_000,
     },
     // ── Kimi CN ──
     ProviderPreset {
@@ -58,7 +54,6 @@ static PRESETS: &[ProviderPreset] = &[
         base_url: "https://api.moonshot.cn/v1",
         models: &[],
         models_url: "",
-        context_window: 262_144,
     },
     // ── Kimi Global ──
     ProviderPreset {
@@ -68,7 +63,6 @@ static PRESETS: &[ProviderPreset] = &[
         base_url: "https://api.moonshot.ai/v1",
         models: &[],
         models_url: "",
-        context_window: 262_144,
     },
     // ── GLM CN ──
     ProviderPreset {
@@ -78,7 +72,6 @@ static PRESETS: &[ProviderPreset] = &[
         base_url: "https://open.bigmodel.cn/api/paas/v4",
         models: &["glm-5.2", "glm-5.1", "glm-5", "glm-4.7", "glm-4.7-flash"],
         models_url: "",
-        context_window: 1_000_000,
     },
     // ── Z.AI Global ──
     ProviderPreset {
@@ -88,7 +81,6 @@ static PRESETS: &[ProviderPreset] = &[
         base_url: "https://api.z.ai/api/paas/v4",
         models: &["glm-5.2", "glm-5.1", "glm-5", "glm-4.7", "glm-4.7-flash"],
         models_url: "",
-        context_window: 1_000_000,
     },
     // ── MiniMax CN ──
     ProviderPreset {
@@ -98,7 +90,6 @@ static PRESETS: &[ProviderPreset] = &[
         base_url: "https://api.minimaxi.com/v1",
         models: &["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed"],
         models_url: "",
-        context_window: 1_048_576,
     },
     // ── Qwen CN ──
     ProviderPreset {
@@ -113,7 +104,6 @@ static PRESETS: &[ProviderPreset] = &[
             "qwen3-coder-next",
         ],
         models_url: "",
-        context_window: 131_072,
     },
     // ── Qwen Global ──
     ProviderPreset {
@@ -128,7 +118,6 @@ static PRESETS: &[ProviderPreset] = &[
             "qwen3-coder-next",
         ],
         models_url: "",
-        context_window: 131_072,
     },
     // ── StepFun ──
     ProviderPreset {
@@ -138,7 +127,6 @@ static PRESETS: &[ProviderPreset] = &[
         base_url: "https://api.stepfun.com/step_plan/v1",
         models: &["step-3.7-flash", "step-3.5-flash"],
         models_url: "",
-        context_window: 131_072,
     },
     // ── NovitaAI ──
     ProviderPreset {
@@ -152,7 +140,6 @@ static PRESETS: &[ProviderPreset] = &[
             "zai-org/glm-5.2",
         ],
         models_url: "",
-        context_window: 131_072,
     },
     // ── HuggingFace ──
     ProviderPreset {
@@ -166,17 +153,6 @@ static PRESETS: &[ProviderPreset] = &[
             "deepseek-ai/DeepSeek-V3.2",
         ],
         models_url: "",
-        context_window: 131_072,
-    },
-    // ── Ollama (本地) ──
-    ProviderPreset {
-        id: "ollama-local",
-        name: "Ollama (本地)",
-        kind: "openai",
-        base_url: "http://localhost:11434/v1",
-        models: &[],
-        models_url: "",
-        context_window: 131_072,
     },
     // ── Ollama Cloud ──
     ProviderPreset {
@@ -191,6 +167,5 @@ static PRESETS: &[ProviderPreset] = &[
             "deepseek-v4-flash",
         ],
         models_url: "",
-        context_window: 131_072,
     },
 ];

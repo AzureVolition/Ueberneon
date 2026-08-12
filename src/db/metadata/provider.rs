@@ -11,16 +11,15 @@ pub struct ProviderRow {
     pub base_url: String,
     pub models_url: String,
     pub balance_url: String,
-    pub context_window: u32,
     pub is_preset: bool,
 }
 
 /// 插入一个 provider（幂等：已存在则忽略）
 pub fn insert(conn: &Connection, row: &ProviderRow) -> Result<()> {
     conn.execute(
-        "INSERT OR IGNORE INTO providers (id, name, kind, base_url, models_url, balance_url, context_window, is_preset)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![row.id, row.name, row.kind, row.base_url, row.models_url, row.balance_url, row.context_window, row.is_preset as i32],
+        "INSERT OR IGNORE INTO providers (id, name, kind, base_url, models_url, balance_url, is_preset)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![row.id, row.name, row.kind, row.base_url, row.models_url, row.balance_url, row.is_preset as i32],
     )?;
     Ok(())
 }
@@ -34,7 +33,7 @@ pub fn delete(conn: &Connection, id: &str) -> Result<()> {
 /// 获取单个 provider
 pub fn get(conn: &Connection, id: &str) -> Result<Option<ProviderRow>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, kind, base_url, models_url, balance_url, context_window, is_preset FROM providers WHERE id = ?1"
+        "SELECT id, name, kind, base_url, models_url, balance_url, is_preset FROM providers WHERE id = ?1"
     )?;
     let mut rows = stmt.query_map(params![id], |row| {
         Ok(ProviderRow {
@@ -44,12 +43,12 @@ pub fn get(conn: &Connection, id: &str) -> Result<Option<ProviderRow>> {
             base_url: row.get(3)?,
             models_url: row.get(4)?,
             balance_url: row.get(5)?,
-            context_window: row.get::<_, i32>(6)? as u32,
-            is_preset: row.get::<_, i32>(7)? != 0,
+            is_preset: row.get::<_, i32>(6)? != 0,
         })
     })?;
     match rows.next() {
         Some(Ok(r)) => Ok(Some(r)),
+        Some(Err(e)) => Err(e),
         _ => Ok(None),
     }
 }
@@ -57,7 +56,7 @@ pub fn get(conn: &Connection, id: &str) -> Result<Option<ProviderRow>> {
 /// 列出所有 provider
 pub fn list_all(conn: &Connection) -> Result<Vec<ProviderRow>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, kind, base_url, models_url, balance_url, context_window, is_preset FROM providers ORDER BY is_preset DESC, name ASC"
+        "SELECT id, name, kind, base_url, models_url, balance_url, is_preset FROM providers ORDER BY is_preset DESC, name ASC"
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(ProviderRow {
@@ -67,8 +66,7 @@ pub fn list_all(conn: &Connection) -> Result<Vec<ProviderRow>> {
             base_url: row.get(3)?,
             models_url: row.get(4)?,
             balance_url: row.get(5)?,
-            context_window: row.get::<_, i32>(6)? as u32,
-            is_preset: row.get::<_, i32>(7)? != 0,
+            is_preset: row.get::<_, i32>(6)? != 0,
         })
     })?;
     rows.collect()
@@ -98,4 +96,61 @@ pub fn replace_models(conn: &Connection, provider_id: &str, models: &[String]) -
         stmt.execute(params![provider_id, m])?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 与真实库同构：providers 已无 context_window 列。
+    fn conn() -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE providers (
+                id              TEXT PRIMARY KEY,
+                name            TEXT NOT NULL,
+                kind            TEXT NOT NULL DEFAULT 'openai',
+                base_url        TEXT NOT NULL,
+                models_url      TEXT DEFAULT '',
+                balance_url     TEXT DEFAULT '',
+                is_preset       INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE provider_models (
+                provider_id TEXT NOT NULL,
+                model_name  TEXT NOT NULL,
+                PRIMARY KEY (provider_id, model_name)
+            );",
+        )
+        .unwrap();
+        c
+    }
+
+    #[test]
+    fn custom_row_maps_ok() {
+        let c = conn();
+        c.execute(
+            "INSERT INTO providers (id, name, kind, base_url, is_preset)
+             VALUES (?1, ?2, 'openai', ?3, 0)",
+            params!["prov-test", "Test", "http://localhost:11434/v1"],
+        )
+        .unwrap();
+
+        let row = get(&c, "prov-test")
+            .unwrap()
+            .expect("自定义 provider 行应能正常映射");
+        assert_eq!(row.id, "prov-test");
+        assert_eq!(row.base_url, "http://localhost:11434/v1");
+        assert_eq!(row.models_url, "");
+        assert_eq!(row.balance_url, "");
+        assert!(!row.is_preset);
+
+        let all = list_all(&c).unwrap();
+        assert!(all.iter().any(|r| r.id == "prov-test"));
+    }
+
+    #[test]
+    fn get_missing_provider_returns_none() {
+        let c = conn();
+        assert!(get(&c, "missing").unwrap().is_none());
+    }
 }

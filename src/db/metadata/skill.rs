@@ -104,41 +104,54 @@ fn state_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SkillStateRow> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::with_db;
+
+    /// 内存数据库 + skill_states 表，测试不触碰用户的 ~/.ueberneon/data.db。
+    fn test_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE skill_states (
+                name        TEXT PRIMARY KEY,
+                status      TEXT NOT NULL DEFAULT 'enabled',
+                usage_count INTEGER NOT NULL DEFAULT 0,
+                last_run_at TEXT,
+                updated_at  TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+        conn
+    }
 
     const TEST_SKILL: &str = "test_state_skill";
 
     #[test]
     fn state_roundtrip() {
-        with_db(|conn| {
-            delete(conn, TEST_SKILL).unwrap();
-            ensure(conn, TEST_SKILL).unwrap();
-            let s = get(conn, TEST_SKILL).unwrap().expect("state should exist");
-            assert_eq!(s.status, "enabled");
-            assert_eq!(s.usage_count, 0);
+        let conn = test_conn();
+        delete(&conn, TEST_SKILL).unwrap();
+        ensure(&conn, TEST_SKILL).unwrap();
+        let s = get(&conn, TEST_SKILL).unwrap().expect("state should exist");
+        assert_eq!(s.status, "enabled");
+        assert_eq!(s.usage_count, 0);
 
-            set_status(conn, TEST_SKILL, "disabled").unwrap();
-            assert_eq!(get(conn, TEST_SKILL).unwrap().unwrap().status, "disabled");
+        set_status(&conn, TEST_SKILL, "disabled").unwrap();
+        assert_eq!(get(&conn, TEST_SKILL).unwrap().unwrap().status, "disabled");
 
-            record_run_by_name(conn, TEST_SKILL).unwrap();
-            let used = get(conn, TEST_SKILL).unwrap().unwrap();
-            assert_eq!(used.usage_count, 1);
-            assert!(used.last_run_at.is_some());
+        record_run_by_name(&conn, TEST_SKILL).unwrap();
+        let used = get(&conn, TEST_SKILL).unwrap().unwrap();
+        assert_eq!(used.usage_count, 1);
+        assert!(used.last_run_at.is_some());
 
-            delete(conn, TEST_SKILL).unwrap();
-            assert!(get(conn, TEST_SKILL).unwrap().is_none());
-        });
+        delete(&conn, TEST_SKILL).unwrap();
+        assert!(get(&conn, TEST_SKILL).unwrap().is_none());
     }
 
     #[test]
     fn prune_removes_missing_skills() {
-        with_db(|conn| {
-            ensure(conn, "prune_keep").unwrap();
-            ensure(conn, "prune_gone").unwrap();
-            prune_missing(conn, &["prune_keep".to_string()]).unwrap();
-            assert!(get(conn, "prune_keep").unwrap().is_some());
-            assert!(get(conn, "prune_gone").unwrap().is_none());
-            delete(conn, "prune_keep").unwrap();
-        });
+        let conn = test_conn();
+        ensure(&conn, "prune_keep").unwrap();
+        ensure(&conn, "prune_gone").unwrap();
+        prune_missing(&conn, &["prune_keep".to_string()]).unwrap();
+        assert!(get(&conn, "prune_keep").unwrap().is_some());
+        assert!(get(&conn, "prune_gone").unwrap().is_none());
+        delete(&conn, "prune_keep").unwrap();
     }
 }

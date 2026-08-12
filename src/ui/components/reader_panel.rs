@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 
@@ -15,25 +15,32 @@ use dioxus::desktop::use_window;
 use dioxus::prelude::*;
 
 use crate::formula_ocr::SingleSlotCache;
+use crate::pdf::pdfium::{self, PdfDocument};
 use crate::pdf::{OverlayLine, parse_book};
-use crate::pdfium::{self, PdfDocument};
 use crate::ui::components::error::{ErrorInfo, ErrorSeverity, ErrorSignal, ErrorSource};
 
-/// 固定渲染质量:2.0 像素/点 = 144dpi。
-const RENDER_SCALE: f32 = 2.0;
+/// 固定渲染质量:3.0 像素/点 = 216dpi。
+/// Retina(2x)屏幕上 100% 宽度显示时天然超采样,文字更锐利;
+/// 放大到 200% 时仍比旧版(144dpi)清晰。
+const RENDER_SCALE: f32 = 3.0;
+/// 停稳后开始渲染当前页的等待时间。
+const RENDER_SETTLE_MS: u64 = 120;
+/// 当前页渲染完成后预取的相邻页数。
+const PREFETCH_RADIUS: u32 = 1;
+/// 页面渲染宽度上限(px)：更大的页面按比例降采样，
+/// 在保持屏幕清晰度的同时避免大版式书渲染过慢。
+const MAX_RENDER_WIDTH_PX: f32 = 2400.0;
 /// OCR 裁剪渲染倍率:4.0 像素/点 = 288dpi,提升公式识别精度。
 const OCR_RENDER_SCALE: f32 = 4.0;
 /// 内存中最多保留的已渲染页数
 const MAX_CACHE_PAGES: usize = 60;
-/// 每次滚动到底加载的页数
-const BATCH_SIZE: u32 = 5;
-/// 距底部多远时触发加载下一批(像素)
-const NEAR_BOTTOM_PX: f64 = 900.0;
 const ZOOM_MIN: u32 = 50;
 const ZOOM_MAX: u32 = 400;
 const ZOOM_STEP: u32 = 25;
+/// 页面虚拟化：只渲染当前页前后各该数量的页，其余用等高分隔块。
+const PAGE_WINDOW: u32 = 15;
 /// 列聚类阈值(cqw)
-/// 小字判定:行高低于同列中位数的该比例(实测脚注约为正文的 0.90)
+/// 小字判定:真实字号低于同列中位字号的该比例(实测脚注约为正文的 0.90)
 /// 窄列判定:列内行宽中位数小于正文中位宽的该比例 → 候选公式列
 const NARROW_COLUMN_WIDTH_RATIO: f64 = 0.5;
 /// 单行窄文本判定:行宽小于该值(cqw)视为角标/碎片
@@ -59,8 +66,13 @@ const OPERATOR_DENSITY_FULL: f64 = 0.30;
 const MATH_DENSITY_FULL: f64 = 0.10;
 /// 操作栏成功文案停留时间
 const ACTION_BAR_SUCCESS_MS: u64 = 2500;
-/// 翻译卡片相对操作栏的垂直偏移(px)。
-const ACTION_BAR_CARD_OFFSET_Y: f64 = 38.0;
+/// 翻译卡片打开时的基准宽度(px,与 style.css 保持一致)。
+const TRANSLATION_CARD_WIDTH: f64 = 720.0;
+/// 翻译卡片打开时按视口高度估算的最大高度比例(与 style.css max-height 一致)。
+const TRANSLATION_CARD_MAX_HEIGHT_RATIO: f64 = 0.6;
+/// 行距(pitch)超过列中位行距的该倍数时视为段落分界。
+/// 用行距而不是字形盒间隙:全小写行盒高偏矮,字形盒间隙会虚高。
+const PARAGRAPH_PITCH_RATIO: f64 = 1.35;
 
 /// 文字层
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,6 +159,14 @@ struct TranslationCardState {
     status: ActionBarStatus,
     generation: u64,
     text: String,
+    /// 原文（公式已回填），用于双栏对照展示。
+    source_text: String,
+    /// 原文按句拆分。
+    source_sentences: Vec<String>,
+    /// 译文按句拆分。
+    translated_sentences: Vec<String>,
+    /// 原文句 i → 译文句区间 [start, end]（含端点）。
+    groups: Vec<(usize, usize)>,
 }
 
 /// 一次公式复制请求(由单 worker 串行处理)。
@@ -175,10 +195,17 @@ struct ReaderSession {
     doc: Arc<PdfDocument>,
     page_count: u32,
     cache: HashMap<u32, RenderedPage>,
-    rendered_until: u32,
-    loading_more: bool,
+    /// 页高/宽比例的前缀和（len = page_count + 1）。
+    page_ratio_prefix: Vec<f64>,
+    /// 渲染 worker 的最新目标页（滚动/跳转只更新这里）。
+    render_target: Option<u32>,
+    /// 目标页代数：每次目标变化 +1，用于丢弃在途渲染结果。
+    render_epoch: u64,
+    /// 跳转后的一段时间内，滚动事件不重算当前页（防几何瞬时错位带跑窗口）。
+    jump_lock_until: std::time::Instant,
     book_id: String,
     book_name: String,
+    book_dir: PathBuf,
     selection: Option<Selection>,
     drag_anchor: Option<(u32, Layer, usize)>,
     dragging: bool,
@@ -198,27 +225,70 @@ struct ReaderSession {
     translation_gen: u64,
 }
 
+/// 按页面宽度自适应缩放：常规页面用 RENDER_SCALE，超大页面降采样到
+/// MAX_RENDER_WIDTH_PX 以内（屏幕显示宽度有限，过高分辨率无收益）。
+fn render_scale_for_page(width_pt: f32) -> f32 {
+    let cap = (MAX_RENDER_WIDTH_PX / width_pt.max(1.0)).clamp(1.5, RENDER_SCALE);
+    cap
+}
+
 /// 渲染页面并拆分两层词表(阻塞,供 spawn_blocking 调用)。
-fn render_page_with_overlay(doc: &PdfDocument, page_index: u32) -> Result<RenderedPage, String> {
-    let png = doc
-        .render_page_png(page_index, RENDER_SCALE)
-        .map_err(|e| format!("{e:#}"))?;
+/// PNG 优先读磁盘缓存,miss 时渲染并回写。
+fn page_image(
+    doc: &PdfDocument,
+    book_dir: &Path,
+    page_index: u32,
+    scale: f32,
+) -> Result<(String, f32, f32), String> {
+    let (w, h) = doc.page_size(page_index).map_err(|e| format!("{e:#}"))?;
+    let png = match crate::pdf::cached_page_png(book_dir, page_index + 1, scale) {
+        Some(png) => png,
+        None => {
+            let png = doc
+                .render_page_png(page_index, scale)
+                .map_err(|e| format!("{e:#}"))?;
+            crate::pdf::save_page_png(book_dir, page_index + 1, scale, &png);
+            png
+        }
+    };
     let src = format!(
         "data:image/png;base64,{}",
         base64::engine::general_purpose::STANDARD.encode(&png)
     );
+    Ok((src, w, h))
+}
+
+/// 构建某页的文字层（字符提取 + overlay + 分层）。
+fn page_overlay(
+    doc: &PdfDocument,
+    page_index: u32,
+    w: f32,
+    h: f32,
+) -> Result<(Vec<FlatWord>, Vec<FlatWord>), String> {
     let chars = doc
         .page_text_chars(page_index)
         .map_err(|e| format!("{e:#}"))?;
-    let (w, h) = doc.page_size(page_index).map_err(|e| format!("{e:#}"))?;
     let overlay = crate::pdf::build_text_overlay(&chars, w as f64, h as f64);
     let (body, small) = classify_words(&overlay);
+    Ok((body, small))
+}
+
+/// 图片 + 文字层一次完成（唯一渲染 worker 与初始打开用）。
+fn render_page_with_overlay(
+    doc: &PdfDocument,
+    book_dir: &Path,
+    page_index: u32,
+) -> Result<RenderedPage, String> {
+    let (w, _h) = doc.page_size(page_index).map_err(|e| format!("{e:#}"))?;
+    let scale = render_scale_for_page(w);
+    let (src, w_pt, h_pt) = page_image(doc, book_dir, page_index, scale)?;
+    let (body, small) = page_overlay(doc, page_index, w_pt, h_pt)?;
     Ok(RenderedPage {
         src,
         body,
         small,
-        w_pt: w,
-        h_pt: h,
+        w_pt,
+        h_pt,
     })
 }
 
@@ -355,14 +425,20 @@ fn median_sorted(vals: &[f64]) -> f64 {
 /// - 非窄列中的公式行(运算符密度或“关系符+短行”)标记为公式行;
 /// - 同列小字(行高 < 0.91× 列中位数)与单行窄碎片仍进小字层。
 fn classify_words(overlay: &[OverlayLine]) -> (Vec<FlatWord>, Vec<FlatWord>) {
-    classify_words_with(overlay, crate::calibration::current())
+    classify_words_with(overlay, crate::pdf::calibration::current())
 }
 
 fn classify_words_with(
     overlay: &[OverlayLine],
-    cal: crate::calibration::DocCalibration,
+    cal: crate::pdf::calibration::DocCalibration,
 ) -> (Vec<FlatWord>, Vec<FlatWord>) {
     let flat = build_flat(overlay);
+    // 每行真实字号(来自 PDFium FPDFText_GetFontSize,与字形包围盒高度无关)。
+    let line_font_size: HashMap<usize, f64> = overlay
+        .iter()
+        .enumerate()
+        .map(|(i, l)| (i, l.font_size_pt))
+        .collect();
 
     // 行几何与内容统计(仅非空格词)
     let mut line_left: HashMap<usize, f64> = HashMap::new();
@@ -440,6 +516,7 @@ fn classify_words_with(
     // 每列统计:中位高度/宽度、内容密度、碎片比例、字形高宽比、垂直间隙
     let col_count = column_lines.len();
     let mut col_median_height = vec![0.0; col_count];
+    let mut col_median_font = vec![0.0; col_count];
     let mut col_median_width = vec![0.0; col_count];
     let mut col_left = vec![f64::INFINITY; col_count];
     let mut col_chars = vec![0usize; col_count];
@@ -456,6 +533,13 @@ fn classify_words_with(
             .collect();
         hs.sort_by(|a, b| a.partial_cmp(b).unwrap());
         col_median_height[col] = median_sorted(&hs);
+        let mut fs: Vec<f64> = lines
+            .iter()
+            .filter_map(|l| line_font_size.get(l).copied())
+            .filter(|f| *f > 0.0)
+            .collect();
+        fs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        col_median_font[col] = median_sorted(&fs);
 
         let mut ws: Vec<f64> = lines
             .iter()
@@ -667,7 +751,15 @@ fn classify_words_with(
         // 同列小字(脚注/角标)
         let height = line_height.get(&line).copied().unwrap_or(0.0);
         let median_h = col_median_height[col];
-        if column_lines[col].len() >= 4 && height < median_h * cal.small_height_ratio {
+        let font = line_font_size.get(&line).copied().unwrap_or(0.0);
+        let median_font = col_median_font[col];
+        if font > 0.0 && median_font > 0.0 {
+            // 真实字号明显小于列中位字号才是小字;全小写正文行字形盒
+            // 偏矮但字号相同,不能被误判。
+            if font < median_font * cal.small_height_ratio {
+                return true;
+            }
+        } else if column_lines[col].len() >= 4 && height < median_h * cal.small_height_ratio {
             return true;
         }
         // 单行窄文本(角标数字等)
@@ -708,7 +800,7 @@ fn classify_words_with(
 
 /// 行→列 与每列代表左缘(该列最小左缘)。
 fn line_columns(flat: &[FlatWord]) -> (HashMap<usize, usize>, Vec<f64>) {
-    line_columns_with(flat, crate::calibration::column_gap_cqw())
+    line_columns_with(flat, crate::pdf::calibration::column_gap_cqw())
 }
 
 fn line_columns_with(flat: &[FlatWord], column_gap_cqw: f64) -> (HashMap<usize, usize>, Vec<f64>) {
@@ -754,11 +846,11 @@ struct PageLayout {
     col_median_width: Vec<f64>,
     body_median_height: f64,
     body_median_width: f64,
-    cal: crate::calibration::DocCalibration,
+    cal: crate::pdf::calibration::DocCalibration,
 }
 
 impl PageLayout {
-    fn new_with(flat: &[FlatWord], cal: crate::calibration::DocCalibration) -> Self {
+    fn new_with(flat: &[FlatWord], cal: crate::pdf::calibration::DocCalibration) -> Self {
         let (column_of, reps) = line_columns_with(flat, cal.column_gap_cqw);
 
         let mut line_left: HashMap<usize, f64> = HashMap::new();
@@ -1012,6 +1104,7 @@ fn copy_text_filtered(flat: &[FlatWord], lo: usize, hi: usize, col: Option<f64>)
         return String::new();
     }
     let hi = hi.min(flat.len() - 1);
+    let (line_top, line_height) = line_geometry(flat);
     let (column_of, reps) = line_columns(flat);
     let same_col = |i: usize| -> bool {
         match col {
@@ -1040,11 +1133,80 @@ fn copy_text_filtered(flat: &[FlatWord], lo: usize, hi: usize, col: Option<f64>)
             out.push_str(&flat[i].text);
         }
         if next <= hi && flat[next].line != flat[i].line {
-            out.push('\n');
+            if is_paragraph_break(&line_top, &line_height, flat[i].line, flat[next].line) {
+                out.push('\n');
+            } else {
+                out.push_str(line_join_text(flat, flat[i].line, flat[next].line));
+            }
         }
         i = next;
     }
     out
+}
+
+/// 每行的 top / 行高（用于判断换行是段落分界还是软换行）。
+fn line_geometry(flat: &[FlatWord]) -> (HashMap<usize, f64>, HashMap<usize, f64>) {
+    let mut top: HashMap<usize, f64> = HashMap::new();
+    let mut height: HashMap<usize, f64> = HashMap::new();
+    for w in flat {
+        if w.text.trim().is_empty() {
+            continue;
+        }
+        let e = top.entry(w.line).or_insert(f64::INFINITY);
+        *e = (*e).min(w.top_cqw);
+        height.entry(w.line).or_insert(w.line_height_cqw);
+    }
+    (top, height)
+}
+
+/// 行间垂直间隙超过行高 → 段落分界（保留换行）；否则视为软换行（合并）。
+fn is_paragraph_break(
+    top: &HashMap<usize, f64>,
+    height: &HashMap<usize, f64>,
+    line_a: usize,
+    line_b: usize,
+) -> bool {
+    let (Some(ta), Some(tb), Some(ha), Some(hb)) = (
+        top.get(&line_a),
+        top.get(&line_b),
+        height.get(&line_a),
+        height.get(&line_b),
+    ) else {
+        return true;
+    };
+    let gap = tb - (ta + ha);
+    // 1.25 容差:字形盒高度差异会让同一段的软换行间隙略超行高,
+    // 但仍远小于真正的段落间距。
+    gap > ha.max(*hb).max(0.6) * 1.25
+}
+
+fn is_cjk(c: char) -> bool {
+    matches!(
+        c,
+        '\u{4e00}'..='\u{9fff}'
+            | '\u{3400}'..='\u{4dbf}'
+            | '\u{f900}'..='\u{faff}'
+    )
+}
+
+/// 软换行的连接符：中文字符之间不加空格，其余加空格。
+fn line_join_text(flat: &[FlatWord], line_a: usize, line_b: usize) -> &'static str {
+    let prev_last = flat
+        .iter()
+        .rev()
+        .find(|w| w.line == line_a && !w.text.trim().is_empty())
+        .and_then(|w| w.text.chars().rev().find(|c| !c.is_whitespace()))
+        .unwrap_or(' ');
+    let next_first = flat
+        .iter()
+        .find(|w| w.line == line_b && !w.text.trim().is_empty())
+        .and_then(|w| w.text.chars().find(|c| !c.is_whitespace()))
+        .unwrap_or(' ');
+    if is_cjk(prev_last) && is_cjk(next_first) {
+        ""
+    } else {
+        " "
+    }
 }
 
 /// 按阅读顺序复制选区:每步一段,步骤之间用换行拼接。
@@ -1094,6 +1256,7 @@ fn translation_step_text(
         return String::new();
     }
     let hi = hi.min(flat.len() - 1);
+    let (line_top, line_height) = line_geometry(flat);
     let (column_of, reps) = line_columns(flat);
     let same_col = |i: usize| -> bool {
         match col {
@@ -1166,7 +1329,11 @@ fn translation_step_text(
                 j = i + 1;
             }
             if j <= hi && same_col(j) && flat[j].line != last_line {
-                out.push('\n');
+                if is_paragraph_break(&line_top, &line_height, last_line, flat[j].line) {
+                    out.push('\n');
+                } else {
+                    out.push_str(line_join_text(flat, last_line, flat[j].line));
+                }
             }
             i = j;
             continue;
@@ -1181,7 +1348,11 @@ fn translation_step_text(
             out.push_str(&flat[i].text);
         }
         if next <= hi && flat[next].line != flat[i].line {
-            out.push('\n');
+            if is_paragraph_break(&line_top, &line_height, flat[i].line, flat[next].line) {
+                out.push('\n');
+            } else {
+                out.push_str(line_join_text(flat, flat[i].line, flat[next].line));
+            }
         }
         i = next;
     }
@@ -1503,14 +1674,14 @@ fn line_is_formula(flat: &[FlatWord], line: usize) -> bool {
 /// 公式句:只在锚点列内,以行尾 `;`/句读或垂直间隙断块,不跨栏/跨页。
 #[cfg(test)]
 fn formula_sentence_walk(flat: &[FlatWord], idx: usize, start_page: u32) -> Vec<SelectionStep> {
-    formula_sentence_walk_with(flat, idx, start_page, crate::calibration::current())
+    formula_sentence_walk_with(flat, idx, start_page, crate::pdf::calibration::current())
 }
 
 fn formula_sentence_walk_with(
     flat: &[FlatWord],
     idx: usize,
     start_page: u32,
-    cal: crate::calibration::DocCalibration,
+    cal: crate::pdf::calibration::DocCalibration,
 ) -> Vec<SelectionStep> {
     if flat.is_empty() {
         return Vec::new();
@@ -1622,7 +1793,7 @@ fn sentence_walk(
         prev_flat,
         next_flat,
         start_page,
-        crate::calibration::current(),
+        crate::pdf::calibration::current(),
     )
 }
 
@@ -1632,7 +1803,7 @@ fn sentence_walk_with(
     prev_flat: Option<&[FlatWord]>,
     next_flat: Option<&[FlatWord]>,
     start_page: u32,
-    cal: crate::calibration::DocCalibration,
+    cal: crate::pdf::calibration::DocCalibration,
 ) -> Vec<SelectionStep> {
     if flat.is_empty() {
         return Vec::new();
@@ -1652,7 +1823,7 @@ fn sentence_backward_with(
     idx: usize,
     prev_flat: Option<&[FlatWord]>,
     start_page: u32,
-    cal: crate::calibration::DocCalibration,
+    cal: crate::pdf::calibration::DocCalibration,
 ) -> Vec<SelectionStep> {
     let layout = PageLayout::new_with(flat, cal);
     let Some(col) = layout.col_of(flat, idx) else {
@@ -1663,11 +1834,17 @@ fn sentence_backward_with(
         return Vec::new();
     }
     let pos = col_words.iter().position(|&i| i == idx).unwrap_or(0);
+    // 句子不早于所在段落起点：标题/上一段即使没有句读也不算句子内容
+    let (para_lo, _) = paragraph_range_with(flat, idx, cal);
 
     // 锚点句必须从该列第一词开始(列内前面没有边界)
     let mut depth = 0usize;
     let mut start_pos = 0usize;
     for k in 0..pos {
+        if col_words[k] < para_lo {
+            start_pos = k + 1;
+            continue;
+        }
         if scan_word_boundary(
             &flat[col_words[k]].text,
             &mut depth,
@@ -1756,7 +1933,7 @@ fn sentence_forward_with(
     idx: usize,
     next_flat: Option<&[FlatWord]>,
     start_page: u32,
-    cal: crate::calibration::DocCalibration,
+    cal: crate::pdf::calibration::DocCalibration,
 ) -> Vec<SelectionStep> {
     let mut steps = Vec::new();
     if flat.is_empty() {
@@ -1773,11 +1950,18 @@ fn sentence_forward_with(
         return steps;
     }
     let pos_in_col = col_words.iter().position(|&i| i == idx).unwrap_or(0);
+    // 句子范围不超出所在段落（标题/下一段即使没有句读也不并入）
+    let (para_lo, para_hi) = paragraph_range_with(flat, idx, cal);
+    let para_start_pos = col_words.iter().position(|&i| i == para_lo).unwrap_or(0);
+    let para_end_pos = col_words
+        .iter()
+        .position(|&i| i == para_hi)
+        .unwrap_or(col_words.len() - 1);
 
     // 起点:锚点之前最近边界之后,同时记录该位置的括号深度
     let mut depth = 0usize;
-    let mut start_pos = 0usize;
-    for k in 0..pos_in_col {
+    let mut start_pos = para_start_pos;
+    for k in para_start_pos..pos_in_col {
         if scan_word_boundary(
             &flat[col_words[k]].text,
             &mut depth,
@@ -1789,7 +1973,7 @@ fn sentence_forward_with(
 
     // 锚点列内向前找边界(含锚点本身)
     let mut term: Option<usize> = None;
-    for k in start_pos..col_words.len() {
+    for k in start_pos..=para_end_pos {
         if scan_word_boundary(
             &flat[col_words[k]].text,
             &mut depth,
@@ -1804,6 +1988,16 @@ fn sentence_forward_with(
             page: start_page,
             lo: col_words[start_pos],
             hi: t,
+            column_left: Some(anchor_rep),
+        });
+        return steps;
+    }
+    // 段落在本列内结束且没有句读 → 句子止于段尾,不续接到下一列/页
+    if para_end_pos < col_words.len() - 1 {
+        steps.push(SelectionStep {
+            page: start_page,
+            lo: col_words[start_pos],
+            hi: col_words[para_end_pos],
             column_left: Some(anchor_rep),
         });
         return steps;
@@ -1907,13 +2101,13 @@ fn sentence_forward_with(
 /// 词 idx 所在段落在 flat 中的范围(同列;行距/缩进断段)。
 #[cfg(test)]
 fn paragraph_range(flat: &[FlatWord], idx: usize) -> (usize, usize) {
-    paragraph_range_with(flat, idx, crate::calibration::current())
+    paragraph_range_with(flat, idx, crate::pdf::calibration::current())
 }
 
 fn paragraph_range_with(
     flat: &[FlatWord],
     idx: usize,
-    cal: crate::calibration::DocCalibration,
+    cal: crate::pdf::calibration::DocCalibration,
 ) -> (usize, usize) {
     if flat.is_empty() {
         return (0, 0);
@@ -1951,10 +2145,22 @@ fn paragraph_range_with(
         return (0, flat.len() - 1);
     };
 
+    // 列内行距中位数:用“顶到顶”的行距判断段落边界,避免字形盒高度
+    // 差异(全小写行)导致间隙虚高、把同一段拆开。
+    let mut pitches: Vec<f64> = col_lines
+        .windows(2)
+        .map(|w| line_top[&w[1]] - line_top[&w[0]])
+        .collect();
+    pitches.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let median_pitch = if pitches.is_empty() {
+        0.001
+    } else {
+        pitches[(pitches.len() - 1) / 2].max(0.001)
+    };
+
     let gap_ok = |a: usize, b: usize| -> bool {
-        let gap = line_top[&b] - (line_top[&a] + line_height[&a]);
-        let threshold = line_height[&a].max(line_height[&b]).max(0.6);
-        if gap > threshold {
+        let pitch = line_top[&b] - line_top[&a];
+        if pitch > median_pitch * PARAGRAPH_PITCH_RATIO {
             return false;
         }
         let indent = line_left[&b] - line_left[&a];
@@ -2030,13 +2236,13 @@ fn column_first_line_indented(flat: &[FlatWord], layout: &PageLayout, col: usize
 /// (含 `p`/`∗` 等碎片),不跨表格行。
 #[cfg(test)]
 fn formula_block_range(flat: &[FlatWord], idx: usize) -> (usize, usize) {
-    formula_block_range_with(flat, idx, crate::calibration::current())
+    formula_block_range_with(flat, idx, crate::pdf::calibration::current())
 }
 
 fn formula_block_range_with(
     flat: &[FlatWord],
     idx: usize,
-    cal: crate::calibration::DocCalibration,
+    cal: crate::pdf::calibration::DocCalibration,
 ) -> (usize, usize) {
     if flat.is_empty() {
         return (0, 0);
@@ -2140,7 +2346,7 @@ fn paragraph_walk(
         prev_flat,
         next_flat,
         start_page,
-        crate::calibration::current(),
+        crate::pdf::calibration::current(),
     )
 }
 
@@ -2150,7 +2356,7 @@ fn paragraph_walk_with(
     prev_flat: Option<&[FlatWord]>,
     next_flat: Option<&[FlatWord]>,
     start_page: u32,
-    cal: crate::calibration::DocCalibration,
+    cal: crate::pdf::calibration::DocCalibration,
 ) -> Vec<SelectionStep> {
     if flat.is_empty() {
         return Vec::new();
@@ -2173,7 +2379,7 @@ fn paragraph_walk_formula_with(
     anchor: usize,
     next_flat: Option<&[FlatWord]>,
     start_page: u32,
-    cal: crate::calibration::DocCalibration,
+    cal: crate::pdf::calibration::DocCalibration,
 ) -> Vec<SelectionStep> {
     let mut steps = Vec::new();
     let layout = PageLayout::new_with(flat, cal);
@@ -2226,7 +2432,7 @@ fn paragraph_backward_with(
     anchor: usize,
     prev_flat: Option<&[FlatWord]>,
     start_page: u32,
-    cal: crate::calibration::DocCalibration,
+    cal: crate::pdf::calibration::DocCalibration,
 ) -> Vec<SelectionStep> {
     let layout = PageLayout::new_with(flat, cal);
     let Some(col) = layout.col_of(flat, anchor) else {
@@ -2292,7 +2498,7 @@ fn paragraph_forward_with(
     idx: usize,
     next_flat: Option<&[FlatWord]>,
     start_page: u32,
-    cal: crate::calibration::DocCalibration,
+    cal: crate::pdf::calibration::DocCalibration,
 ) -> Vec<SelectionStep> {
     let mut steps = Vec::new();
     if flat.is_empty() {
@@ -2436,7 +2642,7 @@ fn open_action_bar(mut session: Signal<Option<ReaderSession>>, x: f64, y: f64) {
             return;
         }
         let show_formula = sel.formula && sel.formula_score >= FORMULA_SCORE_THRESHOLD;
-        let translation_enabled = crate::translate::translation_config().is_some()
+        let translation_enabled = crate::translate::translate_agent().is_some()
             && selection_has_plain_text(sel, |p| {
                 inner.cache.get(&p).map(|r| layer_flat(r, sel.layer))
             });
@@ -2483,8 +2689,24 @@ fn action_bar_plain_copy(
     }
 }
 
-/// 操作栏「翻译」:快照选区文本/公式/配置,异步请求后写入翻译卡片。
-fn action_bar_translate(mut session: Signal<Option<ReaderSession>>) {
+/// 一次翻译请求的快照（选区内容 + 模型配置 + 卡片位置）。
+struct TranslationRequest {
+    input: String,
+    /// 追加到每个分块请求尾部的 `[Document: 书名 | Type: pdf]`（不参与展示）。
+    document_context: String,
+    formulas: Vec<String>,
+    agent: crate::db::metadata::agent_config::AgentConfigRow,
+    x: f64,
+    y: f64,
+}
+
+/// 操作栏「翻译」：快照选区文本/公式/配置，异步请求后写入翻译卡片。
+/// 卡片打开时尽量居中显示(按当前视口尺寸计算,而不是贴在操作栏下方)。
+fn action_bar_translate(session: Signal<Option<ReaderSession>>, viewport: (f64, f64)) {
+    let (vw, vh) = viewport;
+    let card_w = TRANSLATION_CARD_WIDTH.min((vw - 48.0).max(0.0));
+    let x = ((vw - card_w) / 2.0).max(0.0);
+    let y = ((vh - TRANSLATION_CARD_MAX_HEIGHT_RATIO * vh) / 2.0).max(0.0);
     let request = {
         let guard = session.read();
         let Some(inner) = guard.as_ref() else {
@@ -2507,11 +2729,63 @@ fn action_bar_translate(mut session: Signal<Option<ReaderSession>>) {
         if input.trim().is_empty() {
             return;
         }
-        let Some(config) = crate::translate::translation_config() else {
+        let document_context = crate::translate::document_context(&inner.book_name);
+        let Some(agent) = crate::translate::translate_agent() else {
             return;
         };
-        (input, formulas, config, bar.x, bar.y)
+        TranslationRequest {
+            input,
+            document_context,
+            formulas,
+            agent,
+            x,
+            y,
+        }
     };
+    start_translation(session, request);
+}
+
+/// 翻译卡片「重试」：用当前选区重新发起翻译，卡片位置不变。
+fn retry_translation(session: Signal<Option<ReaderSession>>) {
+    let request = {
+        let guard = session.read();
+        let Some(inner) = guard.as_ref() else {
+            return;
+        };
+        let Some(sel) = inner.selection.as_ref() else {
+            return;
+        };
+        let Some(card) = inner.translation.as_ref() else {
+            return;
+        };
+        let Some((input, formulas)) = selection_translation_input(sel, |p| {
+            inner.cache.get(&p).map(|r| layer_flat(r, sel.layer))
+        }) else {
+            return;
+        };
+        if input.trim().is_empty() {
+            return;
+        }
+        let document_context = crate::translate::document_context(&inner.book_name);
+        let Some(agent) = crate::translate::translate_agent() else {
+            return;
+        };
+        TranslationRequest {
+            input,
+            document_context,
+            formulas,
+            agent,
+            x: card.x,
+            y: card.y,
+        }
+    };
+    start_translation(session, request);
+}
+
+/// 发起翻译：置 Loading 并流式拉取，完成后直接展示模型输出。
+fn start_translation(mut session: Signal<Option<ReaderSession>>, request: TranslationRequest) {
+    // 去掉选区文本首尾的换行/空白，避免把“回车”发给模型。
+    let input = request.input.trim().to_string();
     let generation = {
         let mut inner = session.write();
         let Some(inner) = inner.as_mut() else {
@@ -2522,61 +2796,126 @@ fn action_bar_translate(mut session: Signal<Option<ReaderSession>>) {
         // 开始翻译后关闭操作栏，只保留翻译卡片。
         inner.action_bar = None;
         inner.translation = Some(TranslationCardState {
-            x: request.3,
-            y: request.4 + ACTION_BAR_CARD_OFFSET_Y,
+            x: request.x,
+            y: request.y,
             status: ActionBarStatus::Loading,
             generation: translation_generation,
             text: String::new(),
+            source_text: crate::translate::reinsert_formulas(&input, &request.formulas),
+            source_sentences: Vec::new(),
+            translated_sentences: Vec::new(),
+            groups: Vec::new(),
         });
         translation_generation
     };
     spawn(async move {
         use futures::StreamExt;
-        let mut stream = match crate::translate::translation_stream(&request.2, &request.0).await {
-            Ok(s) => s,
-            Err(e) => {
-                let mut inner = session.write();
-                if let Some(tc) = inner.as_mut().and_then(|s| s.translation.as_mut()) {
-                    if tc.generation == generation {
-                        tc.status = ActionBarStatus::Error;
-                        tc.text = e;
-                    }
+        // hy-mt2 7B 即使带 [Document: ... | Type: pdf] 上下文，单块超过
+        // ~500 字符仍会随机空返回（eval=1）。小块（≤280 字符）最稳，
+        // 且每一块都追加文档上下文。
+        const CHUNK_MAX_CHARS: usize = 280;
+
+        // 长文本按完整句子分块，逐块翻译。
+        let sentences = crate::translate::split_sentences(&input);
+        let chunks = crate::translate::chunk_sentences(&sentences, CHUNK_MAX_CHARS);
+
+        let mut set_card_text = |text: String| {
+            let mut inner = session.write();
+            if let Some(tc) = inner.as_mut().and_then(|s| s.translation.as_mut()) {
+                if tc.generation == generation {
+                    tc.text = text;
                 }
-                return;
             }
         };
-        let mut buf = String::new();
+
+        let mut parts: Vec<String> = Vec::new();
         let mut stream_error: Option<String> = None;
-        while let Some(chunk) = stream.next().await {
-            match chunk {
-                Ok(llm::Chunk::Text(t)) => {
-                    buf.push_str(&t);
-                    // 流式显示:实时更新卡片(原始文本,完成后统一清洗/回填)
-                    let mut inner = session.write();
-                    if let Some(tc) = inner.as_mut().and_then(|s| s.translation.as_mut()) {
-                        if tc.generation == generation {
-                            tc.text = crate::translate::stream_visible(&buf);
+
+        for chunk in chunks.iter() {
+            let mut chunk_text = chunk.join(" ");
+            chunk_text.push_str(&request.document_context);
+            let mut buf = String::new();
+            let mut stream =
+                match crate::translate::translation_stream(&request.agent, &chunk_text).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        stream_error = Some(format!("{e}"));
+                        break;
+                    }
+                };
+            let mut first_chunk = true;
+            loop {
+                let next = if first_chunk {
+                    first_chunk = false;
+                    match tokio::time::timeout(std::time::Duration::from_secs(4), stream.next())
+                        .await
+                    {
+                        Ok(chunk) => chunk,
+                        Err(_) => {
+                            set_card_text("模型加载中，首次响应可能需要几秒…".to_string());
+                            stream.next().await
                         }
                     }
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    stream_error = Some(format!("{e}"));
-                    break;
-                }
-            }
-        }
-        let (status, text) = match stream_error {
-            Some(e) => (ActionBarStatus::Error, e),
-            None => {
-                let cleaned = crate::translate::clean_translation(&buf);
-                if cleaned.is_empty() {
-                    (ActionBarStatus::Error, "翻译结果为空".to_string())
                 } else {
-                    let text = crate::translate::reinsert_formulas(&cleaned, &request.1);
-                    (ActionBarStatus::Success, text)
+                    stream.next().await
+                };
+                let Some(chunk) = next else {
+                    break;
+                };
+                match chunk {
+                    Ok(llm::Chunk::Text(t)) => {
+                        buf.push_str(&t);
+                        let mut display = parts.join("\n");
+                        if !display.is_empty() {
+                            display.push('\n');
+                        }
+                        display.push_str(&crate::translate::stream_visible(&buf));
+                        set_card_text(display);
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        stream_error = Some(format!("{e}"));
+                        break;
+                    }
                 }
             }
+            if stream_error.is_some() {
+                break;
+            }
+            // 不做拒答判断、不自动重试：模型返回什么就展示什么。
+            let t = crate::translate::finalize_translation(&buf)
+                .unwrap_or_else(|_| buf.trim().to_string());
+            parts.push(t);
+        }
+
+        let joined = parts.join("\n");
+        let (status, text, aligned) = match stream_error {
+            Some(e) => {
+                let text = if joined.is_empty() {
+                    e
+                } else {
+                    format!("{joined}\n\n{e}")
+                };
+                (ActionBarStatus::Error, text, None)
+            }
+            None => match crate::translate::finalize_translation(&joined) {
+                Ok(t) => {
+                    let text = crate::translate::reinsert_formulas(&t, &request.formulas);
+                    // 展示的原文只含选区本身,不带追加给模型的文档上下文。
+                    let source_text =
+                        crate::translate::reinsert_formulas(&input, &request.formulas);
+                    let source_sentences = crate::translate::split_sentences(&source_text);
+                    let translated_sentences = crate::translate::split_sentences(&text);
+                    let groups =
+                        crate::translate::align_sentences(&source_sentences, &translated_sentences);
+                    (
+                        ActionBarStatus::Success,
+                        text,
+                        Some((source_text, source_sentences, translated_sentences, groups)),
+                    )
+                }
+                Err(e) => (ActionBarStatus::Error, e, None),
+            },
         };
         let mut inner = session.write();
         let Some(inner) = inner.as_mut() else {
@@ -2590,6 +2929,12 @@ fn action_bar_translate(mut session: Signal<Option<ReaderSession>>) {
         }
         tc.status = status;
         tc.text = text;
+        if let Some((source_text, source_sentences, translated_sentences, groups)) = aligned {
+            tc.source_text = source_text;
+            tc.source_sentences = source_sentences;
+            tc.translated_sentences = translated_sentences;
+            tc.groups = groups;
+        }
     });
 }
 
@@ -3017,96 +3362,392 @@ fn render_layer_overlay(
     }
 }
 
-/// 滚动接近底部时渲染下一批页面。
-fn maybe_load_more(
-    mut session: Signal<Option<ReaderSession>>,
-    error_signal: Signal<ErrorSignal>,
-    scroll_state: Signal<(f64, f64, f64)>,
+/// 滚动后按前缀和求当前页：第 p 页顶 = page_w*prefix[p-1] + gap*(p-1)。
+fn current_page_from_prefix(
+    prefix: &[f64],
+    page_w: f64,
+    gap: f64,
+    scroll_top: f64,
+    client_height: f64,
+) -> u32 {
+    let n = prefix.len().saturating_sub(1) as u32;
+    if n == 0 {
+        return 1;
+    }
+    let center = scroll_top + client_height / 2.0;
+    let mut lo = 1u32;
+    let mut hi = n;
+    let mut ans = 1u32;
+    while lo <= hi {
+        let mid = (lo + hi) / 2;
+        let top = page_w * prefix[(mid - 1) as usize] + gap * (mid - 1) as f64;
+        if top <= center {
+            ans = mid;
+            lo = mid + 1;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    ans
+}
+
+/// 虚拟化窗口的顶/底分隔块高度（基于全量页高/宽比例前缀和）。
+/// 打开时全部页尺寸已知，滚动高度从一开始就是完整文档高度。
+fn spacer_heights(
+    prefix: &[f64],
+    page_w: f64,
+    gap: f64,
+    window_start: u32,
+    window_end: u32,
+) -> (f64, f64) {
+    let n = prefix.len().saturating_sub(1) as u32;
+    let top = if window_start > 1 {
+        page_w * prefix[(window_start - 1) as usize] + gap * (window_start - 2) as f64
+    } else {
+        0.0
+    };
+    let count = n.saturating_sub(window_end);
+    let bottom = if count > 0 {
+        page_w * (prefix[n as usize] - prefix[window_end as usize]) + gap * (count - 1) as f64
+    } else {
+        0.0
+    };
+    (top, bottom)
+}
+
+/// 第 page 页的高/宽比例（来自前缀和差分；几何计算用）。
+fn page_ratio_at(prefix: &[f64], page: u32) -> f64 {
+    prefix
+        .get(page as usize)
+        .zip(prefix.get((page - 1) as usize))
+        .map(|(hi, lo)| hi - lo)
+        .unwrap_or(1.0)
+}
+
+/// 第 page 页的宽/高比例（CSS `aspect-ratio` 语义是 width/height）。
+fn page_aspect_at(prefix: &[f64], page: u32) -> f64 {
+    let ratio = page_ratio_at(prefix, page);
+    if ratio > 0.0 { 1.0 / ratio } else { 1.0 }
+}
+
+/// 虚拟化窗口上下界（以当前页为中心，钳制到文档范围）。
+fn window_bounds(current: u32, page_count: u32, radius: u32) -> (u32, u32) {
+    (
+        current.saturating_sub(radius).max(1),
+        current.saturating_add(radius).min(page_count.max(1)),
+    )
+}
+
+fn update_current_page(
+    session: Signal<Option<ReaderSession>>,
+    mut current_page: Signal<u32>,
+    mut page_input: Signal<String>,
+    scroll_top: f64,
+    client_width: i32,
+    client_height: i32,
+    zoom_now: u32,
 ) {
-    let should = {
+    let guard = session.read();
+    let Some(inner) = guard.as_ref() else {
+        return;
+    };
+    // 跳转后的短暂窗口内不重算当前页，避免几何瞬时错位把窗口带跑。
+    if std::time::Instant::now() < inner.jump_lock_until {
+        return;
+    }
+    let content_w = (client_width as f64 - 48.0).max(1.0);
+    let page_w = content_w * zoom_now as f64 / 100.0;
+    let cur = current_page_from_prefix(
+        &inner.page_ratio_prefix,
+        page_w,
+        28.0,
+        scroll_top,
+        client_height as f64,
+    );
+    if *current_page.read() != cur {
+        current_page.set(cur);
+        page_input.set(cur.to_string());
+    }
+}
+
+/// 跳转落位：优先等目标页元素进入 DOM 后按真实 offsetTop 定位
+/// （对 client_width/占位几何误差免疫）；元素迟迟未出现时退回前缀和公式。
+fn scroll_to_page(
+    desktop: &dioxus::desktop::DesktopContext,
+    page: u32,
+    ratio_top: f64,
+    gap_part: f64,
+    zoom: u32,
+) {
+    let js = format!(
+        r#"(function(){{var sc=document.querySelector('.reader-scroll');if(!sc)return;var p="{page}";var n=0;(function tick(){{var el=document.querySelector('[data-page="'+p+'"]');if(el){{var top=el.offsetTop-sc.offsetTop;sc.scrollTop=top;if(Math.abs(sc.scrollTop-top)<1)return;}}if(n++<50){{setTimeout(tick,20);return;}}var pw=Math.max(sc.clientWidth-48,200)*{zoom}/100;sc.scrollTop=pw*{ratio_top}+{gap_part};}})();}})()"#
+    );
+    let _ = desktop.webview.evaluate_script(&js);
+}
+
+/// 滚动/跳转后更新渲染目标；目标变化使在途结果作废。
+fn schedule_render(
+    mut session: Signal<Option<ReaderSession>>,
+    page: u32,
+    mut page_loading: Signal<Option<u32>>,
+) {
+    if let Some(inner) = session.write().as_mut() {
+        if inner.render_target != Some(page) {
+            inner.render_target = Some(page);
+            inner.render_epoch += 1;
+            if *page_loading.read() != Some(page) {
+                page_loading.set(None);
+            }
+        }
+    }
+}
+
+/// 目录/页码跳转：立即按前缀和设置 scrollTop，渲染由唯一 worker 异步补齐。
+fn request_jump(
+    session: Signal<Option<ReaderSession>>,
+    desktop: dioxus::desktop::DesktopContext,
+    page: u32,
+    mut page_loading: Signal<Option<u32>>,
+    zoom: Signal<u32>,
+) {
+    let target = page.min({
+        session
+            .read()
+            .as_ref()
+            .map(|s| s.page_count)
+            .unwrap_or(page)
+    });
+    let cached = session
+        .read()
+        .as_ref()
+        .map(|s| s.cache.contains_key(&target))
+        .unwrap_or(false);
+    page_loading.set(Some(target));
+    if cached {
+        page_loading.set(None);
+    }
+    let (ratio_top, gap_part) = {
         let guard = session.read();
         let Some(inner) = guard.as_ref() else {
             return;
         };
-        if inner.loading_more || inner.rendered_until >= inner.page_count {
-            return;
-        }
-        true
+        let p = target.clamp(1, inner.page_count.max(1));
+        (
+            inner.page_ratio_prefix[(p - 1) as usize],
+            28.0 * (p - 1) as f64,
+        )
     };
-    if !should {
-        return;
+    if let Some(inner) = session.write_unchecked().as_mut() {
+        inner.render_target = Some(target);
+        inner.render_epoch += 1;
+        inner.jump_lock_until = std::time::Instant::now() + std::time::Duration::from_millis(800);
     }
-    if let Some(inner) = session.write().as_mut() {
-        inner.loading_more = true;
-    }
+    scroll_to_page(&desktop, target, ratio_top, gap_part, *zoom.read());
+}
 
+/// 唯一渲染 worker：停稳后渲染当前页（图 + 文字层一次完成），
+/// 再串行预取相邻页；目标变化通过 epoch 丢弃在途结果，最多浪费一页。
+fn spawn_render_worker(
+    session: Signal<Option<ReaderSession>>,
+    mut error_signal: Signal<ErrorSignal>,
+    mut page_loading: Signal<Option<u32>>,
+) {
     spawn(async move {
         loop {
-            let (from, to, doc) = {
-                let guard = session.read();
-                let Some(inner) = guard.as_ref() else {
-                    break;
+            let Some(page) = session.read().as_ref().and_then(|s| s.render_target) else {
+                return; // session 已销毁（组件卸载）。
+            };
+            let epoch = session.read().as_ref().map(|s| s.render_epoch).unwrap_or(0);
+            // 停稳等待：30ms 切片，目标/epoch 变化即重置。
+            let mut stable = false;
+            for _ in 0..(RENDER_SETTLE_MS / 30) {
+                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                let (cur, cur_epoch) = {
+                    let guard = session.read();
+                    let Some(inner) = guard.as_ref() else {
+                        break;
+                    };
+                    (inner.render_target, inner.render_epoch)
                 };
-                let from = inner.rendered_until + 1;
-                if from > inner.page_count {
+                if cur != Some(page) || cur_epoch != epoch {
                     break;
                 }
-                let to = (from + BATCH_SIZE - 1).min(inner.page_count);
-                (from, to, inner.doc.clone())
-            };
-            let mut last_rendered = from - 1;
-            for p in from..=to {
-                let doc = doc.clone();
-                let result =
-                    tokio::task::spawn_blocking(move || render_page_with_overlay(&doc, p - 1))
-                        .await;
+                stable = true;
+            }
+            if !stable {
+                continue;
+            }
+            let claimed = (page, epoch);
+            let cached = session
+                .read()
+                .as_ref()
+                .map(|s| s.cache.contains_key(&page))
+                .unwrap_or(false);
+            if !cached {
+                let (doc, bd) = {
+                    let guard = session.read();
+                    let Some(inner) = guard.as_ref() else {
+                        break;
+                    };
+                    (inner.doc.clone(), inner.book_dir.clone())
+                };
+                let result = tokio::task::spawn_blocking(move || {
+                    render_page_with_overlay(&doc, &bd, page - 1)
+                })
+                .await;
+                let mut guard = session.write_unchecked();
+                let Some(inner) = guard.as_mut() else {
+                    break;
+                };
+                let stale = inner.render_epoch != claimed.1 || inner.render_target != Some(page);
+                if stale
+                    && !inner
+                        .render_target
+                        .map(|t| page.abs_diff(t) <= PREFETCH_RADIUS)
+                        .unwrap_or(false)
+                {
+                    continue; // 目标已变且结果不再有用，丢弃在途结果。
+                }
                 match result {
                     Ok(Ok(rendered)) => {
-                        if let Some(inner) = session.write_unchecked().as_mut() {
-                            inner.cache.insert(p, rendered);
-                            inner.rendered_until = p;
-                            if inner.cache.len() > MAX_CACHE_PAGES {
-                                let keep_from = inner
-                                    .rendered_until
-                                    .saturating_sub(MAX_CACHE_PAGES as u32 - 5);
-                                inner.cache.retain(|&k, _| k >= keep_from);
-                            }
-                        }
-                        last_rendered = p;
+                        inner.cache.insert(page, rendered);
+                        evict_cache(inner, inner.render_target.unwrap_or(page));
                     }
                     Ok(Err(e)) => {
-                        let mut err = error_signal;
-                        err.write().push(ErrorInfo::new(
+                        error_signal.write().push(ErrorInfo::new(
                             "reader-render-failed",
                             "渲染页面失败",
                             e,
                             ErrorSeverity::Warning,
                             ErrorSource::General,
                         ));
-                        break;
                     }
                     Err(e) => {
-                        let mut err = error_signal;
-                        err.write().push(ErrorInfo::new(
+                        error_signal.write().push(ErrorInfo::new(
                             "reader-render-failed",
                             "渲染页面失败",
                             format!("{e}"),
                             ErrorSeverity::Warning,
                             ErrorSource::General,
                         ));
-                        break;
                     }
                 }
+                if *page_loading.read() == Some(page) {
+                    page_loading.set(None);
+                }
+                drop(guard);
+            } else if *page_loading.read() == Some(page) {
+                page_loading.set(None);
             }
-            let (top, ch, sh) = *scroll_state.read();
-            if top + ch < sh - NEAR_BOTTOM_PX || last_rendered >= to {
-                break;
+
+            // 预取相邻页：先向后一页，再向前一页；目标一变即停。
+            for offset in 1..=PREFETCH_RADIUS {
+                for sign in [1i32, -1i32] {
+                    let p = page as i64 + sign as i64 * offset as i64;
+                    if p < 1 {
+                        continue;
+                    }
+                    let p = p as u32;
+                    let job = {
+                        let guard = session.read();
+                        let Some(inner) = guard.as_ref() else {
+                            break;
+                        };
+                        if p > inner.page_count
+                            || inner.cache.contains_key(&p)
+                            || inner.render_epoch != epoch
+                            || inner.render_target != Some(page)
+                        {
+                            None
+                        } else {
+                            Some((inner.doc.clone(), inner.book_dir.clone()))
+                        }
+                    };
+                    let Some((doc, bd)) = job else {
+                        break;
+                    };
+                    let result = tokio::task::spawn_blocking(move || {
+                        render_page_with_overlay(&doc, &bd, p - 1)
+                    })
+                    .await;
+                    let mut guard = session.write_unchecked();
+                    let Some(inner) = guard.as_mut() else {
+                        break;
+                    };
+                    if inner.render_epoch != epoch || inner.render_target != Some(page) {
+                        let still_useful = inner
+                            .render_target
+                            .map(|t| p.abs_diff(t) <= PREFETCH_RADIUS)
+                            .unwrap_or(false);
+                        if !still_useful {
+                            break;
+                        }
+                    }
+                    if let Ok(Ok(rendered)) = result {
+                        inner.cache.insert(p, rendered);
+                        evict_cache(inner, inner.render_target.unwrap_or(page));
+                    }
+                    drop(guard);
+                }
             }
-        }
-        if let Some(inner) = session.write_unchecked().as_mut() {
-            inner.loading_more = false;
+
+            // 一轮完成：等待目标/epoch 变化，避免空转。
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let cur = session
+                    .read()
+                    .as_ref()
+                    .map(|s| (s.render_target, s.render_epoch));
+                if cur.is_none() {
+                    return; // session 已销毁（组件卸载）。
+                }
+                match cur {
+                    Some((Some(p), e)) if p != claimed.0 || e != claimed.1 => break,
+                    _ => continue,
+                }
+            }
         }
     });
+}
+
+/// 缓存淘汰：超过上限时移除离当前页最远的页（保留当前选区引用的页）。
+fn evict_cache_pages(
+    cache: &mut HashMap<u32, RenderedPage>,
+    current: u32,
+    selection: Option<&Selection>,
+    max: usize,
+) {
+    if cache.len() <= max {
+        return;
+    }
+    let mut keep: HashSet<u32> = selection
+        .map(|sel| sel.steps.iter().map(|s| s.page).collect())
+        .unwrap_or_default();
+    keep.insert(current);
+    let mut pages: Vec<u32> = cache
+        .keys()
+        .copied()
+        .filter(|p| !keep.contains(p))
+        .collect();
+    pages.sort_by_key(|p| {
+        (
+            std::cmp::Reverse(p.abs_diff(current)),
+            std::cmp::Reverse(*p),
+        )
+    });
+    let overflow = cache.len() - max;
+    for p in pages.into_iter().take(overflow) {
+        cache.remove(&p);
+    }
+}
+
+fn evict_cache(inner: &mut ReaderSession, current: u32) {
+    evict_cache_pages(
+        &mut inner.cache,
+        current,
+        inner.selection.as_ref(),
+        MAX_CACHE_PAGES,
+    );
 }
 
 #[component]
@@ -3118,6 +3759,8 @@ pub fn ReaderPanel(
     let session = use_signal(|| Option::<ReaderSession>::None);
     let zoom = use_signal(|| 100u32);
     let desktop = use_window();
+    // 滚动容器内容宽度（clientWidth - padding）。挂载/缩放/滚动时更新。
+    let mut client_width = use_signal(|| 800.0f64);
     // (连续点击次数, 页, 层, 词索引, 代数, 最后点击时间)
     let click_state = use_signal(|| {
         (
@@ -3129,12 +3772,25 @@ pub fn ReaderPanel(
             std::time::Instant::now(),
         )
     });
-    // (scroll_top, client_height, scroll_height)
-    let scroll_state = use_signal(|| (0.0f64, 0.0f64, 0.0f64));
     // 翻译卡片拖动中：(指针起点 x, y, 卡片原点 x, y)
     let drag_card = use_signal(|| Option::<(f64, f64, f64, f64)>::None);
+    // 翻译卡片悬停联动：(0=原文, 1=译文, 句子索引)
+    let translation_hover = use_signal(|| Option::<(usize, usize)>::None);
+    // 目录侧栏：是否展开 + 当前目录数据。
+    let toc_open = use_signal(|| true);
+    let toc = use_signal(|| Option::<crate::pdf::toc::TocFile>::None);
+    // 页码：当前页（滚动更新）与输入框文本。
+    let current_page = use_signal(|| 1u32);
+    let page_input = use_signal(|| "1".to_string());
+    // 目录中已收起的父条目 id（仅本次会话）。
+    let toc_collapsed = use_signal(|| HashSet::<String>::new());
+    // 目录当前高亮：(id, 所在页)。点击时立即置位；滚动到其它页后重算。
+    let toc_active_id = use_signal(|| Option::<(String, u32)>::None);
+    // 跳页渲染中：显示“正在加载第 N 页…”。
+    let page_loading = use_signal(|| Option::<u32>::None);
 
     let mut opened = use_signal(|| false);
+    let desktop_effect = desktop.clone();
     use_effect(move || {
         if *opened.read() {
             return;
@@ -3143,6 +3799,7 @@ pub fn ReaderPanel(
         let book_id = book_id.clone();
         let mut session = session;
         let mut err = error_signal;
+        let desktop = desktop_effect.clone();
         spawn(async move {
             let parse_id = book_id.clone();
             let opened = tokio::task::spawn_blocking(move || {
@@ -3153,23 +3810,42 @@ pub fn ReaderPanel(
                 let pdf_path = crate::layout::book_pdf_path(&book_dir);
                 let doc = pdfium::open(&pdf_path).map_err(|e| format!("{e:#}"))?;
                 let page_count = doc.page_count();
-                let _ = crate::calibration::ensure_for_book(&book_id, &book_dir, &doc);
-                let first = render_page_with_overlay(&doc, 0)?;
-                Ok::<_, String>((book.name, Arc::new(doc), page_count, first, book_dir))
+                crate::pdf::prepare_page_cache(&book_dir);
+                let _ = crate::pdf::calibration::ensure_for_book(&book_id, &book_dir, &doc);
+                let first = render_page_with_overlay(&doc, &book_dir, 0)?;
+                let mut prefix: Vec<f64> = Vec::with_capacity(page_count as usize + 1);
+                prefix.push(0.0);
+                for i in 0..page_count {
+                    let (w, h) = doc.page_size(i).map_err(|e| format!("{e:#}"))?;
+                    let last = prefix.last().copied().unwrap_or(0.0);
+                    prefix.push(last + h as f64 / w.max(1.0) as f64);
+                }
+                Ok::<_, String>((
+                    book.name,
+                    Arc::new(doc),
+                    page_count,
+                    first,
+                    book_dir,
+                    prefix,
+                ))
             })
             .await;
             match opened {
-                Ok(Ok((book_name, doc, page_count, first, book_dir))) => {
+                Ok(Ok((book_name, _doc, page_count, first, book_dir, page_ratio_prefix))) => {
+                    let _ = desktop.set_title(&format!("UeberNeon — {book_name}"));
                     let mut cache = HashMap::new();
                     cache.insert(1, first);
                     session.set(Some(ReaderSession {
-                        doc: doc.clone(),
+                        doc: _doc.clone(),
                         page_count,
                         cache,
-                        rendered_until: 1,
-                        loading_more: false,
+                        page_ratio_prefix,
+                        render_target: Some(1),
+                        render_epoch: 0,
+                        jump_lock_until: std::time::Instant::now(),
                         book_id: parse_id.clone(),
                         book_name,
+                        book_dir: book_dir.clone(),
                         selection: None,
                         drag_anchor: None,
                         dragging: false,
@@ -3181,19 +3857,26 @@ pub fn ReaderPanel(
                         translation: None,
                         translation_gen: 0,
                     }));
+                    // 启动唯一渲染 worker：首页已就绪，直接进入预取相邻页。
+                    spawn_render_worker(session, error_signal, page_loading);
 
-                    for p in 2..=3u32.min(page_count) {
-                        let doc = doc.clone();
-                        let result = tokio::task::spawn_blocking(move || {
-                            render_page_with_overlay(&doc, p - 1)
-                        })
-                        .await;
-                        if let Ok(Ok(rendered)) = result {
-                            if let Some(inner) = session.write_unchecked().as_mut() {
-                                inner.cache.insert(p, rendered);
-                                inner.rendered_until = p;
+                    // 目录后台加载：书签优先，无书签时字号识别（可能较慢）。
+                    {
+                        let toc = toc;
+                        let toc_collapsed = toc_collapsed;
+                        let bd = book_dir.clone();
+                        spawn(async move {
+                            let mut toc = toc;
+                            let mut toc_collapsed = toc_collapsed;
+                            let result = tokio::task::spawn_blocking(move || {
+                                crate::pdf::toc::load_or_generate(&bd, false)
+                            })
+                            .await;
+                            if let Ok(t) = result {
+                                toc_collapsed.set(crate::pdf::toc::default_collapsed(&t.items));
+                                toc.set(Some(t));
                             }
-                        }
+                        });
                     }
 
                     if crate::pdf::read_parse_marker(&book_dir).is_none() {
@@ -3246,23 +3929,36 @@ pub fn ReaderPanel(
         });
     });
 
-    let on_scroll = move |evt: ScrollEvent| {
-        let top = evt.scroll_top();
-        let ch = evt.client_height() as f64;
-        let sh = evt.scroll_height() as f64;
-        let mut ss = scroll_state;
-        ss.set((top, ch, sh));
-        // 有翻译卡片时，滚动不关闭操作栏和翻译块（选区与浮层保持可见）。
-        let has_translation = session
-            .read()
-            .as_ref()
-            .and_then(|s| s.translation.as_ref())
-            .is_some();
-        if !has_translation {
-            close_action_bar(session);
-        }
-        if top + ch >= sh - NEAR_BOTTOM_PX {
-            maybe_load_more(session, error_signal, scroll_state);
+    let on_scroll = {
+        let current_page = current_page;
+        let page_input = page_input;
+        let session = session;
+        move |evt: ScrollEvent| {
+            let top = evt.scroll_top();
+            let ch = evt.client_height() as f64;
+            let cw = evt.client_width();
+            if (*client_width.read() - cw as f64).abs() > 0.5 {
+                client_width.set(cw as f64);
+            }
+            update_current_page(
+                session,
+                current_page,
+                page_input,
+                top,
+                cw,
+                ch as i32,
+                zoom(),
+            );
+            schedule_render(session, *current_page.read(), page_loading);
+            // 有翻译卡片时，滚动不关闭操作栏和翻译块（选区与浮层保持可见）。
+            let has_translation = session
+                .read()
+                .as_ref()
+                .and_then(|s| s.translation.as_ref())
+                .is_some();
+            if !has_translation {
+                close_action_bar(session);
+            }
         }
     };
 
@@ -3338,23 +4034,13 @@ pub fn ReaderPanel(
         z.set(next);
     };
 
-    let (
-        book_name,
-        page_count,
-        rendered_until,
-        zoom_now,
-        selection,
-        copy_busy,
-        action_bar,
-        translation,
-    ) = session
+    let (book_name, page_count, zoom_now, selection, copy_busy, action_bar, translation) = session
         .read()
         .as_ref()
         .map(|s| {
             (
                 s.book_name.clone(),
                 s.page_count,
-                s.rendered_until,
                 zoom(),
                 s.selection.clone(),
                 s.copy_busy,
@@ -3362,7 +4048,123 @@ pub fn ReaderPanel(
                 s.translation.clone(),
             )
         })
-        .unwrap_or_else(|| (String::new(), 0u32, 0u32, 100u32, None, false, None, None));
+        .unwrap_or_else(|| (String::new(), 0u32, 100u32, None, false, None, None));
+
+    let toc_data = toc.read().clone();
+    let toc_source_label = toc_data
+        .as_ref()
+        .map(|t| t.source.label().to_string())
+        .unwrap_or_default();
+    let toc_items: Vec<crate::pdf::toc::TocItem> = toc_data
+        .as_ref()
+        .map(|t| t.items.clone())
+        .unwrap_or_default();
+    let toc_collapsed_set = toc_collapsed.read().clone();
+    let toc_visible: Vec<(crate::pdf::toc::TocItem, bool)> =
+        crate::pdf::toc::visible_toc_items(&toc_items, &toc_collapsed_set);
+    let current_page_now = *current_page.read();
+    let active_toc_id = {
+        let explicit = toc_active_id.read().clone();
+        let computed = || -> Option<String> {
+            toc_visible
+                .iter()
+                .filter(|(it, _)| it.page <= current_page_now)
+                .max_by_key(|(it, _)| (it.page, it.level))
+                .map(|(it, _)| it.id.clone())
+        };
+        match explicit {
+            Some((id, page))
+                if page == current_page_now && toc_visible.iter().any(|(it, _)| it.id == id) =>
+            {
+                Some(id)
+            }
+            _ => computed(),
+        }
+    };
+    let toc_open_now = *toc_open.read();
+    let page_loading_now = *page_loading.read();
+    // 页面虚拟化：按当前页只渲染窗口内的页，前后用分隔块撑起滚动高度。
+    let page_w = {
+        let cw = *client_width.read();
+        ((cw - 48.0).max(200.0)) * zoom_now as f64 / 100.0
+    };
+    let (window_start, window_end) = window_bounds(current_page_now, page_count, PAGE_WINDOW);
+    let (top_spacer, bottom_spacer) = session
+        .read()
+        .as_ref()
+        .map(|inner| {
+            spacer_heights(
+                &inner.page_ratio_prefix,
+                page_w,
+                28.0,
+                window_start,
+                window_end,
+            )
+        })
+        .unwrap_or((0.0, 0.0));
+
+    let on_toggle_toc = move |_| {
+        let mut t = toc_open;
+        let cur = *t.read();
+        t.set(!cur);
+    };
+    let on_toggle_toc_item = {
+        let mut collapsed = toc_collapsed;
+        move |id: String| {
+            let mut set = collapsed.read().clone();
+            if !set.insert(id.clone()) {
+                set.remove(&id);
+            }
+            collapsed.set(set);
+        }
+    };
+    let on_rebuild_toc = {
+        let mut toc = toc;
+        let toc_collapsed = toc_collapsed;
+        let session = session;
+        move |_| {
+            let bd = session.read().as_ref().map(|s| s.book_dir.clone());
+            if let Some(bd) = bd {
+                toc.set(None);
+                let toc = toc;
+                spawn(async move {
+                    let mut toc = toc;
+                    let mut toc_collapsed = toc_collapsed;
+                    let r = tokio::task::spawn_blocking(move || {
+                        crate::pdf::toc::load_or_generate(&bd, true)
+                    })
+                    .await;
+                    if let Ok(t) = r {
+                        toc_collapsed.set(crate::pdf::toc::default_collapsed(&t.items));
+                        toc.set(Some(t));
+                    }
+                });
+            }
+        }
+    };
+    let on_page_input = move |evt: FormEvent| {
+        let mut page_input = page_input;
+        page_input.set(evt.value());
+    };
+    let on_page_keydown = {
+        let desktop = desktop.clone();
+        let session = session;
+        let page_loading = page_loading;
+        let zoom = zoom;
+        let mut current_page = current_page;
+        let mut page_input = page_input;
+        move |evt: KeyboardEvent| {
+            if evt.key().to_string() != "Enter" {
+                return;
+            }
+            let raw = page_input.read().clone();
+            if let Some(p) = crate::pdf::toc::clamp_page(&raw, page_count) {
+                current_page.set(p);
+                page_input.set(p.to_string());
+                request_jump(session, desktop.clone(), p, page_loading, zoom);
+            }
+        }
+    };
 
     let action_bar_view = action_bar.map(|bar| {
         let status_class = match bar.status {
@@ -3398,7 +4200,16 @@ pub fn ReaderPanel(
             ActionBarStatus::Error => "is-error",
             ActionBarStatus::Success => "is-success",
         };
-        (tc.x, tc.y, tc.status, tc.text.clone(), status_class)
+        (
+            tc.x,
+            tc.y,
+            tc.status,
+            tc.text.clone(),
+            status_class,
+            tc.source_sentences.clone(),
+            tc.translated_sentences.clone(),
+            tc.groups.clone(),
+        )
     });
 
     rsx! {
@@ -3411,13 +4222,29 @@ pub fn ReaderPanel(
                 onmousedown: move |_| close_action_bar(session),
                 button {
                     class: "btn btn-cancel",
+                    "aria-label": "目录",
+                    onclick: on_toggle_toc,
+                    "☰"
+                }
+                button {
+                    class: "btn btn-cancel",
                     onclick: move |_| on_back.call(()),
-                    "← 书库"
+                    "← 关闭"
                 }
                 span { class: "reader-title", "{book_name}" }
                 div {
+                    class: "reader-page-control",
+                    input {
+                        class: "reader-page-input",
+                        value: page_input,
+                        oninput: on_page_input,
+                        onkeydown: on_page_keydown,
+                        "aria-label": "页码",
+                    }
+                    span { class: "reader-page-total", "/ {page_count}" }
+                }
+                div {
                     class: "reader-toolbar",
-                    span { class: "reader-page-total", "已加载 {rendered_until}/{page_count}" }
                     if copy_busy {
                         span { class: "reader-copy-status", "识别公式中…" }
                     }
@@ -3434,33 +4261,180 @@ pub fn ReaderPanel(
                     }
                 }
             }
+            if let Some(n) = page_loading_now {
+                div {
+                    class: "reader-loading-badge",
+                    span { class: "reader-spinner reader-spinner--sm" }
+                    "正在加载第 {n} 页…"
+                }
+            }
             if session.read().is_none() {
                 div {
                     class: "reader-loading",
-                    "打开 PDF 中…"
+                    span { class: "reader-spinner" }
+                    span { class: "reader-loading__label", "打开 PDF 中…" }
                 }
             } else {
                 div {
-                    class: "reader-scroll",
-                    tabindex: "-1",
-                    onscroll: on_scroll,
-                    onmouseleave: on_scroll_mouseleave,
-                    onkeydown: on_keydown,
-                    oncontextmenu: move |evt| {
-                        evt.prevent_default();
-                        let coords = evt.client_coordinates();
-                        open_action_bar(session, coords.x, coords.y);
-                    },
-                    for page in 1..=rendered_until {
-                        {
-                            let page = page;
-                            let session = session;
-                            let click_state = click_state;
-                            let desktop = desktop.clone();
-                            let selection = selection.as_ref();
-                            rsx! {
-                                {
-                                    let guard = session.read();
+                    class: "reader-body",
+                    if toc_open_now {
+                        div {
+                            class: "reader-toc",
+                            div {
+                                class: "reader-toc-head",
+                                span { class: "reader-toc-title", "目录" }
+                                if !toc_source_label.is_empty() {
+                                    span { class: "reader-toc-badge", "{toc_source_label}" }
+                                }
+                                button {
+                                    class: "btn btn-cancel",
+                                    onclick: on_rebuild_toc,
+                                    "重建"
+                                }
+                            }
+                            if toc_items.is_empty() {
+                                div {
+                                    class: if toc_data.is_none() {
+                                        "reader-toc-empty is-loading"
+                                    } else {
+                                        "reader-toc-empty"
+                                    },
+                                    if toc_data.is_none() {
+                                        span { class: "reader-spinner reader-spinner--sm" }
+                                        "目录生成中…"
+                                    } else {
+                                        "这本书还没有目录"
+                                    }
+                                }
+                            } else {
+                                div {
+                                    class: "reader-toc-list",
+                                    for (item, is_parent) in &toc_visible {
+                                        div {
+                                            class: {
+                                                let active = active_toc_id.as_deref() == Some(item.id.as_str());
+                                                let mut c: String = if active {
+                                                    "reader-toc-item is-active".to_string()
+                                                } else {
+                                                    "reader-toc-item".to_string()
+                                                };
+                                                if *is_parent {
+                                                    c.push_str(" is-parent");
+                                                }
+                                                c
+                                            },
+                                            style: "padding-left: {12 + item.level * 14}px",
+                                            onclick: {
+                                                let p = item.page;
+                                                let id = item.id.clone();
+                                                let desktop = desktop.clone();
+                                                let session = session;
+                                                let page_loading = page_loading;
+                                                let zoom = zoom;
+                                                let mut current_page = current_page;
+                                                let mut page_input = page_input;
+                                                let mut toc_active_id = toc_active_id;
+                                                move |_| {
+                                                    current_page.set(p);
+                                                    page_input.set(p.to_string());
+                                                    toc_active_id.set(Some((id.clone(), p)));
+                                                    request_jump(
+                                                        session,
+                                                        desktop.clone(),
+                                                        p,
+                                                        page_loading,
+                                                        zoom,
+                                                    );
+                                                }
+                                            },
+                                            if *is_parent {
+                                                span {
+                                                    class: "reader-toc-item__chevron",
+                                                    "aria-label": "收起/展开",
+                                                    onclick: {
+                                                        let id = item.id.clone();
+                                                        let mut on_toggle = on_toggle_toc_item;
+                                                        move |evt: MouseEvent| {
+                                                            evt.stop_propagation();
+                                                            on_toggle(id.clone());
+                                                        }
+                                                    },
+                                                    if toc_collapsed_set.contains(&item.id) {
+                                                        "▸"
+                                                    } else {
+                                                        "▾"
+                                                    }
+                                                }
+                                            }
+                                            span { class: "reader-toc-item__title", "{item.title}" }
+                                            span { class: "reader-toc-item__page", "{item.page}" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        div {
+                            class: "reader-toc-rail",
+                            button {
+                                class: "btn btn-cancel",
+                                onclick: on_toggle_toc,
+                                "☰"
+                            }
+                        }
+                    }
+                    div {
+                        class: "reader-scroll",
+                        tabindex: "-1",
+                        onscroll: on_scroll,
+                        onmounted: move |evt: MountedEvent| {
+                            let mut client_width = client_width;
+                            spawn(async move {
+                                if let Ok(rect) = evt.data.get_client_rect().await {
+                                    let cw = rect.width();
+                                    if (*client_width.read() - cw).abs() > 0.5 {
+                                        client_width.set(cw);
+                                    }
+                                }
+                            });
+                        },
+                        onresize: move |evt: ResizeEvent| {
+                            if let Ok(size) = evt.data.get_content_box_size() {
+                                // 内容盒宽度 + 左右 padding(24px×2) = clientWidth。
+                                let cw = size.width + 48.0;
+                                if (*client_width.read() - cw).abs() > 0.5 {
+                                    client_width.set(cw);
+                                }
+                            }
+                        },
+                        onmouseleave: on_scroll_mouseleave,
+                        onkeydown: on_keydown,
+                        oncontextmenu: move |evt| {
+                            evt.prevent_default();
+                            let coords = evt.client_coordinates();
+                            open_action_bar(session, coords.x, coords.y);
+                        },
+                        if window_start > 1 {
+                            div {
+                                class: "reader-page-spacer",
+                                style: "height: {top_spacer}px",
+                                "data-spacer": "top",
+                            }
+                        }
+                        for page in window_start..=window_end {
+                            {
+                                let page = page;
+                                let session = session;
+                                let click_state = click_state;
+                                let desktop = desktop.clone();
+                                let selection = selection.as_ref();
+                                rsx! {
+                                    {
+                                        let guard = session.read();
+                                    let placeholder_aspect = guard
+                                        .as_ref()
+                                        .map(|s| page_aspect_at(&s.page_ratio_prefix, page))
+                                        .unwrap_or(1.0);
                                     match guard.as_ref().and_then(|inner| inner.cache.get(&page)) {
                                         Some(r) => {
                                             let rects_for =
@@ -3488,6 +4462,7 @@ pub fn ReaderPanel(
                                                 div {
                                                     class: "reader-page-view",
                                                     style: "width: {zoom_now}%; aspect-ratio: {r.w_pt} / {r.h_pt}",
+                                                    "data-page": "{page}",
                                                     onmousedown: {
                                                         let p = page;
                                                         let d = desktop.clone();
@@ -3508,12 +4483,28 @@ pub fn ReaderPanel(
                                                 }
                                             }
                                         }
-                                        None => rsx! {},
+                                        None => {
+                                            rsx! {
+                                                div {
+                                                    class: "reader-page-placeholder",
+                                                    style: "width: {zoom_now}%; aspect-ratio: {placeholder_aspect:.6}",
+                                                    "data-page": "{page}",
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
+                        }
+                        if window_end < page_count {
+                            div {
+                                class: "reader-page-spacer",
+                                style: "height: {bottom_spacer}px",
+                                "data-spacer": "bottom",
+                            }
+                        }
+                }
                 }
             }
             if let Some((bar, status_class, label, show_formula, translation_enabled, translation_loading)) = action_bar_view {
@@ -3532,7 +4523,16 @@ pub fn ReaderPanel(
                         button {
                             class: "reader-actionbar__btn",
                             disabled: translation_loading,
-                            onclick: move |_| action_bar_translate(session),
+                            onclick: {
+                                let desktop = desktop.clone();
+                                move |_| {
+                                    let vw =
+                                        desktop.inner_size().width as f64 / desktop.scale_factor();
+                                    let vh =
+                                        desktop.inner_size().height as f64 / desktop.scale_factor();
+                                    action_bar_translate(session, (vw, vh));
+                                }
+                            },
                             "翻译"
                         }
                     }
@@ -3552,7 +4552,17 @@ pub fn ReaderPanel(
                     }
                 }
             }
-            if let Some((x, y, status, text, status_class)) = translation_view {
+            if let Some((
+                x,
+                y,
+                status,
+                text,
+                status_class,
+                source_sentences,
+                translated_sentences,
+                groups,
+            )) = translation_view
+            {
                 div {
                     class: "reader-translation-card {status_class}",
                     role: "dialog",
@@ -3586,9 +4596,86 @@ pub fn ReaderPanel(
                             div { class: "reader-translation-card__body is-streaming", "{text}" }
                         }
                     } else if status == ActionBarStatus::Success {
-                        div { class: "reader-translation-card__body", "{text}" }
+                        div {
+                            class: "reader-translation-card__split",
+                            onmouseleave: {
+                                let mut translation_hover = translation_hover;
+                                move |_| translation_hover.set(None)
+                            },
+                            div {
+                                class: "reader-translation-card__col",
+                                for (i, s) in source_sentences.iter().enumerate() {
+                                    {
+                                        let i = i;
+                                        let s = s.clone();
+                                        let hovered = match *translation_hover.read() {
+                                            Some((0, k)) => k == i,
+                                            Some((1, j)) => crate::translate::translation_source_index(
+                                                &groups,
+                                                j,
+                                            ) == Some(i),
+                                            _ => false,
+                                        };
+                                        rsx! {
+                                            div {
+                                                class: if hovered {
+                                                    "reader-translation-card__sentence is-highlight"
+                                                } else {
+                                                    "reader-translation-card__sentence"
+                                                },
+                                                onmouseenter: {
+                                                    let mut translation_hover = translation_hover;
+                                                    move |_| translation_hover.set(Some((0, i)))
+                                                },
+                                                "{s}"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            div { class: "reader-translation-card__divider", "aria-hidden": "true" }
+                            div {
+                                class: "reader-translation-card__col",
+                                for (j, t) in translated_sentences.iter().enumerate() {
+                                    {
+                                        let j = j;
+                                        let t = t.clone();
+                                        let hovered = match *translation_hover.read() {
+                                            Some((1, k)) => k == j,
+                                            Some((0, i)) => groups
+                                                .get(i)
+                                                .map(|&(s, e)| j >= s && j <= e)
+                                                .unwrap_or(false),
+                                            _ => false,
+                                        };
+                                        rsx! {
+                                            div {
+                                                class: if hovered {
+                                                    "reader-translation-card__sentence is-highlight"
+                                                } else {
+                                                    "reader-translation-card__sentence"
+                                                },
+                                                onmouseenter: {
+                                                    let mut translation_hover = translation_hover;
+                                                    move |_| translation_hover.set(Some((1, j)))
+                                                },
+                                                "{t}"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     } else if status == ActionBarStatus::Error {
                         div { class: "reader-translation-card__error", "{text}" }
+                    }
+                    div {
+                        class: "reader-translation-card__actions",
+                        button {
+                            class: "reader-actionbar__btn",
+                            onclick: move |_| retry_translation(session),
+                            "重试"
+                        }
                     }
                 }
             }
@@ -3629,6 +4716,7 @@ mod tests {
             top_pct: 0.0,
             height_pct: 0.0,
             height_cqw: words.first().map(|w| w.4).unwrap_or(1.0),
+            font_size_pt: 10.0,
             words: words
                 .into_iter()
                 .map(|(text, left, top, width, height)| OverlayWord {
@@ -3640,6 +4728,15 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    fn overlay_line_with_font(
+        words: Vec<(String, f64, f64, f64, f64)>,
+        font_size_pt: f64,
+    ) -> OverlayLine {
+        let mut line = overlay_line(words);
+        line.font_size_pt = font_size_pt;
+        line
     }
 
     #[test]
@@ -3665,9 +4762,9 @@ mod tests {
             fw(0, "We", 10.0, 0.0, 2.0),
             fw(0, " ", 13.0, 0.0, 2.0),
             fw(0, "have", 14.0, 0.0, 2.0),
-            fw(1, "combined", 10.0, 5.0, 2.0),
-            fw(1, " ", 20.0, 5.0, 2.0),
-            fw(1, "with", 21.0, 5.0, 2.0),
+            fw(1, "combined", 10.0, 2.5, 2.0),
+            fw(1, " ", 20.0, 2.5, 2.0),
+            fw(1, "with", 21.0, 2.5, 2.0),
             fw(2, "Figure", 60.0, 0.0, 1.0),
             fw(2, "1", 61.0, 0.0, 1.0),
             fw(3, "deep", 51.0, 0.0, 2.0),
@@ -3784,8 +4881,8 @@ mod tests {
         let flat = vec![
             fw(0, "We", 10.0, 0.0, 2.0),
             fw(0, "have", 14.0, 0.0, 2.0),
-            fw(1, "combined", 10.0, 5.0, 2.0),
-            fw(1, "with", 20.0, 5.0, 2.0),
+            fw(1, "combined", 10.0, 2.5, 2.0),
+            fw(1, "with", 20.0, 2.5, 2.0),
             fw(2, "Pla", 60.0, 0.0, 0.8),
             fw(3, "Ability", 60.0, 2.0, 0.8),
             fw(4, "deep", 51.0, 0.0, 2.0),
@@ -3825,6 +4922,111 @@ mod tests {
         assert_eq!(steps[0].page, 0);
         assert_eq!(steps[1].page, 1);
         assert_eq!(steps[1].hi, 0);
+    }
+
+    #[test]
+    fn sentence_walk_stops_at_heading_above_paragraph() {
+        // 标题行没有句读,但与正文之间有行距 → 三击正文首句不应包含标题
+        let flat = vec![
+            fw(0, "Hypothesis", 8.0, 0.0, 2.0),
+            fw(0, " ", 20.0, 0.0, 2.0),
+            fw(0, "4:", 21.0, 0.0, 2.0),
+            fw(0, " ", 24.0, 0.0, 2.0),
+            fw(0, "The", 25.0, 0.0, 2.0),
+            fw(0, " ", 29.0, 0.0, 2.0),
+            fw(0, "Agent-Driven", 30.0, 0.0, 2.0),
+            fw(0, " ", 43.0, 0.0, 2.0),
+            fw(0, "Economy", 44.0, 0.0, 2.0),
+            fw(1, "The", 8.0, 6.0, 2.0),
+            fw(1, " ", 12.0, 6.0, 2.0),
+            fw(1, "fourth", 13.0, 6.0, 2.0),
+            fw(1, " ", 20.0, 6.0, 2.0),
+            fw(1, "hypothesis", 21.0, 6.0, 2.0),
+            fw(2, "is", 8.0, 8.5, 2.0),
+            fw(2, " ", 11.0, 8.5, 2.0),
+            fw(2, "that", 12.0, 8.5, 2.0),
+            fw(3, "models.", 8.0, 11.0, 2.0),
+        ];
+        let steps = sentence_walk(&flat, 9, None, None, 0);
+        assert_eq!(steps.len(), 1, "句子应止于本段,不跨回标题");
+        let copied = copy_steps(
+            &Selection {
+                layer: Layer::Body,
+                formula: false,
+                formula_score: 0.0,
+                steps,
+            },
+            |_| Some(&flat),
+        )
+        .unwrap();
+        assert!(!copied.contains("Hypothesis"), "{copied}");
+        assert!(copied.starts_with("The fourth hypothesis"), "{copied}");
+        assert!(copied.ends_with("models."), "{copied}");
+    }
+
+    #[test]
+    fn sentence_walk_stops_at_paragraph_end_without_punctuation() {
+        // 段内没有句读且段落到行尾结束 → 句子止于段尾,不吞下一段
+        let flat = vec![
+            fw(0, "First", 8.0, 0.0, 2.0),
+            fw(1, "line", 8.0, 2.5, 2.0),
+            fw(2, "Next", 8.0, 8.0, 2.0),
+        ];
+        let steps = sentence_walk(&flat, 1, None, None, 0);
+        let copied = copy_steps(
+            &Selection {
+                layer: Layer::Body,
+                formula: false,
+                formula_score: 0.0,
+                steps,
+            },
+            |_| Some(&flat),
+        )
+        .unwrap();
+        assert_eq!(copied, "First line", "{copied}");
+    }
+
+    #[test]
+    fn copy_text_joins_wrapped_lines_and_keeps_paragraph_breaks() {
+        let flat = vec![
+            fw(0, "I am", 0.0, 0.0, 2.0),
+            fw(0, " ", 5.0, 0.0, 2.0),
+            fw(0, "also", 6.0, 0.0, 2.0),
+            fw(1, "indebted", 0.0, 2.5, 2.0),
+            fw(1, " ", 9.0, 2.5, 2.0),
+            fw(1, "to", 10.0, 2.5, 2.0),
+            fw(2, "Next", 0.0, 8.0, 2.0),
+        ];
+        // 软换行合并为空格；垂直间隙大的段落分界保留换行
+        assert_eq!(
+            copy_text_filtered(&flat, 0, 6, None),
+            "I am also indebted to\nNext"
+        );
+    }
+
+    #[test]
+    fn copy_text_joins_cjk_wrapped_lines_without_space() {
+        let flat = vec![fw(0, "你好", 0.0, 0.0, 2.0), fw(1, "世界", 0.0, 2.5, 2.0)];
+        assert_eq!(copy_text_filtered(&flat, 0, 1, None), "你好世界");
+    }
+
+    #[test]
+    fn translation_input_joins_wrapped_lines_with_space() {
+        let flat = vec![fw(0, "As", 0.0, 0.0, 2.0), fw(1, "models", 0.0, 2.5, 2.0)];
+        let sel = Selection {
+            layer: Layer::Body,
+            formula: false,
+            formula_score: 0.0,
+            steps: vec![SelectionStep {
+                page: 1,
+                lo: 0,
+                hi: 1,
+                column_left: None,
+            }],
+        };
+        let (text, formulas) = selection_translation_input(&sel, |_| Some(&flat)).unwrap();
+        assert_eq!(text, "As models");
+        assert!(formulas.is_empty());
     }
 
     #[test]
@@ -3915,12 +5117,14 @@ mod tests {
 
     #[test]
     fn classify_words_splits_body_and_small() {
+        // 判定依据是真实字号:脚注字形盒高度与正文相同(2.0),但字号 8pt
+        // (正文 10pt),仍应进小字层;窄碎片 "a" 同样按小字处理。
         let overlay = vec![
             overlay_line(vec![("Hello".into(), 10.0, 0.0, 20.0, 2.0)]),
             overlay_line(vec![("World".into(), 10.0, 5.0, 20.0, 2.0)]),
             overlay_line(vec![("More".into(), 10.0, 10.0, 20.0, 2.0)]),
-            overlay_line(vec![("footnote".into(), 10.0, 10.0, 30.0, 1.0)]),
-            overlay_line(vec![("a".into(), 3.0, 0.0, 0.5, 1.0)]),
+            overlay_line_with_font(vec![("footnote".into(), 10.0, 10.0, 30.0, 2.0)], 8.0),
+            overlay_line_with_font(vec![("a".into(), 3.0, 0.0, 0.5, 1.0)], 8.0),
         ];
         let (body, small) = classify_words(&overlay);
         let body_texts: Vec<&str> = body.iter().map(|w| w.text.as_str()).collect();
@@ -4075,6 +5279,131 @@ mod tests {
     }
 
     #[test]
+    fn paragraph_range_keeps_short_glyph_line_within_paragraph() {
+        // “canvases.” 场景:前一行盒高 1.46、全小写行盒高 1.08,
+        // 行距 2.96 与列中位行距 2.96 一致 → 同一段;
+        // 段间距 4.16 超过 1.35× 行距 → 另起段。
+        let flat = vec![
+            fw(0, "with", 8.0, 40.0, 1.46),
+            fw(0, " ", 9.0, 40.0, 1.46),
+            fw(0, "connected", 10.0, 40.0, 1.46),
+            fw(1, "canvases.", 8.0, 42.96, 1.08),
+            fw(2, "Next", 8.0, 47.12, 1.46),
+        ];
+        assert_eq!(paragraph_range(&flat, 0), (0, 3), "短字形行仍属同一段");
+        assert_eq!(paragraph_range(&flat, 4), (4, 4), "段间距处另起段");
+    }
+
+    #[test]
+    fn current_page_geometry_hits_viewport_center() {
+        // 页高 800/800/500（page_w=1 时），页间距 28。
+        let prefix = vec![0.0, 800.0, 1600.0, 2100.0];
+        assert_eq!(current_page_from_prefix(&prefix, 1.0, 28.0, 0.0, 400.0), 1);
+        // 第 2 页顶 = 800 + 28 = 828
+        assert_eq!(
+            current_page_from_prefix(&prefix, 1.0, 28.0, 956.0, 400.0),
+            2
+        );
+        // 第 3 页顶 = 1600 + 56 = 1656
+        assert_eq!(
+            current_page_from_prefix(&prefix, 1.0, 28.0, 1784.0, 400.0),
+            3
+        );
+        // 视口中心超过最后页 → 停在末页
+        assert_eq!(
+            current_page_from_prefix(&prefix, 1.0, 28.0, 99999.0, 400.0),
+            3
+        );
+    }
+
+    #[test]
+    fn spacer_heights_use_prefix_and_gaps() {
+        // 每页比例 1.0，page_w=100 → 每页高 100，gap=28。
+        let prefix = vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        // 窗口 3..=5：顶部 1..2 两页（100+100+28），底部仅第 6 页（100）。
+        assert_eq!(spacer_heights(&prefix, 100.0, 28.0, 3, 5), (228.0, 100.0));
+        // 无顶部/无底部
+        assert_eq!(spacer_heights(&prefix, 100.0, 28.0, 1, 6), (0.0, 0.0));
+        // 底部 3 页（4..6）：3*100 + 2*28 = 356
+        assert_eq!(spacer_heights(&prefix, 100.0, 28.0, 1, 3), (0.0, 356.0));
+    }
+
+    #[test]
+    fn page_ratio_is_prefix_difference() {
+        let prefix = vec![0.0, 0.5, 1.0, 2.2];
+        assert_eq!(page_ratio_at(&prefix, 1), 0.5);
+        assert!(
+            (page_ratio_at(&prefix, 3) - 1.2).abs() < 1e-9,
+            "前缀差分应为 1.2"
+        );
+        assert_eq!(page_ratio_at(&prefix, 99), 1.0, "越界回退默认比例");
+    }
+
+    #[test]
+    fn placeholder_aspect_is_width_over_height() {
+        let prefix = vec![0.0, 0.5, 1.0, 2.2];
+        // h/w = 0.5 → aspect-ratio（width/height）= 2.0
+        assert!((page_aspect_at(&prefix, 1) - 2.0).abs() < 1e-9);
+        // h/w = 1.2 → aspect-ratio ≈ 0.8333
+        assert!((page_aspect_at(&prefix, 3) - 1.0 / 1.2).abs() < 1e-9);
+        assert_eq!(page_aspect_at(&prefix, 99), 1.0, "越界回退默认比例");
+    }
+
+    #[test]
+    fn window_bounds_clamp_to_document() {
+        assert_eq!(window_bounds(1, 3, 15), (1, 3));
+        assert_eq!(window_bounds(50, 100, 15), (35, 65));
+        assert_eq!(window_bounds(100, 100, 15), (85, 100));
+        assert_eq!(window_bounds(0, 0, 15), (1, 1));
+    }
+
+    #[test]
+    fn eviction_keeps_current_and_selection_pages() {
+        fn page(n: u32) -> RenderedPage {
+            RenderedPage {
+                src: n.to_string(),
+                body: Vec::new(),
+                small: Vec::new(),
+                w_pt: 1.0,
+                h_pt: 1.0,
+            }
+        }
+        let mut cache: HashMap<u32, RenderedPage> = (1..=10).map(|p| (p, page(p))).collect();
+        let selection = Selection {
+            layer: Layer::Body,
+            formula: false,
+            formula_score: 0.0,
+            steps: vec![SelectionStep {
+                page: 2,
+                lo: 0,
+                hi: 0,
+                column_left: None,
+            }],
+        };
+        evict_cache_pages(&mut cache, 6, Some(&selection), 4);
+        assert!(cache.contains_key(&6), "当前页保留");
+        assert!(cache.contains_key(&2), "选区页保留");
+        assert!(
+            cache.contains_key(&5) && cache.contains_key(&7),
+            "最近邻居优先"
+        );
+        assert_eq!(cache.len(), 4);
+        assert!(
+            !cache.contains_key(&1) && !cache.contains_key(&10),
+            "最远页先淘汰"
+        );
+    }
+
+    #[test]
+    fn copy_text_keeps_short_glyph_soft_wrap_as_space() {
+        let flat = vec![
+            fw(0, "connected", 8.0, 40.0, 1.46),
+            fw(1, "canvases.", 8.0, 42.96, 1.08),
+        ];
+        assert_eq!(copy_text_filtered(&flat, 0, 1, None), "connected canvases.");
+    }
+
+    #[test]
     fn paragraph_indent_starts_new_paragraph() {
         let flat = vec![
             fw(0, "prev.", 8.9, 20.0, 1.0),
@@ -4139,6 +5468,7 @@ mod tests {
             top_pct: 0.0,
             height_pct: 0.0,
             height_cqw: 1.0,
+            font_size_pt: 10.0,
             words: vec![
                 OverlayWord {
                     text: "Hello".into(),
@@ -4283,20 +5613,68 @@ mod tests {
     }
 
     #[test]
-    fn calibrated_small_ratio_keeps_mid_size_lines_in_body() {
+    fn calibrated_small_font_ratio_keeps_mid_size_lines_in_body() {
         let overlay = vec![
             overlay_line(vec![("Hello".into(), 10.0, 0.0, 20.0, 2.0)]),
             overlay_line(vec![("World".into(), 10.0, 3.0, 20.0, 2.0)]),
             overlay_line(vec![("More".into(), 10.0, 6.0, 20.0, 2.0)]),
             overlay_line(vec![("Text".into(), 10.0, 9.0, 20.0, 2.0)]),
-            overlay_line(vec![("note".into(), 10.0, 12.0, 20.0, 1.6)]),
+            overlay_line_with_font(vec![("note".into(), 10.0, 12.0, 20.0, 2.0)], 8.0),
         ];
         let (_, small_default) = classify_words(&overlay);
         assert!(
             small_default.iter().any(|w| w.text == "note"),
-            "默认小字比例 0.91 把 0.8×中位行高判为小字"
+            "默认小字比例 0.91 把 0.8×中位字号判为小字"
         );
-        let cal = crate::calibration::DocCalibration {
+        let cal = crate::pdf::calibration::DocCalibration {
+            small_height_ratio: 0.75,
+            ..Default::default()
+        };
+        let (body_cal, small_cal) = classify_words_with(&overlay, cal);
+        assert!(body_cal.iter().any(|w| w.text == "note"));
+        assert!(!small_cal.iter().any(|w| w.text == "note"));
+    }
+
+    #[test]
+    fn classify_keeps_x_height_body_line_in_body_when_font_matches() {
+        // “canvases.” 这类全小写行:字形包围盒偏矮(1.0 vs 2.0),
+        // 但真实字号与正文相同(10pt),应留在正文层;真正的小字(8pt)才进小字层。
+        let overlay = vec![
+            overlay_line(vec![("Hello".into(), 10.0, 0.0, 20.0, 2.0)]),
+            overlay_line(vec![("World".into(), 10.0, 3.0, 20.0, 2.0)]),
+            overlay_line(vec![("More".into(), 10.0, 6.0, 20.0, 2.0)]),
+            overlay_line(vec![("Text".into(), 10.0, 9.0, 20.0, 2.0)]),
+            overlay_line_with_font(vec![("canvases.".into(), 10.0, 12.0, 20.0, 1.0)], 10.0),
+            overlay_line_with_font(vec![("footnote".into(), 10.0, 15.0, 20.0, 2.0)], 8.0),
+        ];
+        let (body, small) = classify_words(&overlay);
+        assert!(
+            body.iter().any(|w| w.text == "canvases."),
+            "同字号全小写行不应进小字层"
+        );
+        assert!(!small.iter().any(|w| w.text == "canvases."));
+        assert!(
+            small.iter().any(|w| w.text == "footnote"),
+            "真小字仍应进小字层"
+        );
+    }
+
+    #[test]
+    fn classify_falls_back_to_height_when_font_missing() {
+        // 字号信息缺失(0)时退回旧的行高比例判定,保证退化页面仍能区分小字。
+        let overlay = vec![
+            overlay_line_with_font(vec![("Hello".into(), 10.0, 0.0, 20.0, 2.0)], 0.0),
+            overlay_line_with_font(vec![("World".into(), 10.0, 3.0, 20.0, 2.0)], 0.0),
+            overlay_line_with_font(vec![("More".into(), 10.0, 6.0, 20.0, 2.0)], 0.0),
+            overlay_line_with_font(vec![("Text".into(), 10.0, 9.0, 20.0, 2.0)], 0.0),
+            overlay_line_with_font(vec![("note".into(), 10.0, 12.0, 20.0, 1.6)], 0.0),
+        ];
+        let (_, small_default) = classify_words(&overlay);
+        assert!(
+            small_default.iter().any(|w| w.text == "note"),
+            "字号缺失时应按行高比例(0.8×)判为小字"
+        );
+        let cal = crate::pdf::calibration::DocCalibration {
             small_height_ratio: 0.75,
             ..Default::default()
         };
@@ -4313,7 +5691,7 @@ mod tests {
         ];
         let (lo_default, hi_default) = formula_block_range(&flat, 0);
         assert_eq!((lo_default, hi_default), (0, 0), "默认 0.6 比例会断块");
-        let cal = crate::calibration::DocCalibration {
+        let cal = crate::pdf::calibration::DocCalibration {
             vertical_gap_ratio: 0.9,
             ..Default::default()
         };
@@ -4326,7 +5704,7 @@ mod tests {
         let flat = vec![fw(0, "prev.", 8.0, 0.0, 2.0), fw(1, "next", 8.8, 3.0, 2.0)];
         let (lo_default, hi_default) = paragraph_range(&flat, 1);
         assert_eq!((lo_default, hi_default), (0, 1), "默认缩进 1.0 会合并");
-        let cal = crate::calibration::DocCalibration {
+        let cal = crate::pdf::calibration::DocCalibration {
             paragraph_indent_cqw: 0.5,
             ..Default::default()
         };

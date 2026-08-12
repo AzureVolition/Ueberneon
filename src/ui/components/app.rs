@@ -763,8 +763,7 @@ pub fn App() -> Element {
                             BooksPanel {
                                 error_signal: error_signal,
                                 on_open_book: {
-                                    let mut sv = sidebar_view;
-                                    move |id: String| sv.set(SidebarView::Reader(id))
+                                    move |id: String| crate::ui::reader_window::open(id)
                                 },
                             }
                         }

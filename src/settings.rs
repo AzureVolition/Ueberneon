@@ -46,8 +46,8 @@ pub struct AppearanceSettings {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct FormulaOcrSettings {
-    /// 模型目录,包含 libonnxruntime.dylib / model.onnx / dict.json / preprocess.json。
-    /// 为空时使用构建期嵌入的资源或 UEBERNEON_FORMULA_DIR 环境变量。
+    /// 模型目录,包含 manifest.json / model.onnx / tokenizer.json / libonnxruntime.dylib。
+    /// 为空时自动扫描 ~/.ueberneon/formula-models/ 与 UEBERNEON_FORMULA_DIR。
     pub model_dir: Option<String>,
 }
 
