@@ -227,6 +227,7 @@ pub fn Sidebar(
                         SettingsTab::General,
                         SettingsTab::Appearance,
                         SettingsTab::FormulaOcr,
+                        SettingsTab::PageOcr,
                         SettingsTab::Tools,
                         SettingsTab::Skills,
                         SettingsTab::Sql,

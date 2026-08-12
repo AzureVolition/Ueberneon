@@ -30,7 +30,7 @@ pub struct ParseMarker {
 }
 
 /// 叠加层里的一个透明词(按词合并字符,拖动选区更稳定)。
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OverlayWord {
     pub text: String,
     /// 距页面左边缘的百分比(0-100)
@@ -44,7 +44,7 @@ pub struct OverlayWord {
 }
 
 /// 叠加层的一行文本(块级,复制时提供换行)。
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OverlayLine {
     /// 距页面上边缘的百分比
     pub top_pct: f64,
@@ -57,6 +57,13 @@ pub struct OverlayLine {
     pub font_size_pt: f64,
     /// 行内词,按 left 排序
     pub words: Vec<OverlayWord>,
+}
+
+/// 页面是否有可用的 PDFium 文本(供知识库提取与扫描页判定)。
+pub fn page_has_meaningful_text(chars: &[crate::pdf::pdfium::TextChar]) -> bool {
+    chars
+        .iter()
+        .any(|c| !c.ch.is_control() && !c.ch.is_whitespace())
 }
 
 /// 把 PDFium 字符盒(PDF 用户空间,原点左下)换算为透明文本层的相对坐标。
@@ -437,9 +444,12 @@ pub fn extract_pdf_to_md(pdf_path: &Path, book_dir: &Path) -> Result<ParseMarker
         let text = doc
             .page_text(page_index)
             .map_err(|e| anyhow!("提取第 {} 页文本失败:{e}", page_index + 1))?;
-        let md_path = layout::book_page_md_path(&pages_dir, page_index + 1);
-        fs::write(&md_path, text)
-            .with_context(|| format!("写入页面 MD 失败:{}", md_path.display()))?;
+        // 无文本页(扫描页)跳过:由页面 OCR 子系统补写 pages/NNNN.md。
+        if text.chars().any(|c| !c.is_control() && !c.is_whitespace()) {
+            let md_path = layout::book_page_md_path(&pages_dir, page_index + 1);
+            fs::write(&md_path, text)
+                .with_context(|| format!("写入页面 MD 失败:{}", md_path.display()))?;
+        }
     }
 
     let marker = ParseMarker {
@@ -675,6 +685,85 @@ mod tests {
         let md_path = layout::book_page_md_path(&layout::book_pages_dir(&dir), 1);
         let text = fs::read_to_string(&md_path).unwrap();
         assert!(text.contains("Hello PDFium"), "提取文本不完整:{text:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn extract_pdf_to_md_skips_textless_scanned_pages() {
+        let dir = temp_book_dir();
+        let pdf_path = dir.join("original.pdf");
+        fs::write(
+            &pdf_path,
+            include_bytes!("../../tests/fixtures/sample-scanned.pdf"),
+        )
+        .unwrap();
+
+        let marker = extract_pdf_to_md(&pdf_path, &dir).unwrap();
+        assert_eq!(marker.page_count, 1);
+        assert_eq!(read_parse_marker(&dir), Some(marker.clone()));
+        // 扫描页没有 PDFium 文本:不写空 MD,由页面 OCR 子系统补写。
+        let md_path = layout::book_page_md_path(&layout::book_pages_dir(&dir), 1);
+        assert!(!md_path.exists(), "无文本页不应生成空 pages/NNNN.md");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scanned_fixture_renders_without_text_layer() {
+        let dir = temp_book_dir();
+        let pdf_path = dir.join("original.pdf");
+        fs::write(
+            &pdf_path,
+            include_bytes!("../../tests/fixtures/sample-scanned.pdf"),
+        )
+        .unwrap();
+
+        let doc = crate::pdf::pdfium::open(&pdf_path).unwrap();
+        assert_eq!(doc.page_count(), 1);
+        let chars = doc.page_text_chars(0).unwrap();
+        assert!(
+            crate::page_ocr::needs_ocr(&chars),
+            "扫描 fixture 不应有 PDFium 文本"
+        );
+        let text = doc.page_text(0).unwrap();
+        assert!(
+            text.chars().all(|c| c.is_control() || c.is_whitespace()),
+            "扫描 fixture 不应有可提取文本:{text:?}"
+        );
+        let png = doc.render_page_png(0, 1.0).unwrap();
+        let img = image::load_from_memory(&png).unwrap();
+        assert_eq!((img.width(), img.height()), (240, 100));
+        let non_white = img
+            .to_rgb8()
+            .pixels()
+            .filter(|p| p.0 != [255, 255, 255])
+            .count();
+        assert!(
+            non_white > 100,
+            "扫描 fixture 渲染结果几乎是空白:{non_white}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn searchable_fixture_extracts_hidden_text_layer() {
+        let dir = temp_book_dir();
+        let pdf_path = dir.join("original.pdf");
+        fs::write(
+            &pdf_path,
+            include_bytes!("../../tests/fixtures/sample-searchable.pdf"),
+        )
+        .unwrap();
+
+        let doc = crate::pdf::pdfium::open(&pdf_path).unwrap();
+        let text = doc.page_text(0).unwrap();
+        assert!(text.contains("Hello OCR"), "提取文本不完整:{text:?}");
+        assert!(text.contains("你好"), "中文字提取不完整:{text:?}");
+        assert!(text.contains("scanned fixture"), "提取文本不完整:{text:?}");
+        let chars = doc.page_text_chars(0).unwrap();
+        assert!(
+            !crate::page_ocr::needs_ocr(&chars),
+            "可搜索 PDF 有文本层,不应触发 OCR"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

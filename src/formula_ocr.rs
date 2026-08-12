@@ -259,9 +259,7 @@ impl UniMernetRecognizer {
                 lib_path.display()
             )));
         }
-        ort::init_from(&lib_path)
-            .map_err(|e| FormulaOcrError::Ort(format!("init_from({lib_path:?}): {e}")))?
-            .commit();
+        crate::onnx_runtime::ensure_initialized(&lib_path).map_err(FormulaOcrError::Ort)?;
 
         let model_path = dir.join("model.onnx");
         let session = ort::session::Session::builder()

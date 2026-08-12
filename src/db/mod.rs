@@ -381,6 +381,20 @@ fn rebuild_schema(conn: &Connection) -> anyhow::Result<()> {
         conn.execute_batch("PRAGMA user_version = 1;")?;
     }
 
+    // ── 迁移 v2：一次性移除旧版项目内书籍符号链接 ──
+    // 旧的“引入书”机制会在 <项目>/books/ 下建指向全局书库的符号链接，
+    // 已改为纯 project_books 关联。这里清掉历史遗留链接，只执行一次。
+    if schema_version < 2 {
+        if crate::books::cleanup_legacy_book_links(conn).is_ok() {
+            conn.execute_batch("PRAGMA user_version = 2;")?;
+        } else {
+            tracing::warn!(
+                target: "db",
+                "legacy book link cleanup deferred (will retry on next launch)"
+            );
+        }
+    }
+
     // ── Provider 预设 ─────────────────────────────────────────────────────
     // 幂等插入所有内置 provider 预设
     for preset in provider_presets::all_presets() {

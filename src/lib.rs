@@ -13,6 +13,8 @@ pub mod db;
 pub mod formula_ocr;
 pub mod layout;
 pub mod model;
+pub mod onnx_runtime;
+pub mod page_ocr;
 pub mod pdf;
 pub mod permission;
 pub mod settings;

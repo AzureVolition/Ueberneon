@@ -408,6 +408,11 @@ pub fn SettingsPanel(
     let mut formula_model_dir = use_signal(|| settings::get().formula_ocr.model_dir.clone());
     let mut formula_dir_error = use_signal(|| Option::<String>::None);
     let mut discovered_models = use_signal(|| crate::formula_ocr::discover_models());
+    let mut page_ocr_model_dir = use_signal(|| settings::get().page_ocr.model_dir.clone());
+    let mut page_ocr_dir_error = use_signal(|| Option::<String>::None);
+    let mut page_ocr_discovered = use_signal(|| crate::page_ocr::discover_models());
+    let mut page_ocr_auto = use_signal(|| settings::get().page_ocr.auto_ocr);
+    let mut page_ocr_workers = use_signal(|| settings::get().page_ocr.workers);
     let font_options = [
         ("xs", "xs (12px)"),
         ("sm", "sm (14px)"),
@@ -1099,6 +1104,132 @@ pub fn SettingsPanel(
                                                 class: "mode-pill",
                                                 onclick: on_clear,
                                                 "清除配置"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    SettingsTab::PageOcr => {
+                        let on_clear = {
+                            let mut dir = page_ocr_model_dir;
+                            let mut err = page_ocr_dir_error;
+                            move |_| {
+                                settings::update(|c| c.page_ocr.model_dir = None);
+                                dir.set(None);
+                                err.set(None);
+                            }
+                        };
+                        let current_dir = page_ocr_model_dir();
+                        let dir_error = page_ocr_dir_error();
+                        let model_entries = page_ocr_discovered()
+                            .iter()
+                            .map(|m| {
+                                let dir = m.dir.clone();
+                                let name = m.name.clone();
+                                let path = dir.display().to_string();
+                                let active = current_dir.as_deref() == Some(path.as_str());
+                                (dir, name, path, active)
+                            })
+                            .collect::<Vec<_>>();
+                        rsx! {
+                            div { class: "settings-header",
+                                h2 { class: "settings-title", "page ocr" }
+                                span { class: "settings-subtitle", "local ONNX model for scanned pages" }
+                            }
+                            div { class: "settings-section",
+                                div { class: "settings-field",
+                                    label { class: "settings-field-label", "本地模型" }
+                                    div { class: "formula-model-list",
+                                        for (dir, name, path, active) in model_entries {
+                                            button {
+                                                class: if active {
+                                                    "formula-model-item is-active"
+                                                } else {
+                                                    "formula-model-item"
+                                                },
+                                                onclick: move |_| {
+                                                    let s = dir.display().to_string();
+                                                    settings::update(|c| {
+                                                        c.page_ocr.model_dir = Some(s.clone())
+                                                    });
+                                                    page_ocr_model_dir.set(Some(s));
+                                                    page_ocr_dir_error.set(None);
+                                                },
+                                                span { class: "formula-model-item-name", "{name}" }
+                                                span { class: "formula-model-item-path", "{path}" }
+                                            }
+                                        }
+                                        if page_ocr_discovered().is_empty() {
+                                            div { class: "formula-model-empty",
+                                                "未发现模型:下载模型包(含 manifest.json / det_model.onnx / rec_model.onnx / rec_dict.txt),把整个目录放到 ~/.ueberneon/page-ocr-models/ 后刷新"
+                                            }
+                                        }
+                                    }
+                                    div { class: "mode-pill-row",
+                                        button {
+                                            class: "mode-pill",
+                                            onclick: move |_| {
+                                                page_ocr_discovered
+                                                    .set(crate::page_ocr::discover_models())
+                                            },
+                                            "刷新模型列表"
+                                        }
+                                    }
+                                }
+                                div { class: "settings-field",
+                                    label { class: "settings-field-label", "model directory" }
+                                    if let Some(d) = current_dir.as_ref() {
+                                        div { class: "formula-model-path", "{d}" }
+                                    } else {
+                                        div { class: "formula-model-path is-empty", "未配置:扫描页保持纯图片,阅读器可逐页手动 OCR" }
+                                    }
+                                    if let Some(e) = dir_error.as_ref() {
+                                        div { class: "formula-model-error", "{e}" }
+                                    }
+                                    div { class: "mode-pill-row",
+                                        if current_dir.is_some() {
+                                            button {
+                                                class: "mode-pill",
+                                                onclick: on_clear,
+                                                "清除配置"
+                                            }
+                                        }
+                                    }
+                                }
+                                div { class: "settings-field",
+                                    label { class: "settings-field-label", "导入后自动整本 OCR" }
+                                    div { class: "mode-pill-row",
+                                        for (key, label) in [("on", "开启"), ("off", "关闭")] {
+                                            button {
+                                                class: if page_ocr_auto() == (key == "on") { "mode-pill is-active" } else { "mode-pill" },
+                                                onclick: {
+                                                    let v = key == "on";
+                                                    move |_| {
+                                                        settings::update(|c| c.page_ocr.auto_ocr = v);
+                                                        page_ocr_auto.set(v);
+                                                    }
+                                                },
+                                                "{label}"
+                                            }
+                                        }
+                                    }
+                                }
+                                div { class: "settings-field",
+                                    label { class: "settings-field-label", "并行 worker 数" }
+                                    div { class: "mode-pill-row",
+                                        for n in 1u32..=4 {
+                                            button {
+                                                class: if page_ocr_workers() == n { "mode-pill is-active" } else { "mode-pill" },
+                                                onclick: {
+                                                    let n = n;
+                                                    move |_| {
+                                                        settings::update(|c| c.page_ocr.workers = n);
+                                                        page_ocr_workers.set(n);
+                                                    }
+                                                },
+                                                "{n}"
                                             }
                                         }
                                     }

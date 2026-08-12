@@ -1,8 +1,8 @@
 // ── 全局书库 ──
 //
 // 书库以磁盘为真相：~/.ueberneon/books/<书目录>/ 下的目录在启动时同步进 books 表。
-// 项目通过 project_books 多对多关联「引入」书，并在 <项目>/books/<书名> 建符号链接，
-// 使 Agent 在项目工作区内即可读取书的内容；书的内容始终只存在全局书库，不复制进项目。
+// 项目通过 project_books 多对多关联「引入」书；书的内容始终只存在全局书库，
+// 不复制进项目。Agent 读取书内容后续通过独立工具按库路径访问。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -152,6 +152,68 @@ pub fn import_pdf_file(conn: &Connection, source: &Path) -> Result<String> {
     import_pdf_file_at(conn, source, &layout::books_root())
 }
 
+/// 删除一本书:移除项目关联、删除数据库记录,并移除书目录。
+/// 书目录不在全局书库根目录内(外部路径)时只删记录,不触碰磁盘。
+pub fn delete(conn: &Connection, id: &str) -> Result<()> {
+    delete_at(conn, id, &layout::books_root())
+}
+
+/// 一次性清理旧版本在 <项目>/books/ 下创建的符号链接（迁移 v2 调用）。
+/// 只删除链接本身，普通文件/目录不动；链接清空后目录为空则移除目录。
+pub(crate) fn cleanup_legacy_book_links(conn: &Connection) -> Result<()> {
+    let projects = crate::db::metadata::project::list(conn)?;
+    for project in &projects {
+        let books_dir = PathBuf::from(&project.path).join("books");
+        let Ok(entries) = std::fs::read_dir(&books_dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Ok(meta) = std::fs::symlink_metadata(&path) {
+                if meta.file_type().is_symlink() {
+                    if let Err(e) = std::fs::remove_file(&path) {
+                        tracing::warn!(
+                            target: "books",
+                            path = %path.display(),
+                            error = %e,
+                            "failed to remove legacy book link"
+                        );
+                    }
+                }
+            }
+        }
+        let _ = std::fs::remove_dir(&books_dir);
+    }
+    Ok(())
+}
+
+/// 删除入口(测试可注入书库根目录)
+fn delete_at(conn: &Connection, id: &str, root: &Path) -> Result<()> {
+    let Some(book) = get(conn, id)? else {
+        return Err(anyhow!("book not found: {id}"));
+    };
+
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("DELETE FROM project_books WHERE book_id = ?1", params![id])?;
+    tx.execute("DELETE FROM books WHERE id = ?1", params![id])?;
+    tx.commit()?;
+
+    // 书目录在应用书库根目录内才删除,外部路径只清记录。
+    let dir = PathBuf::from(&book.path);
+    if dir.starts_with(root) && dir != root {
+        if let Err(e) = std::fs::remove_dir_all(&dir) {
+            tracing::warn!(
+                target: "books",
+                book = %id,
+                error = %e,
+                path = %dir.display(),
+                "failed to remove book dir"
+            );
+        }
+    }
+    Ok(())
+}
+
 /// 导入入口（测试可注入书库根目录）
 fn import_pdf_file_at(conn: &Connection, source: &Path, root: &Path) -> Result<String> {
     let name = source
@@ -195,7 +257,6 @@ fn import_pdf_file_at(conn: &Connection, source: &Path, root: &Path) -> Result<S
 /// 书库对账（books 表为唯一来源）：
 /// - 确保 books 根目录存在；
 /// - 为每本已有记录补齐缺失的书目录；
-/// - 补齐各项目已引入书的符号链接。
 /// 不再扫描 books/ 下任意文件夹生成新书（手动放置的文件夹不会被发现）。
 pub fn sync_from_disk(conn: &Connection) -> Result<()> {
     let root = layout::books_root();
@@ -218,16 +279,15 @@ fn sync_from_disk_with_root(conn: &Connection, root: &Path) -> Result<()> {
         }
     }
 
-    sync_all_project_links(conn)?;
     Ok(())
 }
 
-/// 项目引入书：写入关联 + 建符号链接
+/// 项目引入书：写入关联
 pub fn add_to_project(conn: &Connection, project_id: &str, book_id: &str) -> Result<(), String> {
-    let project = crate::db::metadata::project::get(conn, project_id)
+    crate::db::metadata::project::get(conn, project_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "project not found".to_string())?;
-    let book = get(conn, book_id)
+    get(conn, book_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "book not found".to_string())?;
 
@@ -237,20 +297,19 @@ pub fn add_to_project(conn: &Connection, project_id: &str, book_id: &str) -> Res
         params![project_id, book_id, now_rfc3339()],
     )
     .map_err(|e| e.to_string())?;
-
-    link_book(Path::new(&project.path), &book).map_err(|e| e.to_string())
+    Ok(())
 }
 
-/// 项目移除书：删除关联 + 移除符号链接
+/// 项目移除书：删除关联
 pub fn remove_from_project(
     conn: &Connection,
     project_id: &str,
     book_id: &str,
 ) -> Result<(), String> {
-    let project = crate::db::metadata::project::get(conn, project_id)
+    crate::db::metadata::project::get(conn, project_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "project not found".to_string())?;
-    let book = get(conn, book_id)
+    get(conn, book_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "book not found".to_string())?;
 
@@ -259,79 +318,6 @@ pub fn remove_from_project(
         params![project_id, book_id],
     )
     .map_err(|e| e.to_string())?;
-
-    let link = layout::project_books_dir(Path::new(&project.path)).join(&book.name);
-    if let Ok(meta) = std::fs::symlink_metadata(&link) {
-        if meta.file_type().is_symlink() {
-            std::fs::remove_file(&link)
-                .map_err(|e| format!("failed to remove book link {}: {e}", link.display()))?;
-        }
-    }
-    Ok(())
-}
-
-/// 为所有项目的已引入书补齐缺失的符号链接（启动时调用，幂等）
-fn sync_all_project_links(conn: &Connection) -> Result<()> {
-    let projects = crate::db::metadata::project::list(conn)?;
-    for project in &projects {
-        let book_ids = project_book_ids(conn, &project.id)?;
-        for book_id in book_ids {
-            let Some(book) = get(conn, &book_id)? else {
-                continue;
-            };
-            if let Err(e) = link_book(Path::new(&project.path), &book) {
-                tracing::warn!(
-                    target: "books",
-                    project = %project.id,
-                    book = %book.name,
-                    error = %e,
-                    "failed to link book into project"
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
-/// 在 <项目>/books/<书名> 建符号链接指向全局书库中的书
-fn link_book(project_dir: &Path, book: &BookRow) -> Result<(), String> {
-    let books_dir = layout::project_books_dir(project_dir);
-    std::fs::create_dir_all(&books_dir)
-        .map_err(|e| format!("failed to create {}: {e}", books_dir.display()))?;
-
-    let link = books_dir.join(&book.name);
-    if let Ok(meta) = std::fs::symlink_metadata(&link) {
-        if meta.file_type().is_symlink() {
-            return Ok(()); // 已链接
-        }
-        return Err(format!(
-            "cannot link book '{}': '{}' already exists and is not a link",
-            book.name,
-            link.display()
-        ));
-    }
-
-    let target = PathBuf::from(&book.path);
-    #[cfg(unix)]
-    {
-        std::os::unix::fs::symlink(&target, &link).map_err(|e| {
-            format!(
-                "failed to create link {} -> {}: {e}",
-                link.display(),
-                target.display()
-            )
-        })?;
-    }
-    #[cfg(windows)]
-    {
-        std::os::windows::fs::symlink_dir(&target, &link).map_err(|e| {
-            format!(
-                "failed to create link {} -> {}: {e} (symbolic links may require developer mode)",
-                link.display(),
-                target.display()
-            )
-        })?;
-    }
     Ok(())
 }
 
@@ -407,10 +393,10 @@ mod tests {
     }
 
     #[test]
-    fn add_remove_creates_and_removes_link() {
+    fn add_remove_tracks_project_association_only() {
         let conn = test_conn();
         let root =
-            std::env::temp_dir().join(format!("ueberneon-books-link-test-{}", std::process::id()));
+            std::env::temp_dir().join(format!("ueberneon-books-ref-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("library").join("book-b1")).unwrap();
         std::fs::create_dir_all(root.join("projects").join("p1")).unwrap();
@@ -431,16 +417,148 @@ mod tests {
         let book_id = books[0].id.clone();
 
         add_to_project(&conn, "p1", &book_id).unwrap();
-        let link = layout::project_books_dir(&project_path).join("analysis");
-        assert!(
-            std::fs::symlink_metadata(&link)
-                .unwrap()
-                .file_type()
-                .is_symlink()
-        );
+        let refs: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM project_books WHERE book_id = ?1",
+                params![&book_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(refs, 1, "引入书应写入 project_books 关联");
 
         remove_from_project(&conn, "p1", &book_id).unwrap();
-        assert!(!link.exists());
+        let refs: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM project_books WHERE book_id = ?1",
+                params![&book_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(refs, 0, "移除书应删除 project_books 关联");
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn delete_removes_row_and_managed_dir() {
+        let conn = test_conn();
+        let root = std::env::temp_dir().join(format!(
+            "ueberneon-books-delete-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("library").join("book-b1")).unwrap();
+        std::fs::create_dir_all(root.join("projects").join("p1")).unwrap();
+        std::fs::write(
+            root.join("library").join("book-b1").join("original.pdf"),
+            b"pdf",
+        )
+        .unwrap();
+
+        let project_path = root.join("projects").join("p1");
+        insert_project(&conn, "p1", project_path.to_str().unwrap());
+        conn.execute(
+            "INSERT INTO books (id, name, path, created_at) VALUES ('b1', 'analysis', ?1, ?2)",
+            params![
+                root.join("library").join("book-b1").display().to_string(),
+                now_rfc3339()
+            ],
+        )
+        .unwrap();
+
+        add_to_project(&conn, "p1", "b1").unwrap();
+
+        delete_at(&conn, "b1", &root.join("library")).unwrap();
+
+        assert!(get(&conn, "b1").unwrap().is_none(), "books 行应被删除");
+        assert!(
+            !root.join("library").join("book-b1").exists(),
+            "书库目录应被删除"
+        );
+        let project_count: i64 = conn
+            .query_row("SELECT count(*) FROM projects WHERE id = 'p1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(project_count, 1, "删除书不应删除项目");
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn delete_keeps_external_book_dir() {
+        let conn = test_conn();
+        let root = std::env::temp_dir().join(format!(
+            "ueberneon-books-external-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("library")).unwrap();
+        std::fs::create_dir_all(root.join("external")).unwrap();
+        std::fs::write(root.join("external").join("original.pdf"), b"pdf").unwrap();
+
+        conn.execute(
+            "INSERT INTO books (id, name, path, created_at) VALUES ('b1', 'external', ?1, ?2)",
+            params![root.join("external").display().to_string(), now_rfc3339()],
+        )
+        .unwrap();
+
+        delete_at(&conn, "b1", &root.join("library")).unwrap();
+
+        assert!(get(&conn, "b1").unwrap().is_none());
+        assert!(
+            root.join("external").exists(),
+            "书库根目录外的书目录不应被删除"
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_legacy_links_removes_symlinks_only() {
+        let conn = test_conn();
+        let root = std::env::temp_dir().join(format!(
+            "ueberneon-books-cleanup-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let p1 = root.join("projects").join("p1");
+        let p2 = root.join("projects").join("p2");
+        std::fs::create_dir_all(p1.join("books")).unwrap();
+        std::fs::create_dir_all(p2.join("books")).unwrap();
+        std::fs::create_dir_all(root.join("library")).unwrap();
+        std::os::unix::fs::symlink(
+            root.join("library").join("book-b1"),
+            p1.join("books").join("book-a"),
+        )
+        .unwrap();
+        std::fs::write(p1.join("books").join("notes.txt"), b"manual").unwrap();
+        std::os::unix::fs::symlink(
+            root.join("library").join("book-b2"),
+            p2.join("books").join("book-b"),
+        )
+        .unwrap();
+
+        insert_project(&conn, "p1", p1.to_str().unwrap());
+        insert_project(&conn, "p2", p2.to_str().unwrap());
+
+        cleanup_legacy_book_links(&conn).unwrap();
+
+        assert!(
+            !p1.join("books").join("book-a").exists(),
+            "旧符号链接应被删除"
+        );
+        assert!(
+            p1.join("books").join("notes.txt").is_file(),
+            "普通文件不应被删除"
+        );
+        assert!(p1.join("books").is_dir(), "仍含普通文件的 books 目录应保留");
+        assert!(
+            !p2.join("books").exists(),
+            "清空后只剩空 books 目录应被移除"
+        );
 
         std::fs::remove_dir_all(&root).unwrap();
     }

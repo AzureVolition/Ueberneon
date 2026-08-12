@@ -17,6 +17,9 @@ pub struct AppSettings {
     /// 公式识别(ONNX)配置:模型目录,支持运行时切换其它模型。
     #[serde(default)]
     pub formula_ocr: FormulaOcrSettings,
+    /// 页面 OCR(ONNX)配置:模型目录、自动整本 OCR、并行 worker 数。
+    #[serde(default)]
+    pub page_ocr: PageOcrSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,6 +54,28 @@ pub struct FormulaOcrSettings {
     pub model_dir: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PageOcrSettings {
+    /// 模型目录,包含 manifest.json / det_model.onnx / rec_model.onnx / rec_dict.txt。
+    /// 为空时自动扫描 ~/.ueberneon/page-ocr-models/ 与 UEBERNEON_PAGE_OCR_DIR。
+    pub model_dir: Option<String>,
+    /// 导入书后是否自动后台整本 OCR(无文本页)。
+    pub auto_ocr: bool,
+    /// 并行 worker 数(1..=4)。
+    pub workers: u32,
+}
+
+impl Default for PageOcrSettings {
+    fn default() -> Self {
+        Self {
+            model_dir: None,
+            auto_ocr: true,
+            workers: 3,
+        }
+    }
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -67,6 +92,7 @@ impl Default for AppSettings {
                 ui_density: "comfortable".into(),
             },
             formula_ocr: FormulaOcrSettings::default(),
+            page_ocr: PageOcrSettings::default(),
         }
     }
 }
@@ -149,6 +175,9 @@ mod tests {
     fn formula_ocr_defaults_to_none() {
         let s = AppSettings::default();
         assert!(s.formula_ocr.model_dir.is_none());
+        assert!(s.page_ocr.auto_ocr);
+        assert_eq!(s.page_ocr.workers, 3);
+        assert!(s.page_ocr.model_dir.is_none());
     }
 
     #[test]
@@ -156,5 +185,7 @@ mod tests {
         let old = r#"{"general":{"default_agent_config_id":"","default_action_mode":"regular","default_agent_mode":"ask","default_subagent_provider_instance_id":"","default_subagent_model":""},"appearance":{"font_size":"md","code_font":"jetbrains-mono","ui_density":"comfortable"}}"#;
         let parsed: AppSettings = serde_json::from_str(old).unwrap();
         assert!(parsed.formula_ocr.model_dir.is_none());
+        assert!(parsed.page_ocr.auto_ocr);
+        assert_eq!(parsed.page_ocr.workers, 3);
     }
 }

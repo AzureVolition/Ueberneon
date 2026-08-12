@@ -705,7 +705,7 @@ pub fn App() -> Element {
                                 })
                         });
                         match tab {
-                            SettingsTab::Providers | SettingsTab::General | SettingsTab::Appearance | SettingsTab::FormulaOcr | SettingsTab::Sql | SettingsTab::Tools | SettingsTab::Skills => {
+                            SettingsTab::Providers | SettingsTab::General | SettingsTab::Appearance | SettingsTab::FormulaOcr | SettingsTab::PageOcr | SettingsTab::Sql | SettingsTab::Tools | SettingsTab::Skills => {
                                 rsx! {
                                     SettingsPanel {
                                         tab: tab.clone(),

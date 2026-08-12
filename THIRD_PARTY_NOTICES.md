@@ -42,7 +42,13 @@ https://github.com/microsoft/onnxruntime
 ## PP-FormulaNet_plus-S
 
 公式识别模型 PP-FormulaNet_plus-S(PaddlePaddle 团队)按需通过
-`scripts/export_formula_onnx.py` 导出并嵌入,许可为 Apache-2.0。
+`scripts/export_unimernet_onnx.py` 导出并嵌入,许可为 Apache-2.0。
+https://github.com/PaddlePaddle/PaddleOCR
+
+## PaddleOCR PP-OCRv6
+
+页面 OCR 模型 PP-OCRv6(det + cls + rec,PaddlePaddle 团队,由 RapidAI/RapidOCR
+托管为 ONNX)按需通过 `scripts/export_paddle_ocr_onnx.py` 下载,许可为 Apache-2.0。
 https://github.com/PaddlePaddle/PaddleOCR
 
 ## ort(ONNX Runtime Rust 绑定)

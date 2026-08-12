@@ -57,6 +57,21 @@ pub fn book_parse_marker_path(book_dir: &Path) -> PathBuf {
     book_dir.join("parsed.json")
 }
 
+/// 书目录内的 OCR 缓存目录:<book_dir>/ocr/
+pub fn book_ocr_dir(book_dir: &Path) -> PathBuf {
+    book_dir.join("ocr")
+}
+
+/// 单页 OCR 词行文件路径:<ocr_dir>/<NNNN>.json(页码从 1 开始)
+pub fn book_ocr_page_path(ocr_dir: &Path, page_1based: u32) -> PathBuf {
+    ocr_dir.join(format!("{page_1based:04}.json"))
+}
+
+/// OCR 进度文件:<book_dir>/ocr/progress.json
+pub fn book_ocr_progress_path(book_dir: &Path) -> PathBuf {
+    book_ocr_dir(book_dir).join("progress.json")
+}
+
 /// 默认项目目录 ~/.ueberneon/projects/ueberneon-default
 pub fn default_project_dir() -> PathBuf {
     projects_root().join("ueberneon-default")
@@ -65,11 +80,6 @@ pub fn default_project_dir() -> PathBuf {
 /// 项目内的笔记目录
 pub fn project_note_dir(project_dir: &Path) -> PathBuf {
     project_dir.join("note")
-}
-
-/// 项目内书链接目录（链接指向全局书库，内容不复制）
-pub fn project_books_dir(project_dir: &Path) -> PathBuf {
-    project_dir.join("books")
 }
 
 /// 清洗目录名：替换非法/危险字符为 `-`，空名回退为 `project`

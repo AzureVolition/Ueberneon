@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """生成 tests/fixtures/sample.pdf:单页、含文本 "Hello PDFium" 的最小 PDF。
 
-用途:PDFium FFI 层测试的固定输入。文件很小,直接提交到仓库。
+扫描版 fixture(sample-scanned.pdf)由 make_scanned_pdf.swift +
+sips + build_scanned_pdf.py 生成,不要用本脚本覆盖。
 """
 
 from pathlib import Path

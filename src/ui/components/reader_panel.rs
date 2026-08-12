@@ -189,6 +189,8 @@ struct RenderedPage {
     small: Vec<FlatWord>,
     w_pt: f32,
     h_pt: f32,
+    /// OCR 页的提示(未配置模型/识别失败);文本页为 None。
+    warning: Option<String>,
 }
 
 struct ReaderSession {
@@ -223,6 +225,8 @@ struct ReaderSession {
     translation: Option<TranslationCardState>,
     /// 翻译卡片代数:每次发起翻译 +1,过期响应据此丢弃。
     translation_gen: u64,
+    /// 是否已提示过页面 OCR 模型缺失/失败(每本书只提示一次)。
+    ocr_warning_shown: bool,
 }
 
 /// 按页面宽度自适应缩放：常规页面用 RENDER_SCALE，超大页面降采样到
@@ -261,16 +265,35 @@ fn page_image(
 /// 构建某页的文字层（字符提取 + overlay + 分层）。
 fn page_overlay(
     doc: &PdfDocument,
+    book_dir: &Path,
     page_index: u32,
     w: f32,
     h: f32,
-) -> Result<(Vec<FlatWord>, Vec<FlatWord>), String> {
+) -> Result<(Vec<FlatWord>, Vec<FlatWord>, Option<String>), String> {
     let chars = doc
         .page_text_chars(page_index)
         .map_err(|e| format!("{e:#}"))?;
+    if crate::page_ocr::needs_ocr(&chars) {
+        return match crate::page_ocr::overlay_for_page(book_dir, page_index + 1, doc) {
+            Ok(Some(lines)) => {
+                let mut body = build_flat(&lines);
+                assign_gestures(&mut body);
+                Ok((body, Vec::new(), None))
+            }
+            Ok(None) => Ok((
+                Vec::new(),
+                Vec::new(),
+                Some(
+                    "未配置页面 OCR 模型:扫描页暂不能选中文字,可在设置或工具栏配置后重试"
+                        .to_string(),
+                ),
+            )),
+            Err(e) => Ok((Vec::new(), Vec::new(), Some(format!("页面 OCR 失败:{e}")))),
+        };
+    }
     let overlay = crate::pdf::build_text_overlay(&chars, w as f64, h as f64);
     let (body, small) = classify_words(&overlay);
-    Ok((body, small))
+    Ok((body, small, None))
 }
 
 /// 图片 + 文字层一次完成（唯一渲染 worker 与初始打开用）。
@@ -282,13 +305,14 @@ fn render_page_with_overlay(
     let (w, _h) = doc.page_size(page_index).map_err(|e| format!("{e:#}"))?;
     let scale = render_scale_for_page(w);
     let (src, w_pt, h_pt) = page_image(doc, book_dir, page_index, scale)?;
-    let (body, small) = page_overlay(doc, page_index, w_pt, h_pt)?;
+    let (body, small, warning) = page_overlay(doc, book_dir, page_index, w_pt, h_pt)?;
     Ok(RenderedPage {
         src,
         body,
         small,
         w_pt,
         h_pt,
+        warning,
     })
 }
 
@@ -3610,6 +3634,18 @@ fn spawn_render_worker(
                 }
                 match result {
                     Ok(Ok(rendered)) => {
+                        if let Some(warn) = rendered.warning.as_ref() {
+                            if !inner.ocr_warning_shown {
+                                inner.ocr_warning_shown = true;
+                                error_signal.write().push(ErrorInfo::new(
+                                    "reader-ocr-unavailable",
+                                    "页面 OCR 不可用",
+                                    warn.clone(),
+                                    ErrorSeverity::Warning,
+                                    ErrorSource::General,
+                                ));
+                            }
+                        }
                         inner.cache.insert(page, rendered);
                         evict_cache(inner, inner.render_target.unwrap_or(page));
                     }
@@ -3684,6 +3720,18 @@ fn spawn_render_worker(
                         }
                     }
                     if let Ok(Ok(rendered)) = result {
+                        if let Some(warn) = rendered.warning.as_ref() {
+                            if !inner.ocr_warning_shown {
+                                inner.ocr_warning_shown = true;
+                                error_signal.write().push(ErrorInfo::new(
+                                    "reader-ocr-unavailable",
+                                    "页面 OCR 不可用",
+                                    warn.clone(),
+                                    ErrorSeverity::Warning,
+                                    ErrorSource::General,
+                                ));
+                            }
+                        }
                         inner.cache.insert(p, rendered);
                         evict_cache(inner, inner.render_target.unwrap_or(page));
                     }
@@ -3834,6 +3882,7 @@ pub fn ReaderPanel(
                 Ok(Ok((book_name, _doc, page_count, first, book_dir, page_ratio_prefix))) => {
                     let _ = desktop.set_title(&format!("UeberNeon — {book_name}"));
                     let mut cache = HashMap::new();
+                    let first_warning = first.warning.clone();
                     cache.insert(1, first);
                     session.set(Some(ReaderSession {
                         doc: _doc.clone(),
@@ -3856,9 +3905,25 @@ pub fn ReaderPanel(
                         action_bar_gen: 0,
                         translation: None,
                         translation_gen: 0,
+                        ocr_warning_shown: false,
                     }));
+                    if let Some(warn) = first_warning {
+                        if let Some(inner) = session.write().as_mut() {
+                            inner.ocr_warning_shown = true;
+                        }
+                        error_signal.write().push(ErrorInfo::new(
+                            "reader-ocr-unavailable",
+                            "页面 OCR 不可用",
+                            warn,
+                            ErrorSeverity::Warning,
+                            ErrorSource::General,
+                        ));
+                    }
                     // 启动唯一渲染 worker：首页已就绪，直接进入预取相邻页。
                     spawn_render_worker(session, error_signal, page_loading);
+
+                    // 打开书时补跑后台 OCR(未配置模型时静默跳过)。
+                    crate::page_ocr::manager().ensure_started(&parse_id);
 
                     // 目录后台加载：书签优先，无书签时字号识别（可能较慢）。
                     {
@@ -4032,6 +4097,70 @@ pub fn ReaderPanel(
         let mut z = zoom;
         let next = (z() as i64 + ZOOM_STEP as i64).clamp(ZOOM_MIN as i64, ZOOM_MAX as i64) as u32;
         z.set(next);
+    };
+
+    // 「本页 OCR」:强制重跑当前页(处理扫描页 / 有字形但提取损坏的页面),
+    // 完成后清缓存并提升渲染 epoch,让唯一渲染 worker 用 OCR 词层重绘。
+    let on_page_ocr = {
+        let session = session;
+        let page_loading = page_loading;
+        let error_signal = error_signal;
+        move |_| {
+            let Some((book_dir, doc)) = session
+                .read()
+                .as_ref()
+                .map(|s| (s.book_dir.clone(), s.doc.clone()))
+            else {
+                return;
+            };
+            let page = *current_page.read();
+            spawn(async move {
+                let mut session = session;
+                let mut page_loading = page_loading;
+                let mut error_signal = error_signal;
+                let result = tokio::task::spawn_blocking(move || {
+                    crate::page_ocr::reocr_page(&book_dir, page, &doc)
+                })
+                .await;
+                match &result {
+                    Ok(Ok(_)) => {
+                        if let Some(inner) = session.write().as_mut() {
+                            inner.cache.remove(&page);
+                            inner.render_epoch += 1;
+                            inner.render_target = Some(page);
+                        }
+                        page_loading.set(Some(page));
+                        if let Ok(Ok(None)) = &result {
+                            error_signal.write().push(ErrorInfo::new(
+                                "reader-ocr-unavailable",
+                                "未配置页面 OCR 模型",
+                                "请把本地 ONNX 模型包放到 ~/.ueberneon/page-ocr-models/ 并在设置中启用",
+                                ErrorSeverity::Warning,
+                                ErrorSource::General,
+                            ));
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        error_signal.write().push(ErrorInfo::new(
+                            "reader-ocr-failed",
+                            "页面 OCR 失败",
+                            e.to_string(),
+                            ErrorSeverity::Warning,
+                            ErrorSource::General,
+                        ));
+                    }
+                    Err(e) => {
+                        error_signal.write().push(ErrorInfo::new(
+                            "reader-ocr-failed",
+                            "页面 OCR 失败",
+                            format!("{e}"),
+                            ErrorSeverity::Warning,
+                            ErrorSource::General,
+                        ));
+                    }
+                }
+            });
+        }
     };
 
     let (book_name, page_count, zoom_now, selection, copy_busy, action_bar, translation) = session
@@ -4247,6 +4376,11 @@ pub fn ReaderPanel(
                     class: "reader-toolbar",
                     if copy_busy {
                         span { class: "reader-copy-status", "识别公式中…" }
+                    }
+                    button {
+                        class: "btn btn-cancel",
+                        onclick: on_page_ocr,
+                        "本页 OCR"
                     }
                     button {
                         class: "btn btn-cancel",
@@ -5366,6 +5500,7 @@ mod tests {
                 small: Vec::new(),
                 w_pt: 1.0,
                 h_pt: 1.0,
+                warning: None,
             }
         }
         let mut cache: HashMap<u32, RenderedPage> = (1..=10).map(|p| (p, page(p))).collect();

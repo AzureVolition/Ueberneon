@@ -55,6 +55,15 @@
 
 Agent 可以先生成一个分步计划（PlanNode 树），经用户审批后转换为 CompletionQueue 逐步执行，确保复杂任务的可控性。
 
+### 扫描版 PDF OCR
+
+导入扫描版 PDF 后，应用会自动检测没有文本层的页，并调用本地 ONNX 模型（默认 PaddleOCR PP-OCRv6 多语言 small，det + cls + rec）进行 OCR：
+
+- 把模型包（含 `manifest.json` / `det_model.onnx` / `rec_model.onnx` / `rec_dict.txt`，可选 `cls_model.onnx` / `libonnxruntime.dylib`）放到 `~/.ueberneon/page-ocr-models/<模型名>/`，或在设置 → page ocr 中选择模型目录；
+- 识别结果写入 `<书目录>/ocr/<页码>.json`（词级坐标，供阅读器透明选区与复制）和 `<书目录>/pages/<页码>.md`（知识库文本）；
+- 扫描页与正常文本页的选中、复制、翻译交互一致；阅读器工具栏的「本页 OCR」可强制重跑当前页。
+- 模型下载脚本见 `scripts/export_paddle_ocr_onnx.py`（`UEBERNEON_PAGE_OCR_SIZE=tiny|small|medium` 可切换档位，默认 small）。
+
 ### 权限系统
 
 组合式 Check 模式：`Deny > Ask > Allow`，支持按工具、按路径、按操作类型的细粒度权限控制。
