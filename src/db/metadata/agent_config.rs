@@ -22,6 +22,17 @@ pub struct AgentConfigRow {
     pub updated_at: String,
 }
 
+/// 子代理是否已有可用配置:行内 provider+model 已填,或设置了
+/// 「默认 SubAgent Provider/Model」(运行时由 AgentManager 兜底套用)。
+pub fn subagent_effectively_configured(row: &AgentConfigRow) -> bool {
+    if !row.model.is_empty() && !row.provider_instance_id.is_empty() {
+        return true;
+    }
+    let s = crate::settings::get();
+    !s.general.default_subagent_provider_instance_id.is_empty()
+        && !s.general.default_subagent_model.is_empty()
+}
+
 #[derive(Debug)]
 pub enum AgentType {
     InBuilt,
@@ -221,4 +232,45 @@ pub fn load_group_ids(conn: &Connection, agent_config_id: &str) -> Result<Vec<St
     )?;
     let rows = stmt.query_map(params![agent_config_id], |row| row.get::<_, String>(0))?;
     rows.collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(model: &str, inst: &str) -> AgentConfigRow {
+        AgentConfigRow {
+            id: "t".into(),
+            name: "t".into(),
+            agent_type: "SubAgent".into(),
+            provider_instance_id: inst.into(),
+            model: model.into(),
+            base_url: String::new(),
+            api_key: String::new(),
+            system_prompt: String::new(),
+            temperature: 0.0,
+            max_tokens: None,
+            context_window: None,
+            tools: "[]".into(),
+            description: String::new(),
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn subagent_configured_when_row_has_model_and_instance() {
+        assert!(subagent_effectively_configured(&row(
+            "deepseek-v4-flash",
+            "inst-1"
+        )));
+    }
+
+    #[test]
+    fn subagent_unconfigured_without_row_or_defaults() {
+        let s = crate::settings::get();
+        let has_defaults = !s.general.default_subagent_provider_instance_id.is_empty()
+            && !s.general.default_subagent_model.is_empty();
+        assert_eq!(subagent_effectively_configured(&row("", "")), has_defaults);
+    }
 }

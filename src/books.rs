@@ -192,11 +192,28 @@ fn delete_at(conn: &Connection, id: &str, root: &Path) -> Result<()> {
     let Some(book) = get(conn, id)? else {
         return Err(anyhow!("book not found: {id}"));
     };
+    let chat_conv_id = crate::db::metadata::book_chat::get_by_book(conn, id)?
+        .map(|r| r.conversation_id);
 
     let tx = conn.unchecked_transaction()?;
     tx.execute("DELETE FROM project_books WHERE book_id = ?1", params![id])?;
+    tx.execute(
+        "DELETE FROM messages WHERE conversation_id IN
+         (SELECT conversation_id FROM book_chats WHERE book_id = ?1)",
+        params![id],
+    )?;
+    tx.execute(
+        "DELETE FROM conversations WHERE id IN
+         (SELECT conversation_id FROM book_chats WHERE book_id = ?1)",
+        params![id],
+    )?;
+    tx.execute("DELETE FROM book_chats WHERE book_id = ?1", params![id])?;
     tx.execute("DELETE FROM books WHERE id = ?1", params![id])?;
     tx.commit()?;
+
+    if let Some(cid) = chat_conv_id {
+        crate::state_agent::manager::AgentManager::get().remove(&cid);
+    }
 
     // 书目录在应用书库根目录内才删除,外部路径只清记录。
     let dir = PathBuf::from(&book.path);
@@ -348,6 +365,29 @@ mod tests {
                 book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
                 created_at TEXT NOT NULL,
                 PRIMARY KEY (project_id, book_id)
+            );
+            CREATE TABLE conversations (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id),
+                parent_conversation_id TEXT,
+                title TEXT DEFAULT '',
+                updated_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                agent_config_id TEXT,
+                status TEXT NOT NULL DEFAULT 'active'
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id TEXT NOT NULL REFERENCES conversations(id),
+                role TEXT NOT NULL,
+                content TEXT,
+                timestamp TEXT NOT NULL,
+                active TEXT NOT NULL DEFAULT 'active'
+            );
+            CREATE TABLE book_chats (
+                book_id TEXT PRIMARY KEY REFERENCES books(id) ON DELETE CASCADE,
+                conversation_id TEXT NOT NULL UNIQUE REFERENCES conversations(id) ON DELETE CASCADE,
+                created_at TEXT NOT NULL
             );",
         )
         .unwrap();

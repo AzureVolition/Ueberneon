@@ -88,12 +88,40 @@ pub fn create(
     parent_conversation_id: Option<&str>,
     agent_config_id: Option<&str>,
 ) -> Result<String> {
+    create_with_status(
+        conn,
+        project_id,
+        title,
+        parent_conversation_id,
+        agent_config_id,
+        ConversationStatus::Active,
+    )
+}
+
+/// 创建指定状态的对话，返回新 id（书聊等隐藏对话用 SubAgent）。
+pub fn create_with_status(
+    conn: &Connection,
+    project_id: &str,
+    title: &str,
+    parent_conversation_id: Option<&str>,
+    agent_config_id: Option<&str>,
+    status: ConversationStatus,
+) -> Result<String> {
     let id = generate_conversation_id();
     let now = chrono::Local::now().to_rfc3339();
     conn.execute(
-        "INSERT INTO conversations (id, project_id, parent_conversation_id, title, updated_at, created_at, agent_config_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![id, project_id, parent_conversation_id, title, now, now, agent_config_id],
+        "INSERT INTO conversations (id, project_id, parent_conversation_id, title, updated_at, created_at, agent_config_id, status)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            id,
+            project_id,
+            parent_conversation_id,
+            title,
+            now,
+            now,
+            agent_config_id,
+            status.as_str()
+        ],
     )?;
     Ok(id)
 }
@@ -145,6 +173,48 @@ pub fn list_by_project(conn: &Connection, project_id: &str) -> Result<Vec<Conver
          ORDER BY c.updated_at DESC",
     )?;
     let rows = stmt.query_map(params![project_id], |row| {
+        let updated_str: String = row.get(4)?;
+        let created_str: String = row.get(5)?;
+        Ok(ConversationRow {
+            id: row.get(0)?,
+            project_id: row.get(1)?,
+            parent_conversation_id: row.get(2)?,
+            title: row.get(3)?,
+            created_at: DateTime::parse_from_rfc3339(&created_str)
+                .map(|dt| dt.with_timezone(&Local))
+                .unwrap_or_else(|_| Local::now()),
+            updated_at: DateTime::parse_from_rfc3339(&updated_str)
+                .map(|dt| dt.with_timezone(&Local))
+                .unwrap_or_else(|_| Local::now()),
+            message_count: row.get(8)?,
+            agent_config_id: row.get(6)?,
+            status: ConversationStatus::from_str(&row.get::<_, String>(7)?),
+            total_prompt_tokens: 0,
+            total_completion_tokens: 0,
+            total_reasoning_tokens: 0,
+            total_tokens: 0,
+            request_count: 0,
+            cache_hit_tokens: 0,
+            cache_miss_tokens: 0,
+        })
+    })?;
+    rows.collect()
+}
+
+/// 列出某项目下指定 agent 配置的隐藏对话（书聊/阅读对话，status='sub_agent'）。
+pub fn list_by_agent_config(
+    conn: &Connection,
+    project_id: &str,
+    agent_config_id: &str,
+) -> Result<Vec<ConversationRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT c.id, c.project_id, c.parent_conversation_id, c.title, c.updated_at, c.created_at, c.agent_config_id, c.status,
+                (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id AND active = 'active') AS msg_count
+         FROM conversations c
+         WHERE c.project_id = ?1 AND c.status = 'sub_agent' AND c.agent_config_id = ?2
+         ORDER BY c.updated_at DESC",
+    )?;
+    let rows = stmt.query_map(params![project_id, agent_config_id], |row| {
         let updated_str: String = row.get(4)?;
         let created_str: String = row.get(5)?;
         Ok(ConversationRow {
@@ -394,6 +464,52 @@ mod tests {
         create(&conn, &pid, "b", None, None).unwrap();
         let rows = list_by_project(&conn, &pid).unwrap();
         assert_eq!(rows.len(), 2);
+    }
+
+    #[test]
+    fn sub_agent_conversations_hidden_from_project_list() {
+        let conn = test_conn();
+        let pid = project::create(&conn, "p", "/p").unwrap();
+        create(&conn, &pid, "visible", None, None).unwrap();
+        create_with_status(
+            &conn,
+            &pid,
+            "hidden book chat",
+            None,
+            None,
+            ConversationStatus::SubAgent,
+        )
+        .unwrap();
+        let rows = list_by_project(&conn, &pid).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].title, "visible");
+    }
+
+    #[test]
+    fn list_by_agent_config_returns_sub_agent_reading_conversations() {
+        let conn = test_conn();
+        let pid = project::create(&conn, "p", "/p").unwrap();
+        create_with_status(
+            &conn,
+            &pid,
+            "阅读对话 1",
+            None,
+            Some("acfg-read-helper"),
+            ConversationStatus::SubAgent,
+        )
+        .unwrap();
+        create_with_status(
+            &conn,
+            &pid,
+            "普通对话",
+            None,
+            Some("acfg-read-helper"),
+            ConversationStatus::Active,
+        )
+        .unwrap();
+        let rows = list_by_agent_config(&conn, &pid, "acfg-read-helper").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].title, "阅读对话 1");
     }
 
     #[test]

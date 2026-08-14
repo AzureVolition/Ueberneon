@@ -1,4 +1,5 @@
 pub mod agent_config;
+pub mod book_chat;
 pub mod conversation;
 pub mod message;
 pub mod plan;
@@ -10,6 +11,7 @@ pub mod task;
 pub mod tool;
 
 pub use agent_config::AgentConfigRow;
+pub use book_chat::BookChatRow;
 pub use conversation::{ConversationRow, ConversationStatus};
 pub use message::{MessageRow, MessageStatus};
 pub use plan::PlanRow;

@@ -9,7 +9,9 @@ pub mod agent {
 }
 
 pub mod books;
+pub mod book_chat;
 pub mod db;
+pub mod explain;
 pub mod formula_ocr;
 pub mod layout;
 pub mod model;

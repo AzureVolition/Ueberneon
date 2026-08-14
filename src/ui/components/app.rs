@@ -15,6 +15,8 @@ use crate::ui::components::chat_panel::ChatPanel;
 use crate::ui::components::dashboard_panel::DashboardPanel;
 use crate::ui::components::input_bar::InputBar;
 use crate::ui::components::plan_panel::PlanPanel;
+use crate::ui::components::plan_contents_panel::PlanContentsPanel;
+use crate::ui::components::plans_panel::PlansPanel;
 use crate::ui::components::reader_panel::ReaderPanel;
 use crate::ui::components::settings_panel::SettingsPanel;
 use crate::ui::components::sidebar::Sidebar;
@@ -34,7 +36,10 @@ fn load_agent_configs() -> Vec<crate::db::metadata::agent_config::AgentConfigRow
 }
 
 /// 从 DB 加载指定对话的消息
-fn load_messages_from_db(conv_id: &str, md_to_html: fn(&str) -> String) -> Vec<ChatMessage> {
+pub(crate) fn load_messages_from_db(
+    conv_id: &str,
+    md_to_html: fn(&str) -> String,
+) -> Vec<ChatMessage> {
     let msgs = crate::db::with_db(|conn| {
         crate::db::metadata::message::list_as_llm_messages(conn, conv_id).unwrap_or_default()
     });
@@ -144,7 +149,7 @@ fn load_messages_from_db(conv_id: &str, md_to_html: fn(&str) -> String) -> Vec<C
 
 /// 确保对话已加载到 runtimes 中（幂等）。
 /// 首次进入时从 DB 加载 + streaming_states 补全。
-fn ensure_conv_loaded(
+pub(crate) fn ensure_conv_loaded(
     conv_id: &str,
     mut runtimes: Signal<HashMap<String, ConversationRuntime>>,
     streaming_states: Arc<Mutex<HashMap<String, UiMessage>>>,
@@ -237,6 +242,7 @@ pub fn App() -> Element {
     let mut sidebar_view = use_signal(|| SidebarView::Home);
     let mut conv_origin = use_signal(|| SidebarView::Home);
     let mut active_conversation_id = use_signal(|| String::new());
+    let plan_view = use_signal(PlanView::default);
     let mut runtimes = use_signal(|| HashMap::<String, ConversationRuntime>::new());
     let is_streaming = use_signal(|| false);
     let mut streaming_project_id = use_signal(Vec::<String>::new);
@@ -309,6 +315,7 @@ pub fn App() -> Element {
     let on_select_project = {
         let ss = streaming_states.clone();
         move |project_id: String| {
+            let mut plan_view = plan_view;
             // 记录会话页返回位置:从学习计划进入回学习计划,其余回首页
             let origin = if matches!(*sidebar_view.read(), SidebarView::PlansList) {
                 SidebarView::PlansList
@@ -318,6 +325,7 @@ pub fn App() -> Element {
             conv_origin.set(origin);
             active_project_id.set(Some(project_id.clone()));
             sidebar_view.set(SidebarView::ConversationList(project_id.clone()));
+            plan_view.set(PlanView::Conversations);
 
             // 从 DB 加载对话列表到 signal
             let convs = crate::db::with_db(|conn| {
@@ -357,10 +365,12 @@ pub fn App() -> Element {
     };
 
     let on_back_to_projects = move |_| {
+        let mut plan_view = plan_view;
         let origin = conv_origin.read().clone();
         sidebar_view.set(origin);
         active_project_id.set(None);
         active_conversation_id.set(String::new());
+        plan_view.set(PlanView::Conversations);
         runtimes.write().insert(
             active_conversation_id(),
             ConversationRuntime {
@@ -371,9 +381,11 @@ pub fn App() -> Element {
     };
 
     let on_back_home = move |_| {
+        let mut plan_view = plan_view;
         sidebar_view.set(SidebarView::Home);
         active_project_id.set(None);
         active_conversation_id.set(String::new());
+        plan_view.set(PlanView::Conversations);
         runtimes.write().insert(
             active_conversation_id(),
             ConversationRuntime {
@@ -386,6 +398,7 @@ pub fn App() -> Element {
     let on_back_reader = move |_| sidebar_view.set(SidebarView::Library);
 
     let on_new_project = move |name: String| {
+        let mut plan_view = plan_view;
         let result =
             crate::db::with_db(|conn| crate::db::metadata::project::create_managed(conn, &name));
         match result {
@@ -417,6 +430,7 @@ pub fn App() -> Element {
                 );
                 active_project_id.set(Some(new_id.clone()));
                 sidebar_view.set(SidebarView::ConversationList(new_id));
+                plan_view.set(PlanView::Conversations);
                 active_conversation_id.set(String::new());
                 runtimes.write().insert(
                     active_conversation_id(),
@@ -658,6 +672,7 @@ pub fn App() -> Element {
                     rsx! {
                         ReaderPanel {
                             book_id: book_id.clone(),
+                            project_id: None,
                             error_signal: error_signal,
                             on_back: on_back_reader,
                         }
@@ -670,15 +685,16 @@ pub fn App() -> Element {
                             active_project_id,
                             sidebar_view,
                             active_conversation_id,
+                            plan_view,
                             streaming_project_id,
                             error_signal,
-                            on_new_project,
+                            on_new_project: on_new_project.clone(),
                             on_new_conversation,
-                            on_select_project,
+                            on_select_project: on_select_project.clone(),
                             on_select_conversation,
                             on_back_to_projects,
                             on_back_home: on_back_home.clone(),
-                            on_delete_project,
+                            on_delete_project: on_delete_project.clone(),
                             on_delete_conversation,
                             on_change_indicator_color,
                         }
@@ -758,6 +774,17 @@ pub fn App() -> Element {
                             }
                         }
                     }
+                    SidebarView::PlansList => {
+                        rsx! {
+                            PlansPanel {
+                                projects,
+                                error_signal,
+                                on_select_project: on_select_project.clone(),
+                                on_new_project: on_new_project.clone(),
+                                on_delete_project: on_delete_project.clone(),
+                            }
+                        }
+                    }
                     SidebarView::Library => {
                         rsx! {
                             BooksPanel {
@@ -769,7 +796,21 @@ pub fn App() -> Element {
                         }
                     }
                     _ => {
-                        rsx! {
+                        if matches!(sidebar_view(), SidebarView::ConversationList(_))
+                            && *plan_view.read() == PlanView::Contents
+                        {
+                            let pid = match sidebar_view() {
+                                SidebarView::ConversationList(p) => p,
+                                _ => String::new(),
+                            };
+                            rsx! {
+                                PlanContentsPanel {
+                                    project_id: pid,
+                                    error_signal,
+                                }
+                            }
+                        } else {
+                            rsx! {
                             div {
                                 class: "chat-area",
                                 ChatPanel {
@@ -777,6 +818,7 @@ pub fn App() -> Element {
                                     active_conv_id: active_conversation_id,
                                     is_streaming,
                                     markdown_to_html: markdown_to_html,
+                                    citation_handler: None,
                                 on_approve: {
                                     let atx = approval_tx;
                                     let cid = active_conversation_id;
@@ -1083,6 +1125,7 @@ pub fn App() -> Element {
                     },
                 }
             }  // ← rsx!
+            }  // ← else
             }  // ← _ => arm
             }  // ← match
             }  // ← main-area

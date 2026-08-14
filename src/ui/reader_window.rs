@@ -9,25 +9,42 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use crate::ui::components::error::ErrorSignal;
 use crate::ui::components::reader_panel::ReaderPanel;
 
-/// 主窗口 → 阅读窗口的“打开书”通道。
-static READER_TX: OnceLock<Mutex<Option<UnboundedSender<String>>>> = OnceLock::new();
-/// 阅读窗口首启时取走的接收端（每开一次窗口重新放一个）。
-static READER_RX: OnceLock<Mutex<Option<UnboundedReceiver<String>>>> = OnceLock::new();
+/// 打开阅读器的请求：书 + 可选来源计划（书旁对话为全局书聊，计划仅用于上下文展示）。
+#[derive(Clone, Debug)]
+pub struct OpenBookRequest {
+    pub book_id: String,
+    pub project_id: Option<String>,
+}
 
-fn tx_slot() -> &'static Mutex<Option<UnboundedSender<String>>> {
+/// 主窗口 → 阅读窗口的“打开书”通道。
+static READER_TX: OnceLock<Mutex<Option<UnboundedSender<OpenBookRequest>>>> = OnceLock::new();
+/// 阅读窗口首启时取走的接收端（每开一次窗口重新放一个）。
+static READER_RX: OnceLock<Mutex<Option<UnboundedReceiver<OpenBookRequest>>>> = OnceLock::new();
+
+fn tx_slot() -> &'static Mutex<Option<UnboundedSender<OpenBookRequest>>> {
     READER_TX.get_or_init(|| Mutex::new(None))
 }
 
-fn rx_slot() -> &'static Mutex<Option<UnboundedReceiver<String>>> {
+fn rx_slot() -> &'static Mutex<Option<UnboundedReceiver<OpenBookRequest>>> {
     READER_RX.get_or_init(|| Mutex::new(None))
 }
 
 /// 打开一本书：阅读窗口已存在则直接切换，否则新建窗口。
 pub fn open(book_id: String) {
-    if let Some(tx) = tx_slot().lock().ok().and_then(|g| g.clone()) {
-        if tx.send(book_id.clone()).is_ok() {
-            return;
-        }
+    open_with_project(book_id, None);
+}
+
+/// 从学习计划打开一本书（携带来源计划 id）。
+pub fn open_with_project(book_id: String, project_id: Option<String>) {
+    if let Some(tx) = tx_slot().lock().ok().and_then(|g| g.clone())
+        && tx
+            .send(OpenBookRequest {
+                book_id: book_id.clone(),
+                project_id: project_id.clone(),
+            })
+            .is_ok()
+    {
+        return;
     }
 
     let (tx, rx) = unbounded_channel();
@@ -47,14 +64,19 @@ pub fn open(book_id: String) {
     );
     // 窗口生命周期由 dioxus 的共享上下文持有，drop pending 不影响窗口存活。
     let _pending = dioxus::desktop::window().new_window(dom, cfg);
-    let _ = tx.send(book_id);
+    let _ = tx.send(OpenBookRequest {
+        book_id,
+        project_id,
+    });
 }
 
 /// 阅读窗口根组件：订阅主窗口发来的书 id，逐本替换内容。
 #[component]
 pub fn ReaderWindowRoot() -> Element {
     let book_id = use_signal(String::new);
+    let project_id = use_signal(|| Option::<String>::None);
     let error_signal = use_signal(ErrorSignal::new);
+    use_context_provider(|| error_signal);
     let desktop = use_window();
 
     use_effect(move || {
@@ -64,8 +86,10 @@ pub fn ReaderWindowRoot() -> Element {
                 return;
             };
             let mut book_id = book_id;
+            let mut project_id = project_id;
             while let Some(id) = rx.recv().await {
-                book_id.set(id);
+                book_id.set(id.book_id);
+                project_id.set(id.project_id);
             }
         });
     });
@@ -111,8 +135,9 @@ pub fn ReaderWindowRoot() -> Element {
             }
             if !book_id.read().is_empty() {
                 ReaderPanel {
-                    key: "{book_id}",
+                    key: "{book_id}-{project_id:?}",
                     book_id: book_id(),
+                    project_id: project_id(),
                     error_signal: error_signal,
                     on_back: move |_| {
                         desktop.close();

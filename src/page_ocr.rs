@@ -1686,7 +1686,7 @@ mod tests {
     fn ctc_decode_collapses_repeats_and_blanks() {
         let chars = ["", "a", "b"].map(str::to_string).to_vec();
         let mut data = vec![0.0f32; 6 * 3];
-        data[0 * 3 + 0] = 1.0; // blank
+        data[0] = 1.0; // blank
         data[1 * 3 + 1] = 1.0; // a
         data[2 * 3 + 1] = 1.0; // a (repeat -> collapse)
         data[3 * 3 + 0] = 1.0; // blank

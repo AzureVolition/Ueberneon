@@ -52,10 +52,16 @@ impl OpenAiProvider {
             return Err(ProviderError::Config("model is required".into()));
         }
 
-        let client = Client::builder()
-            .timeout(Duration::from_secs(300))
-            .build()
-            .map_err(|e| ProviderError::Config(format!("http client: {e}")))?;
+        // 本地回环地址(如 Ollama localhost)强制直连,避免环境代理转发后返回 502。
+        let client = if is_local_url(&base_url) {
+            Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_secs(300))
+                .build()
+        } else {
+            Client::builder().timeout(Duration::from_secs(300)).build()
+        }
+        .map_err(|e| ProviderError::Config(format!("http client: {e}")))?;
 
         // 检测 endpoint 类型
         let deepseek = base_url.contains("api.deepseek.com");
@@ -83,6 +89,13 @@ impl OpenAiProvider {
             idle_timeout: Duration::from_secs(120),
         })
     }
+}
+
+/// URL 是否指向本机回环地址(直连,不经过系统/环境代理)。
+fn is_local_url(url: &str) -> bool {
+    url.starts_with("http://localhost")
+        || url.starts_with("http://127.0.0.1")
+        || url.starts_with("http://[::1]")
 }
 
 #[async_trait::async_trait]

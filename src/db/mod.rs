@@ -150,6 +150,12 @@ fn rebuild_schema(conn: &Connection) -> anyhow::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_messages_conversation
             ON messages(conversation_id, timestamp);
 
+        CREATE TABLE IF NOT EXISTS book_chats (
+            book_id         TEXT PRIMARY KEY REFERENCES books(id) ON DELETE CASCADE,
+            conversation_id TEXT NOT NULL UNIQUE REFERENCES conversations(id) ON DELETE CASCADE,
+            created_at      TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS providers (
             id              TEXT PRIMARY KEY,
             name            TEXT NOT NULL,
@@ -488,6 +494,48 @@ fn rebuild_schema(conn: &Connection) -> anyhow::Result<()> {
             Some(2048u32),
             "[]",
             "阅读器选区翻译助手：把选中文本翻译成简体中文（公式以占位符原样保留）",
+            chrono::Local::now().to_rfc3339(),
+            chrono::Local::now().to_rfc3339(),
+        ],
+    )?;
+
+    // ── 内置 explain SubAgent ─────────────────────────────────────────────
+
+    // 幂等插入解释子代理（阅读器选区解释使用）。使用 OR IGNORE：
+    // 已存在（含用户已配置 provider/模型）时不覆盖。
+    conn.execute(
+        "INSERT OR IGNORE INTO agent_configs (id, name, agent_type, system_prompt, temperature, max_tokens, tools, description, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        rusqlite::params![
+            crate::explain::EXPLAIN_AGENT_ID,
+            "explain",
+            "SubAgent",
+            crate::explain::EXPLAIN_SYSTEM_PROMPT,
+            0.3,
+            Some(4096u32),
+            r#"["ReadBook"]"#,
+            "阅读器选区解释助手：解释选中文本，可调用 ReadBook 查阅书中定义与上下文",
+            chrono::Local::now().to_rfc3339(),
+            chrono::Local::now().to_rfc3339(),
+        ],
+    )?;
+
+    // ── 内置 read helper SubAgent ─────────────────────────────────────────
+
+    // 幂等插入阅读助手子代理（阅读器书旁对话）。使用 OR IGNORE：
+    // 已存在（含用户已配置 provider/模型）时不覆盖。
+    conn.execute(
+        "INSERT OR IGNORE INTO agent_configs (id, name, agent_type, system_prompt, temperature, max_tokens, tools, description, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        rusqlite::params![
+            crate::book_chat::READ_HELPER_AGENT_ID,
+            "read helper",
+            "SubAgent",
+            crate::book_chat::BOOK_CHAT_SYSTEM_PROMPT,
+            0.3,
+            Some(4096u32),
+            r#"["ReadBook","SearchBook","CiteBook"]"#,
+            "阅读助手：按需阅读/搜索书籍内容并记录可跳转的引用",
             chrono::Local::now().to_rfc3339(),
             chrono::Local::now().to_rfc3339(),
         ],

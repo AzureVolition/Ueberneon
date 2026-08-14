@@ -54,6 +54,14 @@ pub enum SidebarView {
     Settings(SettingsTab),
 }
 
+/// 学习计划内的子视图：对话列表 / 计划内容。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum PlanView {
+    #[default]
+    Conversations,
+    Contents,
+}
+
 /// 设置面板标签页
 #[derive(Clone, PartialEq, Debug)]
 pub enum SettingsTab {

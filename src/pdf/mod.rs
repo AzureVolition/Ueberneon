@@ -6,6 +6,7 @@
 //   - mod.rs:   书级辅助(知识库文本提取 pages/NNNN.md、overlay 构建)
 
 pub mod calibration;
+pub mod overlay;
 pub mod pdfium;
 pub mod toc;
 

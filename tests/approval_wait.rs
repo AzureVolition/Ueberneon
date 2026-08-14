@@ -124,6 +124,7 @@ fn make_agent(provider: Box<dyn Provider>, registry: Registry, tag: &str) -> Age
         None,
         4096,
         "test".into(),
+        false,
     );
     Agent {
         running: Static,

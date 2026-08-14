@@ -44,6 +44,13 @@ pub struct ToolCallRecord {
     pub approval_reason: Option<String>,
 }
 
+/// 书内引用指针：由 CiteBook 工具调用产生，前端渲染为可点击 chip。
+#[derive(Clone, Debug, PartialEq)]
+pub struct BookCitation {
+    pub page: u32,
+    pub quote: String,
+}
+
 /// 一条聊天消息
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ChatMessage {

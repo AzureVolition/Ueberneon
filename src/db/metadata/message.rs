@@ -250,6 +250,17 @@ pub fn delete_by_conversation(conn: &Connection, conversation_id: &str) -> Resul
     Ok(())
 }
 
+/// 把某对话 timestamp < cutoff 的 user/assistant/tool 消息标记为 compressed。
+/// system 消息（初始提示 + 摘要）始终保留。
+pub fn mark_compressed_before(conn: &Connection, conversation_id: &str, cutoff: &str) -> Result<usize> {
+    conn.execute(
+        "UPDATE messages SET active='compressed'
+         WHERE conversation_id = ?1 AND active = 'active'
+           AND role != 'system' AND timestamp < ?2",
+        params![conversation_id, cutoff],
+    )
+}
+
 // ── 行映射器 ───────────────────────────────────────────────────────────────
 
 fn row_mapper(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRow> {
@@ -496,5 +507,45 @@ mod tests {
         delete_by_conversation(&conn, &cid).unwrap();
         let rows = list_by_conversation(&conn, &cid).unwrap();
         assert_eq!(rows.len(), 0);
+    }
+
+    #[test]
+    fn mark_compressed_before_keeps_system_and_newer() {
+        let conn = test_conn();
+        let pid = project::create(&conn, "p", "/p").unwrap();
+        let cid = conversation::create(&conn, &pid, "c", None, None).unwrap();
+        for (role, content, ts) in [
+            ("user", "old user", "2026-01-01T00:00:00+08:00"),
+            ("assistant", "old assistant", "2026-01-02T00:00:00+08:00"),
+            ("system", "summary", "2026-01-03T00:00:00+08:00"),
+            ("user", "new user", "2026-01-04T00:00:00+08:00"),
+        ] {
+            conn.execute(
+                "INSERT INTO messages (conversation_id, role, content, timestamp, active)
+                 VALUES (?1, ?2, ?3, ?4, 'active')",
+                params![cid, role, content, ts],
+            )
+            .unwrap();
+        }
+
+        let changed = mark_compressed_before(&conn, &cid, "2026-01-03T00:00:00+08:00").unwrap();
+        assert_eq!(changed, 2);
+        let rows = list_all_by_conversation(&conn, &cid).unwrap();
+        let statuses: Vec<_> = rows
+            .iter()
+            .map(|r| (r.content.clone(), r.active.clone()))
+            .collect();
+        assert_eq!(
+            statuses,
+            vec![
+                (Some("old user".to_string()), MessageStatus::Compressed),
+                (
+                    Some("old assistant".to_string()),
+                    MessageStatus::Compressed
+                ),
+                (Some("summary".to_string()), MessageStatus::Active),
+                (Some("new user".to_string()), MessageStatus::Active),
+            ]
+        );
     }
 }

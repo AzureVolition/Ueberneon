@@ -13,6 +13,7 @@ pub fn ChatPanel(
     is_streaming: Signal<bool>,
     markdown_to_html: fn(&str) -> String,
     on_approve: EventHandler<(String, bool)>,
+    citation_handler: Option<Callback<crate::model::BookCitation>>,
 ) -> Element {
     let cid = active_conv_id();
     let (msgs, _tick) = {
@@ -194,7 +195,7 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
                                         };
                                         rsx! { div { class: "message-content", dangerous_inner_html: "{html}" } }
                                     } else {
-                                        rsx! { {render_segments(false, &segments, markdown_to_html, on_approve, expanded_tc, format!("{i}")).into_iter()} }
+                                        rsx! { {render_segments(false, &segments, markdown_to_html, on_approve, citation_handler, expanded_tc, format!("{i}")).into_iter()} }
                                     }
                                 }
                             }
@@ -210,7 +211,7 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
                         };
                         rsx! {
                             div { key: "{streaming_key}", class: "{streaming_class}",
-                                {render_segments(true, &segs, markdown_to_html, on_approve, expanded_tc, "stream".into()).into_iter()}
+                                {render_segments(true, &segs, markdown_to_html, on_approve, citation_handler, expanded_tc, "stream".into()).into_iter()}
                             }
                         }
                     }
@@ -261,6 +262,7 @@ fn render_segments(
     segments: &[StreamSegment],
     markdown_to_html: fn(&str) -> String,
     on_approve: EventHandler<(String, bool)>,
+    citation_handler: Option<Callback<crate::model::BookCitation>>,
     expanded_tc: Signal<std::collections::HashSet<String>>,
     msg_key: String,
 ) -> Vec<Element> {
@@ -290,6 +292,45 @@ fn render_segments(
                 buf.push(rsx! { div { class: "thinking-content", dangerous_inner_html: html } });
             }
             StreamSegment::ToolCall(call) => {
+                let is_citation = call.tool_name == "CiteBook" && citation_handler.is_some();
+                if is_citation {
+                    let page = call
+                        .args
+                        .get("page")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0) as u32;
+                    let quote = call
+                        .args
+                        .get("quote")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    let preview: String = quote.chars().take(42).collect();
+                    let label = if quote.chars().count() > 42 {
+                        format!("{preview}…")
+                    } else {
+                        preview
+                    };
+                    let handler = citation_handler;
+                    buf.push(rsx! {
+                        button {
+                            class: "citation-chip",
+                            title: "{quote}",
+                            onclick: move |_| {
+                                if let Some(h) = &handler {
+                                    h.call(crate::model::BookCitation {
+                                        page,
+                                        quote: quote.clone(),
+                                    });
+                                }
+                            },
+                            "P{page} · {label}"
+                        }
+                    });
+                    tc_idx += 1;
+                    continue;
+                }
                 let sc = status_class(&call.status);
                 let status_text = match &call.status {
                     ToolCallStatus::Running => "running",

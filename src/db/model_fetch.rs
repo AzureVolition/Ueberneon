@@ -10,7 +10,15 @@ pub async fn fetch_models(provider: &ProviderRow, api_key: &str) -> Result<Vec<S
     // 构建候选 URL
     let urls = build_fetch_urls(&provider.base_url, &provider.models_url);
 
-    let client = reqwest::Client::new();
+    // 本地服务(如 Ollama localhost)强制直连,避免被环境代理转发后返回 502。
+    let client = if urls.iter().any(|u| is_local_url(u)) {
+        reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    } else {
+        reqwest::Client::new()
+    };
     let mut last_err = String::new();
 
     for url in &urls {
@@ -21,6 +29,13 @@ pub async fn fetch_models(provider: &ProviderRow, api_key: &str) -> Result<Vec<S
     }
 
     Err(last_err)
+}
+
+/// URL 是否指向本机回环地址(直连,不经过系统/环境代理)。
+fn is_local_url(url: &str) -> bool {
+    url.starts_with("http://localhost")
+        || url.starts_with("http://127.0.0.1")
+        || url.starts_with("http://[::1]")
 }
 
 /// 从 URL 尝试拉取模型列表
@@ -91,4 +106,39 @@ pub async fn refresh_and_save(
     let models = fetch_models(provider, api_key).await?;
     provider::replace_models(conn, &provider.id, &models).map_err(|e| format!("db error: {e}"))?;
     Ok(models)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_urls_detect_loopback_hosts() {
+        assert!(is_local_url("http://localhost:11434/v1/models"));
+        assert!(is_local_url("http://127.0.0.1:11434/v1/models"));
+        assert!(is_local_url("http://[::1]:11434/v1/models"));
+        assert!(!is_local_url("https://ollama.com/v1/models"));
+        assert!(!is_local_url("https://api.deepseek.com/v1/models"));
+    }
+
+    #[test]
+    fn build_fetch_urls_prefers_models_url() {
+        let urls = build_fetch_urls("http://localhost:11434/v1", "https://example.com/models");
+        assert_eq!(urls, vec!["https://example.com/models"]);
+    }
+
+    #[test]
+    fn build_fetch_urls_covers_v1_and_plain_base() {
+        assert_eq!(
+            build_fetch_urls("http://localhost:11434/v1", ""),
+            vec!["http://localhost:11434/v1/models"]
+        );
+        assert_eq!(
+            build_fetch_urls("http://localhost:11434", ""),
+            vec![
+                "http://localhost:11434/models",
+                "http://localhost:11434/v1/models"
+            ]
+        );
+    }
 }

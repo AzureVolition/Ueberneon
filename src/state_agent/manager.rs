@@ -113,7 +113,21 @@ impl AgentManager {
         })?;
 
         let project_path = PathBuf::from(project_row.path);
-        register_builtins(&registry, &project_path);
+
+        // 阅读助手对话只注册读书/搜索/引用工具；普通对话注册全部内置工具。
+        let book_chat = crate::db::with_db(|conn| {
+            crate::db::metadata::conversation::get(conn, &conversation_id)
+                .ok()
+                .flatten()
+                .and_then(|c| c.agent_config_id)
+                .as_deref()
+                == Some(crate::book_chat::READ_HELPER_AGENT_ID)
+        });
+        if book_chat {
+            crate::tools::register_book_tools(&registry);
+        } else {
+            register_builtins(&registry, &project_path);
+        }
 
         // 如果配置了启用工具列表，移除未启用的工具
         if !cfg.enabled_tools.is_empty() {
@@ -145,19 +159,36 @@ impl AgentManager {
             registry,
             project_path,
             project_id,
-            conversation_id,
+            conversation_id.clone(),
             cfg.temperature,
             cfg.max_tokens,
             cfg.context_window,
             cfg.agent_type.clone(),
+            book_chat,
         );
         // 优先使用传入的 system_prompt，否则使用 DB 配置中的
         let template = {
-            let s = cfg.system_prompt.trim().to_string();
-            if s.is_empty() {
-                super::main_agent::defautlt_main_agent_prompt()
+            if book_chat {
+                let book = crate::db::with_db(|conn| {
+                    let mapping = crate::db::metadata::book_chat::get_by_conversation(
+                        conn,
+                        &conversation_id,
+                    )
+                    .ok()
+                    .flatten()?;
+                    crate::books::get(conn, &mapping.book_id).ok().flatten()
+                });
+                match book {
+                    Some(b) => crate::book_chat::build_system_prompt(&b.name, &b.id),
+                    None => crate::book_chat::BOOK_CHAT_SYSTEM_PROMPT.to_string(),
+                }
             } else {
-                s
+                let s = cfg.system_prompt.trim().to_string();
+                if s.is_empty() {
+                    super::main_agent::defautlt_main_agent_prompt()
+                } else {
+                    s
+                }
             }
         };
 
@@ -272,7 +303,10 @@ impl AgentManager {
     }
 
     /// 根据 agent_config_id 从 DB 读取配置并转为 AgentConfig
-    fn read_agent_config(agent_config_id: &str) -> Result<AgentConfig, String> {
+    /// 读取 Agent 运行配置(供完整 Agent 与轻量 React 循环共用)。
+    /// SubAgent 始终从 provider 实例实时解析 base_url/api_key;
+    /// 行内未配置时回退默认 SubAgent 设置。
+    pub fn read_agent_config(agent_config_id: &str) -> Result<AgentConfig, String> {
         tracing::info!(
             target: "agent",
             agent_config_id = %agent_config_id,
@@ -284,60 +318,76 @@ impl AgentManager {
                 .ok_or_else(|| format!("agent config {agent_config_id} not found"))
         })?;
 
-        // 如果是 SubAgent 且未配置 model，尝试使用默认设置
-        if row.agent_type == "SubAgent" && row.model.is_empty() {
-            let s = crate::settings::get();
-            let default_inst_id = s.general.default_subagent_provider_instance_id;
-            let default_model = s.general.default_subagent_model;
-
-            if !default_inst_id.is_empty() && !default_model.is_empty() {
-                let (base_url, api_key) = crate::db::with_db(|conn| {
-                    let inst = crate::db::metadata::provider_instance::get(conn, &default_inst_id)
-                        .ok()
-                        .flatten();
-                    let (raw_key, prov_id) = match inst {
-                        Some(ref i) => (i.api_key.clone(), i.provider_id.clone()),
-                        None => (String::new(), String::new()),
-                    };
-                    let url = crate::db::metadata::provider::get(conn, &prov_id)
-                        .ok()
-                        .flatten()
-                        .map(|p| p.base_url)
-                        .unwrap_or_default();
-                    (url, raw_key)
-                });
-                let decoded_key = if !api_key.is_empty() {
-                    use base64::Engine;
-                    base64::engine::general_purpose::STANDARD
-                        .decode(api_key.as_bytes())
-                        .ok()
-                        .and_then(|v| String::from_utf8(v).ok())
-                        .unwrap_or_default()
-                } else {
-                    String::new()
-                };
-                return Ok(AgentConfig {
-                    model: default_model,
-                    base_url,
-                    api_key: decoded_key,
-                    system_prompt: row.system_prompt,
-                    temperature: row.temperature,
-                    max_tokens: row.max_tokens,
-                    context_window: row
-                        .context_window
-                        .unwrap_or(crate::model::DEFAULT_CONTEXT_WINDOW),
-                    agent_type: row.agent_type,
-                    enabled_tools: serde_json::from_str(&row.tools).unwrap_or_default(),
-                });
+        // SubAgent:运行时始终从 provider 实例解析 base_url/api_key,
+        // 不依赖行内保存的快照字段;行内 model/实例为空时使用默认 SubAgent 配置。
+        if row.agent_type == "SubAgent" {
+            let (model, inst_id) = if !row.model.is_empty() && !row.provider_instance_id.is_empty()
+            {
+                (row.model.clone(), row.provider_instance_id.clone())
+            } else {
+                let s = crate::settings::get();
+                let default_inst = s.general.default_subagent_provider_instance_id;
+                let default_model = s.general.default_subagent_model;
+                if default_inst.is_empty() || default_model.is_empty() {
+                    return Err(format!(
+                        "子 Agent '{}' 未配置 Provider/Model。请在 设置 > Sub Agents 中配置默认 SubAgent Provider 和 Model",
+                        row.name
+                    ));
+                }
+                (default_model, default_inst)
+            };
+            let (base_url, api_key) = Self::resolve_instance_credentials(&inst_id);
+            if base_url.is_empty() {
+                return Err(format!(
+                    "子 Agent '{}' 的 provider 实例不存在或未配置:{inst_id}",
+                    row.name
+                ));
             }
-            // 没有默认配置 → 明确报错
-            return Err(format!(
-                "子 Agent '{}' 未配置 Provider/Model。请在 设置 > Sub Agents 中配置默认 SubAgent Provider 和 Model",
-                row.name
-            ));
+            return Ok(AgentConfig {
+                model,
+                base_url,
+                api_key,
+                system_prompt: row.system_prompt,
+                temperature: row.temperature,
+                max_tokens: row.max_tokens,
+                context_window: row
+                    .context_window
+                    .unwrap_or(crate::model::DEFAULT_CONTEXT_WINDOW),
+                agent_type: row.agent_type,
+                enabled_tools: serde_json::from_str(&row.tools).unwrap_or_default(),
+            });
         }
 
         AgentConfig::from_row(&row).map_err(|e| format!("{e}"))
+    }
+
+    /// 从 provider 实例解析 base_url 与解码后的 api_key(本地服务允许空 key)。
+    fn resolve_instance_credentials(inst_id: &str) -> (String, String) {
+        crate::db::with_db(|conn| {
+            let inst = crate::db::metadata::provider_instance::get(conn, inst_id)
+                .ok()
+                .flatten();
+            let (raw_key, prov_id) = match inst {
+                Some(ref i) => (i.api_key.clone(), i.provider_id.clone()),
+                None => (String::new(), String::new()),
+            };
+            let url = crate::db::metadata::provider::get(conn, &prov_id)
+                .ok()
+                .flatten()
+                .map(|p| p.base_url)
+                .unwrap_or_default();
+            let decoded_key = if !raw_key.is_empty() {
+                use base64::Engine;
+                base64::engine::general_purpose::STANDARD
+                    .decode(raw_key.as_bytes())
+                    .ok()
+                    .and_then(|v| String::from_utf8(v).ok())
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            (url, decoded_key)
+        })
     }
 
     /// 从缓存移除并返回 Agent（ownership 转移，适合取出后异步执行）。

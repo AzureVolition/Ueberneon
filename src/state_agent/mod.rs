@@ -581,6 +581,8 @@ pub struct AgentCore {
     pub agent_type: String,
     /// 最近一次 LLM 交互的 token 用量（每次流式结束后写入，跨轮保留，供 UI 收尾读取）
     pub last_usage: Option<crate::model::TokenUsageRecord>,
+    /// 书旁持久对话：启用上下文压缩，避免书聊历史无限膨胀。
+    pub book_chat: bool,
 }
 
 impl AgentCore {
@@ -597,6 +599,7 @@ impl AgentCore {
         max_tokens: Option<u32>,
         context_window: u32,
         agent_type: String,
+        book_chat: bool,
     ) -> Self {
         Self {
             provider,
@@ -610,6 +613,7 @@ impl AgentCore {
             context_window,
             agent_type,
             last_usage: None,
+            book_chat,
         }
     }
 

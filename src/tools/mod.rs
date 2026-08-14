@@ -12,6 +12,7 @@ use std::time::Duration;
 
 pub use internal::bash::Bash;
 pub use internal::bash_output::BashOutput;
+pub use internal::cite_book::CiteBook;
 pub use internal::code_index::CodeIndex;
 pub use internal::complete_step::CompleteStep;
 pub use internal::create_plan::CreatePlan;
@@ -22,8 +23,10 @@ pub use internal::kill_shell::KillShell;
 pub use internal::load_skill::LoadSkill;
 pub use internal::ls::Ls;
 pub use internal::multi_edit::MultiEdit;
+pub use internal::read_book::ReadBook;
 pub use internal::read_file::ReadFile;
 pub use internal::read_only_bash::ReadOnlyBash;
+pub use internal::search_book::SearchBook;
 pub use internal::task::Task;
 pub use internal::web_fetch::WebFetch;
 pub use internal::write_file::WriteFile;
@@ -116,6 +119,9 @@ pub fn register_builtins(registry: &Registry, base_dir: &std::path::Path) {
     // 网络工具
     registry.add(Box::new(WebFetch::new()));
 
+    // 读书工具(全局书库,只读)
+    registry.add(Box::new(ReadBook::new()));
+
     // 计划工具
     registry.add(Box::new(CreatePlan));
     registry.add(Box::new(CompleteStep));
@@ -132,4 +138,11 @@ pub fn register_builtins(registry: &Registry, base_dir: &std::path::Path) {
 
     // 技能加载工具
     registry.add(Box::new(LoadSkill::new(work_dir)));
+}
+
+/// 注册书旁对话专用工具集（只读，控制上下文 token 占用）。
+pub fn register_book_tools(registry: &Registry) {
+    registry.add(Box::new(ReadBook::new()));
+    registry.add(Box::new(SearchBook::new()));
+    registry.add(Box::new(CiteBook::new()));
 }

@@ -5,7 +5,6 @@
 // 处理公式。本地/远程 OpenAI 兼容服务（含自定义 provider）走
 // /v1/chat/completions，复用现有 llm::OpenAiProvider，不新增依赖。
 
-use base64::Engine as _;
 use llm::Provider;
 
 /// v1 固定目标语言。
@@ -62,41 +61,12 @@ pub fn translate_agent() -> Option<crate::db::metadata::agent_config::AgentConfi
             .ok()
             .flatten()?;
         if agent.agent_type != "SubAgent"
-            || agent.model.is_empty()
-            || agent.provider_instance_id.is_empty()
+            || !crate::db::metadata::agent_config::subagent_effectively_configured(&agent)
         {
             return None;
         }
         Some(agent)
     })
-}
-
-/// 从 agent 行的 provider 实例解析生效的 base_url（Ollama 端口可配置）；
-/// 实例/provider 缺失时回退到 agent 保存时拷贝的地址。
-fn effective_base_url(agent: &crate::db::metadata::agent_config::AgentConfigRow) -> String {
-    crate::db::with_db(|conn| {
-        let inst = crate::db::metadata::provider_instance::get(conn, &agent.provider_instance_id)
-            .ok()
-            .flatten()?;
-        let prov = crate::db::metadata::provider::get(conn, &inst.provider_id)
-            .ok()
-            .flatten()?;
-        Some(prov.base_url)
-    })
-    .unwrap_or_else(|| agent.base_url.clone())
-}
-
-/// agent 行里的 api_key 是 base64 编码的，请求前解码。
-fn decode_agent_key(encoded: &str) -> String {
-    if encoded.is_empty() {
-        String::new()
-    } else {
-        base64::engine::general_purpose::STANDARD
-            .decode(encoded.as_bytes())
-            .ok()
-            .and_then(|v| String::from_utf8(v).ok())
-            .unwrap_or_default()
-    }
 }
 
 /// 把当前书名/文档信息追加到翻译输入末尾，格式与 OakReader 一致：
@@ -347,11 +317,14 @@ pub async fn translation_stream(
     agent: &crate::db::metadata::agent_config::AgentConfigRow,
     source: &str,
 ) -> Result<llm::provider::ChunkStream, String> {
+    // 与完整 Agent 共用同一份配置解析(SubAgent 实时从实例解析 base_url/api_key)。
+    let cfg = crate::agent::manager::AgentManager::read_agent_config(&agent.id)
+        .map_err(|e| format!("{e}"))?;
     let provider = llm::OpenAiProvider::new(
         "translation".to_string(),
-        effective_base_url(agent),
-        agent.model.clone(),
-        decode_agent_key(&agent.api_key),
+        cfg.base_url,
+        cfg.model,
+        cfg.api_key,
         None,
         false,
         None,

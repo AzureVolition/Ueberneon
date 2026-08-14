@@ -11,6 +11,7 @@ pub fn Sidebar(
     active_project_id: Signal<Option<String>>,
     sidebar_view: Signal<SidebarView>,
     active_conversation_id: Signal<String>,
+    plan_view: Signal<PlanView>,
     streaming_project_id: Signal<Vec<String>>,
     error_signal: Signal<ErrorSignal>,
     on_new_project: EventHandler<String>,
@@ -501,11 +502,39 @@ pub fn Sidebar(
                             }
                             div {
                                 class: "sidebar-header-row",
-                                span { class: "sidebar-label", "CONVERSATIONS" }
-                                button {
-                                    class: "btn btn-new-chat",
-                                    onclick: move |_| on_new_conversation.call(()),
-                                    "+ NEW"
+                                div {
+                                    class: "plan-view-tabs",
+                                    button {
+                                        class: if *plan_view.read() == PlanView::Conversations {
+                                            "plan-view-tab is-active"
+                                        } else {
+                                            "plan-view-tab"
+                                        },
+                                        onclick: {
+                                            let mut plan_view = plan_view;
+                                            move |_| plan_view.set(PlanView::Conversations)
+                                        },
+                                        "对话"
+                                    }
+                                    button {
+                                        class: if *plan_view.read() == PlanView::Contents {
+                                            "plan-view-tab is-active"
+                                        } else {
+                                            "plan-view-tab"
+                                        },
+                                        onclick: {
+                                            let mut plan_view = plan_view;
+                                            move |_| plan_view.set(PlanView::Contents)
+                                        },
+                                        "内容"
+                                    }
+                                }
+                                if *plan_view.read() == PlanView::Conversations {
+                                    button {
+                                        class: "btn btn-new-chat",
+                                        onclick: move |_| on_new_conversation.call(()),
+                                        "+ NEW"
+                                    }
                                 }
                             }
                         }

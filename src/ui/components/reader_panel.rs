@@ -8,16 +8,33 @@ use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
 use dioxus::desktop::use_window;
 use dioxus::prelude::*;
 
 use crate::formula_ocr::SingleSlotCache;
+use crate::agent::{ActionMode, AgentMode};
+use crate::db::metadata::agent_config::AgentConfigRow;
+use crate::db::metadata::conversation::ConversationRow;
+use crate::model::{BookCitation, ChatMessage, Role, UiMessage};
 use crate::pdf::pdfium::{self, PdfDocument};
 use crate::pdf::{OverlayLine, parse_book};
+use crate::ui::components::chat_panel::ChatPanel;
+use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 use crate::ui::components::error::{ErrorInfo, ErrorSeverity, ErrorSignal, ErrorSource};
+use crate::ui::components::input_bar::InputBar;
+use crate::ui::state::ConversationRuntime;
+use tokio_util::sync::CancellationToken;
+
+/// 解释对话消息渲染用 Markdown → HTML(与主聊天一致)。
+fn reader_markdown_to_html(md: &str) -> String {
+    let parser = pulldown_cmark::Parser::new_ext(md, pulldown_cmark::Options::ENABLE_TABLES);
+    let mut html = String::new();
+    pulldown_cmark::html::push_html(&mut html, parser);
+    html
+}
 
 /// 固定渲染质量:3.0 像素/点 = 216dpi。
 /// Retina(2x)屏幕上 100% 宽度显示时天然超采样,文字更锐利;
@@ -127,6 +144,8 @@ struct Selection {
     formula: bool,
     /// 锚点词的公式置信度(0..1)。
     formula_score: f64,
+    /// Shift 扩展选区的锚点:选区创建时的起点词(页/层/索引)。
+    anchor: Option<(u32, Layer, usize)>,
 }
 
 /// 操作栏状态机。
@@ -149,6 +168,8 @@ struct ActionBarState {
     show_formula: bool,
     /// 是否显示「翻译」(已配置翻译模型且选区含正文)。
     translation_enabled: bool,
+    /// 是否显示「解释」(已配置解释子代理且选区含正文)。
+    explain_enabled: bool,
 }
 
 /// 翻译卡片状态机:加载中 / 成功译文 / 失败文案。
@@ -211,6 +232,8 @@ struct ReaderSession {
     selection: Option<Selection>,
     drag_anchor: Option<(u32, Layer, usize)>,
     dragging: bool,
+    /// 是否正在 Shift 扩展选区(从 selection.anchor 向当前指针延伸)。
+    shift_extending: bool,
     /// 单槽缓存:最近一次 (key, LaTeX);相同 key 直接复用。
     ocr_cache: SingleSlotCache,
     /// 待处理的最新复制请求(在途时新请求会覆盖它)。
@@ -2587,20 +2610,179 @@ fn paragraph_forward_with(
 
 // ── 自绘选区交互(页 + 层) ──
 //
-// 单击无动作;拖动选词;双击选词;三击选句;Cmd+双击选段;Cmd+C 复制。
-// 拖动禁止跨层/跨页;句子/段落可向后跨 1 页(同层同列)。
+// 单击无动作;拖动选词;双击选词;三击选句;Cmd+双击选段;Cmd+C 复制;
+// Shift+点击/拖动从选区锚点扩展(同层,可跨相邻 1 页)。
+// 普通拖动禁止跨层/跨页;句子/段落可向后跨 1 页(同层同列)。
 
 fn start_drag(mut session: Signal<Option<ReaderSession>>, page: u32, layer: Layer, idx: usize) {
     if let Some(inner) = session.write().as_mut() {
         inner.drag_anchor = Some((page, layer, idx));
         inner.dragging = true;
+        inner.shift_extending = false;
         inner.selection = None;
         inner.action_bar = None;
         inner.translation = None;
     }
 }
 
+/// 计算 Shift 扩展后的选区:选区锚点 → 当前词(同层;跨页仅限相邻 1 页)。
+/// 页面不在缓存、跨度超过 1 页或层不一致时返回 None(调用方保留原选区)。
+fn shift_extend_selection(
+    cache: &HashMap<u32, RenderedPage>,
+    selection: &Selection,
+    page: u32,
+    layer: Layer,
+    idx: usize,
+) -> Option<Selection> {
+    let anchor = selection.anchor?;
+    let (apage, alayer, aidx_raw) = anchor;
+    if alayer != layer || selection.layer != layer {
+        return None;
+    }
+    let ar = cache.get(&apage)?;
+    let aflat = layer_flat(ar, alayer);
+    if aflat.is_empty() {
+        return None;
+    }
+    let aidx = snap_to_word(aflat, aidx_raw).min(aflat.len() - 1);
+    let aword = &aflat[aidx];
+
+    let steps = if apage == page {
+        let r = cache.get(&page)?;
+        let flat = layer_flat(r, layer);
+        if flat.is_empty() {
+            return None;
+        }
+        let idx = snap_to_word(flat, idx).min(flat.len() - 1);
+        vec![SelectionStep {
+            page,
+            lo: aidx.min(idx),
+            hi: aidx.max(idx),
+            column_left: None,
+        }]
+    } else if page == apage + 1 {
+        // 向后跨一页:锚点页 aidx..末尾 + 目标页 0..idx(阅读顺序)。
+        let r = cache.get(&page)?;
+        let flat = layer_flat(r, layer);
+        if flat.is_empty() {
+            return None;
+        }
+        let idx = snap_to_word(flat, idx).min(flat.len() - 1);
+        vec![
+            SelectionStep {
+                page: apage,
+                lo: aidx,
+                hi: aflat.len() - 1,
+                column_left: None,
+            },
+            SelectionStep {
+                page,
+                lo: 0,
+                hi: idx,
+                column_left: None,
+            },
+        ]
+    } else if apage == page + 1 {
+        // 向前跨一页:目标页 idx..末尾 + 锚点页 0..aidx(阅读顺序)。
+        let r = cache.get(&page)?;
+        let flat = layer_flat(r, layer);
+        if flat.is_empty() {
+            return None;
+        }
+        let idx = snap_to_word(flat, idx).min(flat.len() - 1);
+        vec![
+            SelectionStep {
+                page,
+                lo: idx,
+                hi: flat.len() - 1,
+                column_left: None,
+            },
+            SelectionStep {
+                page: apage,
+                lo: 0,
+                hi: aidx,
+                column_left: None,
+            },
+        ]
+    } else {
+        return None; // 跨度超过 1 页:v1 不支持。
+    };
+
+    Some(Selection {
+        layer,
+        formula: aword.formula,
+        formula_score: aword.formula_score,
+        anchor: Some(anchor),
+        steps,
+    })
+}
+
+/// Shift+按下:已有同层选区时以选区锚点为起点立即扩展并进入 shift 拖动模式;
+/// 无选区时与普通按下一致;扩展失败(跨层/跨页超限)时保留原选区。
+fn begin_shift_extend(
+    mut session: Signal<Option<ReaderSession>>,
+    page: u32,
+    layer: Layer,
+    idx: usize,
+) {
+    let has_same_layer_selection = session
+        .read()
+        .as_ref()
+        .and_then(|s| s.selection.as_ref())
+        .map(|sel| sel.layer == layer && !sel.steps.is_empty())
+        .unwrap_or(false);
+    if !has_same_layer_selection {
+        start_drag(session, page, layer, idx);
+        return;
+    }
+    let extended = {
+        let guard = session.read();
+        let Some(inner) = guard.as_ref() else {
+            return;
+        };
+        let Some(sel) = inner.selection.as_ref() else {
+            return;
+        };
+        shift_extend_selection(&inner.cache, sel, page, layer, idx)
+    };
+    if let Some(sel) = extended {
+        if let Some(inner) = session.write().as_mut() {
+            inner.shift_extending = true;
+            inner.dragging = true;
+            inner.drag_anchor = Some((page, layer, idx));
+            inner.selection = Some(sel);
+            inner.action_bar = None;
+            inner.translation = None;
+        }
+    }
+}
+
 fn extend_drag(mut session: Signal<Option<ReaderSession>>, page: u32, layer: Layer, idx: usize) {
+    if session
+        .read()
+        .as_ref()
+        .map(|s| s.shift_extending)
+        .unwrap_or(false)
+    {
+        let extended = {
+            let guard = session.read();
+            let Some(inner) = guard.as_ref() else {
+                return;
+            };
+            let Some(sel) = inner.selection.as_ref() else {
+                return;
+            };
+            shift_extend_selection(&inner.cache, sel, page, layer, idx)
+        };
+        if let Some(sel) = extended {
+            if let Some(inner) = session.write().as_mut() {
+                inner.drag_anchor = Some((page, layer, idx));
+                inner.selection = Some(sel);
+            }
+        }
+        return;
+    }
+
     let (formula, formula_score) = {
         let guard = session.read();
         guard
@@ -2625,6 +2807,7 @@ fn extend_drag(mut session: Signal<Option<ReaderSession>>, page: u32, layer: Lay
                         layer,
                         formula,
                         formula_score,
+                        anchor: Some((apage, alayer, aidx)),
                         steps: vec![SelectionStep {
                             page,
                             lo: aidx.min(idx),
@@ -2641,6 +2824,7 @@ fn extend_drag(mut session: Signal<Option<ReaderSession>>, page: u32, layer: Lay
 fn end_drag(mut session: Signal<Option<ReaderSession>>) {
     if let Some(inner) = session.write().as_mut() {
         inner.dragging = false;
+        inner.shift_extending = false;
         inner.drag_anchor = None;
     }
 }
@@ -2648,6 +2832,7 @@ fn end_drag(mut session: Signal<Option<ReaderSession>>) {
 fn cancel_drag(mut session: Signal<Option<ReaderSession>>) {
     if let Some(inner) = session.write().as_mut() {
         inner.dragging = false;
+        inner.shift_extending = false;
         inner.drag_anchor = None;
     }
 }
@@ -2670,6 +2855,10 @@ fn open_action_bar(mut session: Signal<Option<ReaderSession>>, x: f64, y: f64) {
             && selection_has_plain_text(sel, |p| {
                 inner.cache.get(&p).map(|r| layer_flat(r, sel.layer))
             });
+        let explain_enabled = crate::book_chat::configured()
+            && selection_has_plain_text(sel, |p| {
+                inner.cache.get(&p).map(|r| layer_flat(r, sel.layer))
+            });
         inner.action_bar_gen += 1;
         inner.action_bar = Some(ActionBarState {
             x,
@@ -2678,6 +2867,7 @@ fn open_action_bar(mut session: Signal<Option<ReaderSession>>, x: f64, y: f64) {
             generation: inner.action_bar_gen,
             show_formula,
             translation_enabled,
+            explain_enabled,
         });
     }
 }
@@ -2962,6 +3152,208 @@ fn start_translation(mut session: Signal<Option<ReaderSession>>, request: Transl
     });
 }
 
+// ── 操作栏「解释」──
+//
+// 以完整子 Agent 运行(参考 Task 工具):prompt 含选中文本(选区内公式先
+// OCR 成 LaTeX)、书名与页码;子 Agent 可调用 ReadBook 查阅书中其他位置。
+
+/// 一次解释请求的快照(选区文本 + 公式区域 + 子代理配置 + 卡片位置)。
+struct ExplainRequest {
+    input: String,
+    /// 选区内公式的 (page_1based, @4x 像素裁剪框)。
+    formula_regions: Vec<(u32, (i32, i32, i32, i32))>,
+    book_id: String,
+    book_name: String,
+    page: u32,
+}
+
+/// 收集选区内公式运行的像素裁剪框(与 selection_translation_input 同款分组)。
+fn selection_formula_regions(
+    inner: &ReaderSession,
+    sel: &Selection,
+) -> Vec<(u32, (i32, i32, i32, i32))> {
+    let mut out = Vec::new();
+    for step in &sel.steps {
+        let Some(r) = inner.cache.get(&step.page) else {
+            continue;
+        };
+        let flat = layer_flat(r, sel.layer);
+        if flat.is_empty() {
+            continue;
+        }
+        let hi = step.hi.min(flat.len() - 1);
+        let mut i = step.lo;
+        while i <= hi {
+            if !flat[i].formula {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            let mut j = i;
+            loop {
+                if j > hi {
+                    break;
+                }
+                if flat[j].formula {
+                    j += 1;
+                    continue;
+                }
+                if flat[j].text.trim().is_empty() {
+                    let mut k = j + 1;
+                    let mut has_formula_after = false;
+                    while k <= hi {
+                        if flat[k].formula {
+                            has_formula_after = true;
+                            break;
+                        }
+                        if !flat[k].text.trim().is_empty() {
+                            break;
+                        }
+                        k += 1;
+                    }
+                    if has_formula_after {
+                        j = k;
+                        continue;
+                    }
+                }
+                break;
+            }
+            let end = j.saturating_sub(1).min(hi);
+            if let Some(bbox) = formula_run_bbox(flat, start, end, r.w_pt) {
+                out.push((step.page, bbox));
+            }
+            i = j.max(start + 1);
+        }
+    }
+    out
+}
+
+fn formula_run_bbox(
+    flat: &[FlatWord],
+    lo: usize,
+    hi: usize,
+    page_width_pt: f32,
+) -> Option<(i32, i32, i32, i32)> {
+    let mut left = f64::INFINITY;
+    let mut right = f64::NEG_INFINITY;
+    let mut top = f64::INFINITY;
+    let mut bottom = f64::NEG_INFINITY;
+    for w in flat.iter().take(hi + 1).skip(lo) {
+        if w.text.trim().is_empty() {
+            continue;
+        }
+        left = left.min(w.left_cqw);
+        right = right.max(w.left_cqw + w.width_cqw);
+        top = top.min(w.top_cqw);
+        bottom = bottom.max(w.top_cqw + w.height_cqw);
+    }
+    if !left.is_finite() {
+        return None;
+    }
+    let scale = page_width_pt as f64 * OCR_RENDER_SCALE as f64;
+    Some((
+        ((left / 100.0) * scale).floor().max(0.0) as i32,
+        ((top / 100.0) * scale).floor().max(0.0) as i32,
+        (((right - left) / 100.0) * scale).ceil().max(1.0) as i32,
+        (((bottom - top) / 100.0) * scale).ceil().max(1.0) as i32,
+    ))
+}
+
+/// 操作栏「解释」:快照选区文本/公式区域,异步 OCR 公式成 LaTeX 后,
+/// 打开内嵌解释对话面板(复用聊天管线,体验与普通对话一致)。
+fn action_bar_explain(session: Signal<Option<ReaderSession>>, on_prompt: Callback<String>) {
+    let request = {
+        let guard = session.read();
+        let Some(inner) = guard.as_ref() else {
+            return;
+        };
+        let Some(sel) = inner.selection.as_ref() else {
+            return;
+        };
+        let Some(bar) = inner.action_bar.as_ref() else {
+            return;
+        };
+        if !bar.explain_enabled {
+            return;
+        }
+        let Some((input, _formulas)) = selection_translation_input(sel, |p| {
+            inner.cache.get(&p).map(|r| layer_flat(r, sel.layer))
+        }) else {
+            return;
+        };
+        if input.trim().is_empty() {
+            return;
+        }
+        ExplainRequest {
+            input,
+            formula_regions: selection_formula_regions(inner, sel),
+            book_id: inner.book_id.clone(),
+            book_name: inner.book_name.clone(),
+            page: sel.steps[0].page,
+        }
+    };
+    spawn(async move {
+        let mut session = session;
+        let mut input = request.input;
+        // 选区公式 OCR 成 LaTeX(命中阅读器单槽缓存直接复用)。
+        if !request.formula_regions.is_empty() {
+            let (mut latex, misses, doc) = {
+                let guard = session.read();
+                let Some(inner) = guard.as_ref() else {
+                    return;
+                };
+                let mut latex = vec![String::new(); request.formula_regions.len()];
+                let mut misses = Vec::new();
+                for (i, (page, bbox)) in request.formula_regions.iter().enumerate() {
+                    let key = formula_copy_key(&inner.book_id, *page, *bbox);
+                    if let Some(v) = inner.ocr_cache.get(&key) {
+                        latex[i] = v.to_string();
+                    } else {
+                        misses.push((i, key, *page, *bbox));
+                    }
+                }
+                (latex, misses, inner.doc.clone())
+            };
+            if !misses.is_empty() {
+                let misses_clone = misses.clone();
+                let ocr = tokio::task::spawn_blocking(move || -> Vec<Option<String>> {
+                    misses_clone
+                        .iter()
+                        .map(|(_, _, page, bbox)| {
+                            run_formula_ocr(doc.clone(), (*page as usize).saturating_sub(1), *bbox)
+                                .ok()
+                        })
+                        .collect()
+                })
+                .await
+                .unwrap_or_default();
+                for (k, (i, key, _, _)) in misses.iter().enumerate() {
+                    if let Some(v) = ocr.get(k).and_then(|v| v.as_ref()) {
+                        latex[*i] = v.clone();
+                        if let Some(inner) = session.write().as_mut() {
+                            inner.ocr_cache.put(key.clone(), v.clone());
+                        }
+                    }
+                }
+            }
+            for (i, l) in latex.iter().enumerate() {
+                if !l.is_empty() {
+                    input = input.replace(&format!("[公式{}]", i + 1), l);
+                }
+            }
+        }
+
+        let prompt = crate::explain::build_prompt(
+            &input,
+            &request.book_name,
+            &request.book_id,
+            request.page,
+        );
+        close_action_bar(session);
+        on_prompt.call(prompt);
+    });
+}
+
 /// 操作栏「精确复制公式」:只有公式选区可用;命中缓存直接复制,否则投递 OCR worker。
 fn action_bar_formula_copy(
     mut session: Signal<Option<ReaderSession>>,
@@ -3092,6 +3484,7 @@ fn select_word(mut session: Signal<Option<ReaderSession>>, page: u32, layer: Lay
             layer,
             formula,
             formula_score,
+            anchor: Some((page, layer, idx)),
             steps: vec![SelectionStep {
                 page,
                 lo: idx,
@@ -3100,6 +3493,7 @@ fn select_word(mut session: Signal<Option<ReaderSession>>, page: u32, layer: Lay
             }],
         });
         inner.dragging = false;
+        inner.shift_extending = false;
         inner.drag_anchor = None;
         inner.action_bar = None;
         inner.translation = None;
@@ -3139,12 +3533,14 @@ fn select_sentence(
             layer,
             formula: flat[anchor].formula,
             formula_score: flat[anchor].formula_score,
+            anchor: Some((page, layer, anchor)),
             steps: sentence_walk(flat, anchor, prev_flat, next_flat, page),
         }
     };
     if let Some(inner) = session.write().as_mut() {
         inner.selection = Some(selection);
         inner.dragging = false;
+        inner.shift_extending = false;
         inner.drag_anchor = None;
         inner.action_bar = None;
         inner.translation = None;
@@ -3177,12 +3573,14 @@ fn select_paragraph(
             layer,
             formula: flat[anchor].formula,
             formula_score: flat[anchor].formula_score,
+            anchor: Some((page, layer, anchor)),
             steps: paragraph_walk(flat, anchor, prev_flat, next_flat, page),
         }
     };
     if let Some(inner) = session.write().as_mut() {
         inner.selection = Some(selection);
         inner.dragging = false;
+        inner.shift_extending = false;
         inner.drag_anchor = None;
         inner.action_bar = None;
         inner.translation = None;
@@ -3200,8 +3598,19 @@ fn page_mousedown(
     if evt.trigger_button() == Some(dioxus::html::input_data::MouseButton::Secondary) {
         return; // 右键交给操作栏,不清选区
     }
+    if evt.modifiers().contains(Modifiers::SHIFT)
+        && session
+            .read()
+            .as_ref()
+            .and_then(|s| s.selection.as_ref())
+            .map(|sel| !sel.steps.is_empty())
+            .unwrap_or(false)
+    {
+        return; // Shift 扩展中:点击空白不清除选区
+    }
     if let Some(inner) = session.write().as_mut() {
         inner.selection = None;
+        inner.shift_extending = false;
         inner.drag_anchor = None;
         inner.dragging = false;
         inner.action_bar = None;
@@ -3280,7 +3689,11 @@ fn render_layer_overlay(
                                     }
                                     evt.stop_propagation();
                                     evt.prevent_default();
-                                    start_drag(session, p, layer, idx);
+                                    if evt.modifiers().contains(Modifiers::SHIFT) {
+                                        begin_shift_extend(session, p, layer, idx);
+                                    } else {
+                                        start_drag(session, p, layer, idx);
+                                    }
                                     let _ = d.webview.evaluate_script(
                                         "var el=document.querySelector('.reader-scroll');if(el)el.focus();",
                                     );
@@ -3303,7 +3716,11 @@ fn render_layer_overlay(
                                 let p = p;
                                 let layer = layer;
                                 let mut cs = cs;
-                                move |_| {
+                                move |evt: MouseEvent| {
+                                    if evt.modifiers().contains(Modifiers::SHIFT) {
+                                        evt.stop_propagation();
+                                        return; // Shift 扩展由 mousedown 处理,跳过点击计数
+                                    }
                                     let now = std::time::Instant::now();
                                     let (count, cpage, clayer, word, generation, last) = *cs.read();
                                     let count = if cpage == p
@@ -3342,6 +3759,9 @@ fn render_layer_overlay(
                                 let layer = layer;
                                 move |evt: MouseEvent| {
                                     evt.stop_propagation();
+                                    if evt.modifiers().contains(Modifiers::SHIFT) {
+                                        return; // Shift 扩展不覆盖为选词
+                                    }
                                     if evt.modifiers().contains(Modifiers::META) {
                                         select_paragraph(session, p, layer, idx);
                                     } else {
@@ -3801,6 +4221,7 @@ fn evict_cache(inner: &mut ReaderSession, current: u32) {
 #[component]
 pub fn ReaderPanel(
     book_id: String,
+    project_id: Option<String>,
     error_signal: Signal<ErrorSignal>,
     on_back: Callback<()>,
 ) -> Element {
@@ -3836,6 +4257,269 @@ pub fn ReaderPanel(
     let toc_active_id = use_signal(|| Option::<(String, u32)>::None);
     // 跳页渲染中：显示“正在加载第 N 页…”。
     let page_loading = use_signal(|| Option::<u32>::None);
+    // ── 全书搜索面板 ──
+    let search_open = use_signal(|| false);
+    let search_query = use_signal(String::new);
+    let search_results = use_signal(Vec::<(u32, String)>::new);
+    let search_running = use_signal(|| false);
+    let search_gen = use_signal(|| 0u64);
+
+    // ── 书旁持久对话侧栏(完整 Agent 管线:落库 + usage + hook + 审批) ──
+    let mut chat_open = use_signal(|| false);
+    let mut chat_runtimes = use_signal(|| HashMap::<String, ConversationRuntime>::new());
+    let chat_active_conv = use_signal(String::new);
+    let mut chat_streaming = use_signal(|| false);
+    let chat_streaming_projects = use_signal(Vec::<String>::new);
+    let chat_approval_tx = use_signal(|| {
+        HashMap::<String, tokio::sync::mpsc::Sender<(String, bool)>>::new()
+    });
+    let chat_streaming_states: Arc<Mutex<HashMap<String, UiMessage>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let chat_action_mode = use_signal(|| ActionMode::Regular);
+    let chat_agent_mode = use_signal(|| {
+        crate::settings::get()
+            .general
+            .default_agent_mode
+            .parse::<AgentMode>()
+            .unwrap_or_default()
+    });
+    let chat_agent_config_id = use_signal(String::new);
+    let chat_approval_hint = use_signal(|| Option::<String>::None);
+    let chat_conversations = use_signal(Vec::<ConversationRow>::new);
+    let chat_agent_config = use_signal(Vec::<AgentConfigRow>::new);
+
+    // 书旁对话不再与书绑定：列出来源学习计划的对话，由用户选择。
+    let source_project =
+        project_id.clone().unwrap_or_else(|| crate::db::DEFAULT_PROJECT_ID.to_string());
+    let source_project_init = source_project.clone();
+    let mut chat_init_ran = use_signal(|| false);
+    let chat_streaming_states_init = chat_streaming_states.clone();
+    use_effect(move || {
+        if *chat_init_ran.read() {
+            return;
+        }
+        chat_init_ran.set(true);
+        let pid = source_project_init.clone();
+        let mut convs_sig = chat_conversations;
+        let mut cid_sig = chat_active_conv;
+        let runtimes = chat_runtimes;
+        let ss = chat_streaming_states_init.clone();
+        let mut ac_id = chat_agent_config_id;
+        let mut ac_list = chat_agent_config;
+        spawn(async move {
+            let rows = crate::db::with_db(|conn| {
+                crate::db::metadata::conversation::list_by_agent_config(
+                    conn,
+                    &pid,
+                    crate::book_chat::READ_HELPER_AGENT_ID,
+                )
+                .unwrap_or_default()
+            });
+            convs_sig.set(rows.clone());
+            let selected = rows.first().cloned().or_else(|| {
+                // 没有对话时自动创建一个普通对话，保证侧栏可用。
+                let new_id = crate::db::with_db(|conn| {
+                    crate::db::metadata::conversation::create_with_status(
+                        conn,
+                        &pid,
+                        "阅读对话",
+                        None,
+                        Some(crate::book_chat::READ_HELPER_AGENT_ID),
+                        crate::db::metadata::conversation::ConversationStatus::SubAgent,
+                    )
+                })
+                .unwrap_or_default();
+                crate::db::with_db(|conn| {
+                    crate::db::metadata::conversation::get(conn, &new_id)
+                        .ok()
+                        .flatten()
+                })
+            });
+            if let Some(row) = selected {
+                let cid = row.id.clone();
+                cid_sig.set(cid.clone());
+                crate::ui::components::app::ensure_conv_loaded(
+                    &cid,
+                    runtimes,
+                    ss,
+                    reader_markdown_to_html,
+                );
+                let cfg_id = row.agent_config_id.clone().unwrap_or_default();
+                ac_id.set(cfg_id.clone());
+                let cfg_rows = if cfg_id.is_empty() {
+                    Vec::new()
+                } else {
+                    crate::db::with_db(|conn| {
+                        crate::db::metadata::agent_config::get(conn, &cfg_id)
+                            .ok()
+                            .flatten()
+                            .into_iter()
+                            .collect()
+                    })
+                };
+                ac_list.set(cfg_rows);
+                if !rows.iter().any(|r| r.id == row.id) {
+                    let mut all = rows;
+                    all.push(row);
+                    convs_sig.set(all);
+                }
+            }
+        });
+    });
+
+    let chat_streaming_states_select = chat_streaming_states.clone();
+    let on_select_chat_conversation = Callback::new(move |cid: String| {
+        let mut cid_sig = chat_active_conv;
+        let mut ac_id_sig = chat_agent_config_id;
+        let mut ac_list_sig = chat_agent_config;
+        let runtimes = chat_runtimes;
+        let ss = chat_streaming_states_select.clone();
+        cid_sig.set(cid.clone());
+        crate::ui::components::app::ensure_conv_loaded(
+            &cid,
+            runtimes,
+            ss,
+            reader_markdown_to_html,
+        );
+        let row = crate::db::with_db(|conn| {
+            crate::db::metadata::conversation::get(conn, &cid)
+                .ok()
+                .flatten()
+        });
+        let cfg_id = row.and_then(|r| r.agent_config_id).unwrap_or_default();
+        ac_id_sig.set(cfg_id.clone());
+        let cfg_rows = if cfg_id.is_empty() {
+            Vec::new()
+        } else {
+            crate::db::with_db(|conn| {
+                crate::db::metadata::agent_config::get(conn, &cfg_id)
+                    .ok()
+                    .flatten()
+                    .into_iter()
+                    .collect()
+            })
+        };
+        ac_list_sig.set(cfg_rows);
+    });
+
+    let on_new_chat_conversation = Callback::new(move |_| {
+        let mut convs_sig = chat_conversations;
+        let pid = source_project.clone();
+        let new_id = crate::db::with_db(|conn| {
+            crate::db::metadata::conversation::create_with_status(
+                conn,
+                &pid,
+                "阅读对话",
+                None,
+                Some(crate::book_chat::READ_HELPER_AGENT_ID),
+                crate::db::metadata::conversation::ConversationStatus::SubAgent,
+            )
+        });
+        let Ok(new_id) = new_id else {
+            return;
+        };
+        let row = crate::db::with_db(|conn| {
+            crate::db::metadata::conversation::get(conn, &new_id)
+                .ok()
+                .flatten()
+        });
+        if let Some(r) = row {
+            let mut all = convs_sig.read().clone();
+            all.push(r.clone());
+            convs_sig.set(all);
+            on_select_chat_conversation.call(r.id);
+        }
+    });
+
+    let chat_streaming_states_send = chat_streaming_states.clone();
+    let send_chat_message = Callback::new(move |input: String| {
+        let input = input.trim().to_string();
+        if input.is_empty() {
+            return;
+        }
+        let cid = chat_active_conv();
+        if cid.is_empty() {
+            error_signal.write().push(ErrorInfo::new(
+                "book-chat-not-ready",
+                "书聊尚未初始化",
+                "请稍候再发送。",
+                ErrorSeverity::Warning,
+                ErrorSource::General,
+            ));
+            return;
+        }
+        let user_msg = ChatMessage {
+            role: Role::User,
+            content: input.clone(),
+            timestamp: chrono::Local::now(),
+            reasoning: String::new(),
+            segments: Vec::new(),
+            content_html: reader_markdown_to_html(&input),
+        };
+        {
+            let mut rt = chat_runtimes.write();
+            let rt = rt.entry(cid.clone()).or_default();
+            rt.messages.push(UiMessage::Static(user_msg.clone()));
+            rt.tick += 1;
+        }
+
+        chat_streaming.set(true);
+        let bridge_cancel = CancellationToken::new();
+        chat_runtimes
+            .write()
+            .entry(cid.clone())
+            .or_default()
+            .cancel_token = Some(bridge_cancel.clone());
+
+        let cur_action = chat_action_mode();
+        let cur_mode = chat_agent_mode();
+        let rt = chat_runtimes;
+        let streaming = chat_streaming;
+        let streaming_projects = chat_streaming_projects;
+        let ss = chat_streaming_states_send.clone();
+        let err_sig = error_signal;
+        let atx = chat_approval_tx;
+        let pid = crate::db::DEFAULT_PROJECT_ID.to_string();
+        spawn(async move {
+            crate::ui::bridge::run_agent_loop(crate::ui::bridge::BridgeContext {
+                user_input: input,
+                action_mode: cur_action,
+                agent_mode: cur_mode,
+                runtimes: rt,
+                is_streaming: streaming,
+                streaming_project_id: streaming_projects,
+                project_id: pid,
+                cancel_token: bridge_cancel,
+                conversation_id: cid,
+                streaming_states: ss,
+                error_signal: err_sig,
+                approval_tx: atx,
+            })
+            .await;
+        });
+    });
+
+    let on_explain_prompt = Callback::new(move |prompt: String| {
+        chat_open.set(true);
+        send_chat_message.call(prompt);
+    });
+
+    // 引用指针 → 阅读器跳页并高亮原文。
+    let mut citation_target = use_signal(|| Option::<(u32, String)>::None);
+    let desktop_citation = desktop.clone();
+    use_effect(move || {
+        let target = citation_target.read().clone();
+        if let Some((page, quote)) = target {
+            citation_target.set(None);
+            let session = session;
+            let desktop = desktop_citation.clone();
+            let page_loading = page_loading;
+            let zoom = zoom;
+            spawn(async move {
+                open_citation(session, desktop, page, quote, page_loading, zoom);
+            });
+        }
+    });
 
     let mut opened = use_signal(|| false);
     let desktop_effect = desktop.clone();
@@ -3898,6 +4582,7 @@ pub fn ReaderPanel(
                         selection: None,
                         drag_anchor: None,
                         dragging: false,
+                        shift_extending: false,
                         ocr_cache: SingleSlotCache::new(),
                         pending_copy: None,
                         copy_busy: false,
@@ -4318,6 +5003,7 @@ pub fn ReaderPanel(
             label,
             bar.show_formula,
             bar.translation_enabled,
+            bar.explain_enabled,
             translation_loading,
         )
     });
@@ -4341,6 +5027,29 @@ pub fn ReaderPanel(
         )
     });
 
+    let origin_name = project_id.as_ref().and_then(|pid| {
+        let name = crate::db::with_db(|conn| {
+            crate::db::metadata::project::get(conn, pid)
+                .ok()
+                .flatten()
+                .map(|r| r.name)
+                .unwrap_or_default()
+        });
+        (!name.is_empty()).then_some(name)
+    });
+    let chat_options: Vec<DropdownOption> = chat_conversations
+        .read()
+        .iter()
+        .map(|c| DropdownOption {
+            value: c.id.clone(),
+            label: if c.title.trim().is_empty() {
+                "new conversation".to_string()
+            } else {
+                c.title.clone()
+            },
+        })
+        .collect();
+
     rsx! {
         div {
             class: "reader-root",
@@ -4355,12 +5064,10 @@ pub fn ReaderPanel(
                     onclick: on_toggle_toc,
                     "☰"
                 }
-                button {
-                    class: "btn btn-cancel",
-                    onclick: move |_| on_back.call(()),
-                    "← 关闭"
-                }
                 span { class: "reader-title", "{book_name}" }
+                if let Some(ref origin) = origin_name {
+                    span { class: "reader-origin", "计划 · {origin}" }
+                }
                 div {
                     class: "reader-page-control",
                     input {
@@ -4374,6 +5081,28 @@ pub fn ReaderPanel(
                 }
                 div {
                     class: "reader-toolbar",
+                    button {
+                        class: "btn btn-cancel reader-chat-toggle",
+                        onclick: {
+                            let mut chat_open = chat_open;
+                            move |_| {
+                                let open = *chat_open.read();
+                                chat_open.set(!open);
+                            }
+                        },
+                        if *chat_open.read() { "隐藏对话" } else { "对话" }
+                    }
+                    button {
+                        class: "btn btn-cancel reader-search-toggle",
+                        onclick: {
+                            let mut search_open = search_open;
+                            move |_| {
+                                let open = *search_open.read();
+                                search_open.set(!open);
+                            }
+                        },
+                        if *search_open.read() { "关闭搜索" } else { "搜索" }
+                    }
                     if copy_busy {
                         span { class: "reader-copy-status", "识别公式中…" }
                     }
@@ -4393,6 +5122,11 @@ pub fn ReaderPanel(
                         onclick: on_zoom_in,
                         "+"
                     }
+                    button {
+                        class: "btn btn-cancel reader-close",
+                        onclick: move |_| on_back.call(()),
+                        "← 关闭"
+                    }
                 }
             }
             if let Some(n) = page_loading_now {
@@ -4410,7 +5144,126 @@ pub fn ReaderPanel(
                 }
             } else {
                 div {
-                    class: "reader-body",
+                    class: if *chat_open.read() {
+                        "reader-body has-chat"
+                    } else {
+                        "reader-body"
+                    },
+                    if *search_open.read() {
+                        div {
+                            class: "reader-search",
+                            div {
+                                class: "reader-search-head",
+                                span { class: "reader-search-title", "全书搜索" }
+                                button {
+                                    class: "reader-search-close",
+                                    onclick: {
+                                        let mut search_open = search_open;
+                                        move |_| search_open.set(false)
+                                    },
+                                    "✕"
+                                }
+                            }
+                            div {
+                                class: "reader-search-input-row",
+                                input {
+                                    class: "reader-search-input",
+                                    value: search_query,
+                                    placeholder: "搜索关键词…",
+                                    oninput: {
+                                        let mut search_query = search_query;
+                                        move |evt: FormEvent| search_query.set(evt.value())
+                                    },
+                                    onkeydown: {
+                                        let session = session;
+                                        let search_query = search_query;
+                                        let search_results = search_results;
+                                        let search_running = search_running;
+                                        let search_gen = search_gen;
+                                        move |evt: KeyboardEvent| {
+                                            if evt.key().to_string() == "Enter" {
+                                                run_book_search(
+                                                    session,
+                                                    search_query,
+                                                    search_results,
+                                                    search_running,
+                                                    search_gen,
+                                                );
+                                            }
+                                        }
+                                    },
+                                }
+                                button {
+                                    class: "btn btn-send",
+                                    disabled: *search_running.read(),
+                                    onclick: {
+                                        let session = session;
+                                        let search_query = search_query;
+                                        let search_results = search_results;
+                                        let search_running = search_running;
+                                        let search_gen = search_gen;
+                                        move |_| {
+                                            run_book_search(
+                                                session,
+                                                search_query,
+                                                search_results,
+                                                search_running,
+                                                search_gen,
+                                            )
+                                        }
+                                    },
+                                    if *search_running.read() { "…" } else { "搜索" }
+                                }
+                            }
+                            if *search_running.read() {
+                                div { class: "reader-search-status", "搜索中…" }
+                            } else if search_results.read().is_empty()
+                                && !search_query.read().trim().is_empty()
+                            {
+                                div { class: "reader-search-empty", "无匹配结果" }
+                            } else {
+                                div {
+                                    class: "reader-search-results",
+                                    for (page, snippet) in search_results.read().iter() {
+                                        {
+                                            let p = *page;
+                                            let s = snippet.clone();
+                                            rsx! {
+                                                button {
+                                                    class: "reader-search-result",
+                                                    onclick: {
+                                                        let session = session;
+                                                        let desktop = desktop.clone();
+                                                        let page_loading = page_loading;
+                                                        let zoom = zoom;
+                                                        let s2 = s.clone();
+                                                        move |_| {
+                                                            open_citation(
+                                                                session,
+                                                                desktop.clone(),
+                                                                p,
+                                                                s2.clone(),
+                                                                page_loading,
+                                                                zoom,
+                                                            )
+                                                        }
+                                                    },
+                                                    span {
+                                                        class: "reader-search-result-page",
+                                                        "P{p}"
+                                                    }
+                                                    span {
+                                                        class: "reader-search-result-snippet",
+                                                        "{s}"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     if toc_open_now {
                         div {
                             class: "reader-toc",
@@ -4641,7 +5494,16 @@ pub fn ReaderPanel(
                 }
                 }
             }
-            if let Some((bar, status_class, label, show_formula, translation_enabled, translation_loading)) = action_bar_view {
+            if let Some((
+                bar,
+                status_class,
+                label,
+                show_formula,
+                translation_enabled,
+                explain_enabled,
+                translation_loading,
+            )) = action_bar_view
+            {
                 div {
                     class: "reader-actionbar is-open",
                     role: "toolbar",
@@ -4668,6 +5530,15 @@ pub fn ReaderPanel(
                                 }
                             },
                             "翻译"
+                        }
+                    }
+                    if explain_enabled {
+                        button {
+                            class: "reader-actionbar__btn",
+                            onclick: move |_| {
+                                action_bar_explain(session, on_explain_prompt.clone())
+                            },
+                            "解释"
                         }
                     }
                     if show_formula {
@@ -4813,13 +5684,296 @@ pub fn ReaderPanel(
                     }
                 }
             }
+            if *chat_open.read() {
+                div {
+                    class: "reader-chat-side",
+                    div {
+                        class: "reader-chat-side__head",
+                        span { class: "reader-chat-side__title", "{book_name} · 对话" }
+                        div {
+                            class: "reader-chat-side__select",
+                            Dropdown {
+                                value: chat_active_conv(),
+                                onchange: on_select_chat_conversation,
+                                options: chat_options,
+                                placeholder: "选择对话",
+                                searchable: Some(true),
+                            }
+                        }
+                        button {
+                            class: "reader-chat-side__new",
+                            title: "新建对话",
+                            onclick: {
+                                let on_new = on_new_chat_conversation;
+                                move |_| on_new.call(())
+                            },
+                            "+"
+                        }
+                        button {
+                            class: "reader-chat-side__close",
+                            onclick: move |_| {
+                                let mut chat_open = chat_open;
+                                chat_open.set(false);
+                            },
+                            "✕"
+                        }
+                    }
+                    ChatPanel {
+                        runtimes: chat_runtimes,
+                        active_conv_id: chat_active_conv,
+                        is_streaming: chat_streaming,
+                        markdown_to_html: reader_markdown_to_html,
+                        on_approve: {
+                            let atx = chat_approval_tx;
+                            let cid = chat_active_conv;
+                            move |(tool_call_id, allowed): (String, bool)| {
+                                let conv_id = cid();
+                                if let Some(tx) = atx.read().get(&conv_id).cloned() {
+                                    let _ = tx.try_send((tool_call_id, allowed));
+                                }
+                            }
+                        },
+                        citation_handler: Some(Callback::new(move |c: BookCitation| {
+                            let mut citation_target = citation_target;
+                            citation_target.set(Some((c.page, c.quote)));
+                        })),
+                    }
+                    InputBar {
+                        is_streaming: chat_streaming,
+                        action_mode: chat_action_mode,
+                        agent_mode: chat_agent_mode,
+                        agent_configs: chat_agent_config(),
+                        selected_agent_config_id: chat_agent_config_id(),
+                        on_agent_config_change: move |_new_id: String| {},
+                        on_agent_mode_change: {
+                            let mut am = chat_agent_mode;
+                            move |mode: AgentMode| am.set(mode)
+                        },
+                        config_disabled: true,
+                        approval_hint_text: chat_approval_hint,
+                        on_send: send_chat_message,
+                        on_cancel: {
+                            let rt_sig = chat_runtimes;
+                            let cid_sig = chat_active_conv;
+                            move |_| {
+                                let cid = cid_sig();
+                                if let Some(rt) = rt_sig.read().get(&cid)
+                                    && let Some(ref token) = rt.cancel_token
+                                {
+                                    token.cancel();
+                                }
+                            }
+                        },
+                    }
+                }
+            }
         }
     }
+}
+
+// ── 全书搜索：pages/*.md 全文检索，返回 (页码, 片段) ──────────────────────
+
+fn search_book_pages(
+    dir: &Path,
+    query: &str,
+    max_results: usize,
+    max_chars: usize,
+) -> Vec<(u32, String)> {
+    let pages_dir = crate::layout::book_pages_dir(dir);
+    let mut entries: Vec<_> = std::fs::read_dir(&pages_dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .collect();
+    entries.sort_by_key(|e| e.file_name());
+    let q = query.to_lowercase();
+    let mut out = Vec::new();
+    let mut total = 0usize;
+    'pages: for entry in entries {
+        if out.len() >= max_results || total >= max_chars {
+            break;
+        }
+        let Ok(text) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        let page_no = entry
+            .file_name()
+            .to_string_lossy()
+            .trim_end_matches(".md")
+            .parse::<u32>()
+            .unwrap_or(0);
+        for line in text.lines() {
+            if !line.to_lowercase().contains(&q) {
+                continue;
+            }
+            let snippet = line.trim().to_string();
+            total += snippet.chars().count() + 1;
+            out.push((page_no, snippet));
+            if out.len() >= max_results || total >= max_chars {
+                break 'pages;
+            }
+        }
+    }
+    out
+}
+
+/// 触发一次全书搜索（阻塞读盘放 spawn_blocking，结果按代数丢弃过期返回）。
+fn run_book_search(
+    session: Signal<Option<ReaderSession>>,
+    query: Signal<String>,
+    mut results: Signal<Vec<(u32, String)>>,
+    mut running: Signal<bool>,
+    mut search_gen: Signal<u64>,
+) {
+    let q = query.read().trim().to_string();
+    if q.is_empty() {
+        results.set(Vec::new());
+        return;
+    }
+    let Some(dir) = session.read().as_ref().map(|s| s.book_dir.clone()) else {
+        return;
+    };
+    running.set(true);
+    let g = search_gen() + 1;
+    search_gen.set(g);
+    spawn(async move {
+        let q2 = q.clone();
+        let dir2 = dir.clone();
+        let out = tokio::task::spawn_blocking(move || {
+            search_book_pages(&dir2, &q2, 50, 12_000)
+        })
+        .await
+        .unwrap_or_default();
+        if search_gen() != g {
+            return;
+        }
+        results.set(out);
+        running.set(false);
+    });
+}
+
+// ── 引用指针：跳页 + 原文高亮 ───────────────────────────────────────────────
+
+/// 归一化文本：去掉空白并转小写，便于模糊匹配引用片段。
+fn normalize_quote(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_whitespace())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+/// 在某一页正文/小字层中查找 quote，构造高亮选区。
+fn find_quote_selection(inner: &ReaderSession, page: u32, quote: &str) -> Option<Selection> {
+    let q = normalize_quote(quote);
+    if q.is_empty() {
+        return None;
+    }
+    let rendered = inner.cache.get(&page)?;
+    for layer in [Layer::Body, Layer::Small] {
+        let flat = layer_flat(rendered, layer);
+        if flat.is_empty() {
+            continue;
+        }
+        let mut hay = String::new();
+        let mut char_to_word: Vec<usize> = Vec::new();
+        for (i, w) in flat.iter().enumerate() {
+            let start = hay.chars().count();
+            hay.push_str(&normalize_quote(&w.text));
+            for _ in start..hay.chars().count() {
+                char_to_word.push(i);
+            }
+        }
+        let Some(pos) = hay.find(&q) else {
+            continue;
+        };
+        let end = pos + q.chars().count();
+        if pos >= char_to_word.len() || end.saturating_sub(1) >= char_to_word.len() {
+            continue;
+        }
+        let lo = char_to_word[pos];
+        let hi = char_to_word[end - 1];
+        return Some(Selection {
+            layer,
+            steps: vec![SelectionStep {
+                page,
+                lo,
+                hi,
+                column_left: None,
+            }],
+            formula: false,
+            formula_score: 0.0,
+            anchor: None,
+        });
+    }
+    None
+}
+
+/// 点击引用 chip：跳转到目标页并等待渲染完成后高亮原文。
+fn open_citation(
+    mut session: Signal<Option<ReaderSession>>,
+    desktop: dioxus::desktop::DesktopContext,
+    page: u32,
+    quote: String,
+    page_loading: Signal<Option<u32>>,
+    zoom: Signal<u32>,
+) {
+    request_jump(session, desktop, page, page_loading, zoom);
+    spawn(async move {
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let ready = session
+                .read()
+                .as_ref()
+                .map(|s| s.cache.contains_key(&page))
+                .unwrap_or(false);
+            if ready {
+                break;
+            }
+        }
+        let mut guard = session.write();
+        if let Some(inner) = guard.as_mut() {
+            if let Some(sel) = find_quote_selection(inner, page, &quote) {
+                inner.selection = Some(sel);
+                inner.action_bar = None;
+                inner.translation = None;
+            }
+        }
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_book_pages_returns_sorted_page_snippets() {
+        let dir = std::env::temp_dir().join(format!(
+            "ueberneon-reader-search-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let pages = crate::layout::book_pages_dir(&dir);
+        std::fs::create_dir_all(&pages).unwrap();
+        std::fs::write(
+            crate::layout::book_page_md_path(&pages, 1),
+            "线性代数定义\n正文内容",
+        )
+        .unwrap();
+        std::fs::write(
+            crate::layout::book_page_md_path(&pages, 2),
+            "另一章\n代数几何简介",
+        )
+        .unwrap();
+
+        let out = search_book_pages(&dir, "代数", 50, 6000);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].0, 1);
+        assert!(out[0].1.contains("线性代数定义"));
+        assert_eq!(out[1].0, 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn fw(line: usize, text: &str, left: f64, top: f64, height: f64) -> FlatWord {
         FlatWord {
@@ -4915,6 +6069,7 @@ mod tests {
                 layer: Layer::Body,
                 formula: false,
                 formula_score: 0.0,
+                anchor: None,
                 steps,
             },
             |_| Some(&flat),
@@ -4988,6 +6143,7 @@ mod tests {
                 layer: Layer::Body,
                 formula: false,
                 formula_score: 0.0,
+                anchor: None,
                 steps,
             },
             |page| {
@@ -5032,6 +6188,7 @@ mod tests {
                 layer: Layer::Body,
                 formula: false,
                 formula_score: 0.0,
+                anchor: None,
                 steps,
             },
             |_| Some(&flat),
@@ -5088,6 +6245,7 @@ mod tests {
                 layer: Layer::Body,
                 formula: false,
                 formula_score: 0.0,
+                anchor: None,
                 steps,
             },
             |_| Some(&flat),
@@ -5112,6 +6270,7 @@ mod tests {
                 layer: Layer::Body,
                 formula: false,
                 formula_score: 0.0,
+                anchor: None,
                 steps,
             },
             |_| Some(&flat),
@@ -5151,6 +6310,7 @@ mod tests {
             layer: Layer::Body,
             formula: false,
             formula_score: 0.0,
+            anchor: None,
             steps: vec![SelectionStep {
                 page: 1,
                 lo: 0,
@@ -5273,6 +6433,7 @@ mod tests {
             layer: Layer::Body,
             formula: false,
             formula_score: 0.0,
+            anchor: None,
             steps: vec![
                 SelectionStep {
                     page: 0,
@@ -5305,6 +6466,123 @@ mod tests {
         assert_eq!(text, "a b.\nc d.");
     }
 
+    fn page_with_words(words: &[&str]) -> RenderedPage {
+        RenderedPage {
+            src: String::new(),
+            body: words
+                .iter()
+                .enumerate()
+                .map(|(i, w)| fw(0, w, i as f64, 0.0, 2.0))
+                .collect(),
+            small: Vec::new(),
+            w_pt: 1.0,
+            h_pt: 1.0,
+            warning: None,
+        }
+    }
+
+    fn selection_with_anchor(page: u32, layer: Layer, idx: usize) -> Selection {
+        Selection {
+            layer,
+            formula: false,
+            formula_score: 0.0,
+            anchor: Some((page, layer, idx)),
+            steps: vec![SelectionStep {
+                page,
+                lo: idx,
+                hi: idx,
+                column_left: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn shift_extend_same_page_forward_shrink_and_self() {
+        let mut cache = HashMap::new();
+        cache.insert(1, page_with_words(&["a", "b", "c", "d", "e"]));
+        let sel = selection_with_anchor(1, Layer::Body, 1);
+
+        let ext = shift_extend_selection(&cache, &sel, 1, Layer::Body, 3).unwrap();
+        assert_eq!(ext.steps.len(), 1);
+        assert_eq!(
+            (ext.steps[0].page, ext.steps[0].lo, ext.steps[0].hi),
+            (1, 1, 3)
+        );
+        assert_eq!(ext.anchor, Some((1, Layer::Body, 1)));
+
+        let ext = shift_extend_selection(&cache, &sel, 1, Layer::Body, 0).unwrap();
+        assert_eq!((ext.steps[0].lo, ext.steps[0].hi), (0, 1));
+
+        let ext = shift_extend_selection(&cache, &sel, 1, Layer::Body, 1).unwrap();
+        assert_eq!((ext.steps[0].lo, ext.steps[0].hi), (1, 1));
+    }
+
+    #[test]
+    fn shift_extend_cross_page_forward_and_backward_order() {
+        let mut cache = HashMap::new();
+        cache.insert(1, page_with_words(&["a", " ", "b", " ", "c"]));
+        cache.insert(2, page_with_words(&["d", " ", "e", " ", "f", " ", "g"]));
+
+        // 前向:锚点页 1 的 "b"(idx2) → 页 2 的 "f"(idx4)。
+        let sel = selection_with_anchor(1, Layer::Body, 2);
+        let ext = shift_extend_selection(&cache, &sel, 2, Layer::Body, 4).unwrap();
+        assert_eq!(ext.steps.len(), 2);
+        assert_eq!(
+            (ext.steps[0].page, ext.steps[0].lo, ext.steps[0].hi),
+            (1, 2, 4)
+        );
+        assert_eq!(
+            (ext.steps[1].page, ext.steps[1].lo, ext.steps[1].hi),
+            (2, 0, 4)
+        );
+        let text = copy_steps(&ext, |p| cache.get(&p).map(|r| layer_flat(r, Layer::Body))).unwrap();
+        assert_eq!(text, "b c\nd e f");
+
+        // 后向:锚点页 2 的 "e"(idx2) → 页 1 的 "c"(idx4)。
+        let sel = selection_with_anchor(2, Layer::Body, 2);
+        let ext = shift_extend_selection(&cache, &sel, 1, Layer::Body, 4).unwrap();
+        assert_eq!(
+            (ext.steps[0].page, ext.steps[0].lo, ext.steps[0].hi),
+            (1, 4, 4)
+        );
+        assert_eq!(
+            (ext.steps[1].page, ext.steps[1].lo, ext.steps[1].hi),
+            (2, 0, 2)
+        );
+        let text = copy_steps(&ext, |p| cache.get(&p).map(|r| layer_flat(r, Layer::Body))).unwrap();
+        assert_eq!(text, "c\nd e");
+    }
+
+    #[test]
+    fn shift_extend_rejects_layer_span_and_missing_pages() {
+        let mut cache = HashMap::new();
+        cache.insert(1, page_with_words(&["a", "b"]));
+        cache.insert(2, page_with_words(&["c", "d"]));
+        cache.insert(3, page_with_words(&["e", "f"]));
+
+        let sel = selection_with_anchor(1, Layer::Body, 0);
+        assert!(shift_extend_selection(&cache, &sel, 1, Layer::Small, 0).is_none());
+        assert!(shift_extend_selection(&cache, &sel, 3, Layer::Body, 0).is_none());
+
+        let sel = Selection {
+            layer: Layer::Body,
+            formula: false,
+            formula_score: 0.0,
+            anchor: Some((9, Layer::Body, 0)),
+            steps: Vec::new(),
+        };
+        assert!(shift_extend_selection(&cache, &sel, 1, Layer::Body, 0).is_none());
+
+        let sel = Selection {
+            layer: Layer::Body,
+            formula: false,
+            formula_score: 0.0,
+            anchor: None,
+            steps: Vec::new(),
+        };
+        assert!(shift_extend_selection(&cache, &sel, 1, Layer::Body, 0).is_none());
+    }
+
     #[test]
     fn translation_input_plain_text_has_no_placeholders() {
         let flat = vec![
@@ -5317,6 +6595,7 @@ mod tests {
             layer: Layer::Body,
             formula: false,
             formula_score: 0.0,
+            anchor: None,
             steps: vec![SelectionStep {
                 page: 1,
                 lo: 0,
@@ -5345,6 +6624,7 @@ mod tests {
             layer: Layer::Body,
             formula: false,
             formula_score: 0.0,
+            anchor: None,
             steps: vec![SelectionStep {
                 page: 1,
                 lo: 0,
@@ -5368,6 +6648,7 @@ mod tests {
             layer: Layer::Body,
             formula: true,
             formula_score: 1.0,
+            anchor: None,
             steps: vec![SelectionStep {
                 page: 1,
                 lo: 0,
@@ -5388,6 +6669,7 @@ mod tests {
             layer: Layer::Body,
             formula: false,
             formula_score: 0.0,
+            anchor: None,
             steps: vec![SelectionStep {
                 page: 1,
                 lo: 0,
@@ -5508,6 +6790,7 @@ mod tests {
             layer: Layer::Body,
             formula: false,
             formula_score: 0.0,
+            anchor: None,
             steps: vec![SelectionStep {
                 page: 2,
                 lo: 0,
