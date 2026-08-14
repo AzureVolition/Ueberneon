@@ -28,7 +28,7 @@ fn markdown_to_html(md: &str) -> String {
     let parser = pulldown_cmark::Parser::new_ext(md, pulldown_cmark::Options::ENABLE_TABLES);
     let mut html = String::new();
     pulldown_cmark::html::push_html(&mut html, parser);
-    html
+    crate::math::render_math_in_html(&html)
 }
 
 fn load_agent_configs() -> Vec<crate::db::metadata::agent_config::AgentConfigRow> {
@@ -538,21 +538,13 @@ pub fn App() -> Element {
             );
             active_tool_calls.set(Vec::new());
         }
-        crate::db::try_with_db(|conn| {
-            if let Err(e) = crate::db::metadata::message::delete_by_conversation(conn, &conv_id) {
-                tracing::error!(target:"db", error=%e, "delete messages");
-            }
-            if let Err(e) = crate::db::metadata::conversation::delete(conn, &conv_id) {
-                tracing::error!(target:"db", error=%e, "delete conversation");
-            }
-        });
+        crate::book_chat::delete_conversation(&conv_id);
         {
             let mut projs = projects.write();
             if let Some(proj) = projs.iter_mut().find(|p| p.id == proj_id) {
                 proj.conversations.retain(|c| c.id != conv_id);
             }
         }
-        AgentManager::get().remove(&conv_id);
         let curr = sidebar_view.read().clone();
         sidebar_view.set(curr);
     };
@@ -673,6 +665,7 @@ pub fn App() -> Element {
                         ReaderPanel {
                             book_id: book_id.clone(),
                             project_id: None,
+                            initial_citation: None,
                             error_signal: error_signal,
                             on_back: on_back_reader,
                         }
@@ -883,6 +876,7 @@ pub fn App() -> Element {
                                             spawn(async move {
                                                 crate::ui::bridge::run_agent_loop(crate::ui::bridge::BridgeContext {
                                                     user_input: input,
+                                                    system_preamble: None,
                                                     action_mode: ActionMode::Regular,
                                                     agent_mode: cur_agent_mode,
                                                     runtimes: rt2,
@@ -1082,6 +1076,7 @@ pub fn App() -> Element {
                             spawn(async move {
                                 crate::ui::bridge::run_agent_loop(crate::ui::bridge::BridgeContext {
                                     user_input: input,
+                                    system_preamble: None,
                                     action_mode: cur_action_mode,
                                     agent_mode: cur_agent_mode,
                                     runtimes,

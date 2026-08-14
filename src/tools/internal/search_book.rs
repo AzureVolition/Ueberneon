@@ -64,15 +64,14 @@ impl SearchBook {
             return Err("search_book: query 不能为空".to_string());
         }
         let book = ReadBook::resolve_book(&args.book)?;
-        let text = ReadBook::search_pages(&PathBuf::from(&book.path), query, args.max_chars.max(200));
-        if text == "未找到匹配内容" {
-            return Ok(ToolResult::ok(text));
-        }
-        let lines: Vec<&str> = text.lines().take(args.max_results.max(1)).collect();
-        if lines.is_empty() {
-            return Ok(ToolResult::ok("未找到匹配内容"));
-        }
-        Ok(ToolResult::ok(lines.join("\n")))
+        let text = ReadBook::search_pages_scored(
+            &PathBuf::from(&book.path),
+            &book.id,
+            query,
+            args.max_results.max(1),
+            args.max_chars.max(200),
+        );
+        Ok(ToolResult::ok(text))
     }
 }
 

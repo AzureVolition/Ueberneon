@@ -26,6 +26,8 @@ use crate::ui::components::error::*;
 /// bridge 运行时上下文 —— 打包 run_agent_loop 的所有入参（app.rs 构造点）。
 pub struct BridgeContext {
     pub user_input: String,
+    /// 可选 system 前置消息（如阅读环境变量）；首次或内容变化时随本轮一起发送。
+    pub system_preamble: Option<String>,
     pub action_mode: ActionMode,
     pub agent_mode: AgentMode,
     pub runtimes: Signal<std::collections::HashMap<String, crate::ui::state::ConversationRuntime>>,
@@ -219,6 +221,7 @@ impl PhaseObserver for UiContext {
 pub async fn run_agent_loop(ctx: BridgeContext) {
     let BridgeContext {
         user_input,
+        system_preamble,
         action_mode,
         agent_mode: agent_mode_val,
         mut runtimes,
@@ -278,13 +281,23 @@ pub async fn run_agent_loop(ctx: BridgeContext) {
         crate::db::metadata::conversation::get_request_count(conn, &conversation_id).unwrap_or(0)
     });
 
-    // 用户输入 → LLM 消息，进入流式阶段（内部创建 streaming_handle）
-    let input = vec![llm::Message {
+    // 用户输入 → LLM 消息，进入流式阶段（内部创建 streaming_handle）。
+    // system_preamble 先于用户消息入史，供 Agent 感知当前阅读环境。
+    let mut input = Vec::new();
+    if let Some(preamble) = system_preamble {
+        input.push(llm::Message {
+            role: llm::Role::System,
+            content: Some(preamble),
+            timestamp: Some(chrono::Utc::now()),
+            ..Default::default()
+        });
+    }
+    input.push(llm::Message {
         role: llm::Role::User,
         content: Some(user_input),
         timestamp: Some(chrono::Utc::now()),
         ..Default::default()
-    }];
+    });
 
     let ui = UiContext {
         runtimes,

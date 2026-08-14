@@ -33,7 +33,7 @@ fn reader_markdown_to_html(md: &str) -> String {
     let parser = pulldown_cmark::Parser::new_ext(md, pulldown_cmark::Options::ENABLE_TABLES);
     let mut html = String::new();
     pulldown_cmark::html::push_html(&mut html, parser);
-    html
+    crate::math::render_math_in_html(&html)
 }
 
 /// 固定渲染质量:3.0 像素/点 = 216dpi。
@@ -3886,6 +3886,7 @@ fn update_current_page(
     session: Signal<Option<ReaderSession>>,
     mut current_page: Signal<u32>,
     mut page_input: Signal<String>,
+    mut last_width: Signal<i32>,
     scroll_top: f64,
     client_width: i32,
     client_height: i32,
@@ -3895,6 +3896,12 @@ fn update_current_page(
     let Some(inner) = guard.as_ref() else {
         return;
     };
+    // 面板展开/收起导致阅读区宽度变化时，不重算当前页，
+    // 由面板切换 effect 重新跳回原页。
+    if *last_width.read() != client_width {
+        last_width.set(client_width);
+        return;
+    }
     // 跳转后的短暂窗口内不重算当前页，避免几何瞬时错位把窗口带跑。
     if std::time::Instant::now() < inner.jump_lock_until {
         return;
@@ -3911,6 +3918,7 @@ fn update_current_page(
     if *current_page.read() != cur {
         current_page.set(cur);
         page_input.set(cur.to_string());
+        crate::reading_position::save(&inner.book_dir, cur);
     }
 }
 
@@ -3924,7 +3932,7 @@ fn scroll_to_page(
     zoom: u32,
 ) {
     let js = format!(
-        r#"(function(){{var sc=document.querySelector('.reader-scroll');if(!sc)return;var p="{page}";var n=0;(function tick(){{var el=document.querySelector('[data-page="'+p+'"]');if(el){{var top=el.offsetTop-sc.offsetTop;sc.scrollTop=top;if(Math.abs(sc.scrollTop-top)<1)return;}}if(n++<50){{setTimeout(tick,20);return;}}var pw=Math.max(sc.clientWidth-48,200)*{zoom}/100;sc.scrollTop=pw*{ratio_top}+{gap_part};}})();}})()"#
+        r#"(function(){{var p="{page}";var n=0;(function tick(){{var sc=document.querySelector('.reader-scroll');if(!sc){{if(n++<80){{setTimeout(tick,20);}}return;}}var el=document.querySelector('[data-page="'+p+'"]');if(el){{var top=el.offsetTop-sc.offsetTop;sc.scrollTop=top;if(Math.abs(sc.scrollTop-top)<1)return;if(n++<80){{setTimeout(tick,20);return;}}}}else{{if(n++<80){{setTimeout(tick,20);return;}}}}var pw=Math.max(sc.clientWidth-48,200)*{zoom}/100;sc.scrollTop=pw*{ratio_top}+{gap_part};}})();}})()"#
     );
     let _ = desktop.webview.evaluate_script(&js);
 }
@@ -4222,6 +4230,7 @@ fn evict_cache(inner: &mut ReaderSession, current: u32) {
 pub fn ReaderPanel(
     book_id: String,
     project_id: Option<String>,
+    initial_citation: Option<BookCitation>,
     error_signal: Signal<ErrorSignal>,
     on_back: Callback<()>,
 ) -> Element {
@@ -4230,6 +4239,7 @@ pub fn ReaderPanel(
     let desktop = use_window();
     // 滚动容器内容宽度（clientWidth - padding）。挂载/缩放/滚动时更新。
     let mut client_width = use_signal(|| 800.0f64);
+    let last_scroll_width = use_signal(|| 0i32);
     // (连续点击次数, 页, 层, 词索引, 代数, 最后点击时间)
     let click_state = use_signal(|| {
         (
@@ -4287,6 +4297,40 @@ pub fn ReaderPanel(
     let chat_approval_hint = use_signal(|| Option::<String>::None);
     let chat_conversations = use_signal(Vec::<ConversationRow>::new);
     let chat_agent_config = use_signal(Vec::<AgentConfigRow>::new);
+    let env_book_id = book_id.clone();
+    let env_project_id = project_id.clone();
+    let reading_env = use_signal(move || {
+        let snapshot =
+            crate::book_chat::ReadingEnvSnapshot::from_ids(&env_book_id, env_project_id.as_deref());
+        crate::book_chat::ReadingEnvState::new(snapshot)
+    });
+    let book_id_for_handler = book_id.clone();
+    let project_id_for_handler = project_id.clone();
+
+    // 书签/对话/搜索面板切换会改变阅读区宽度：等布局稳定后跳回当前页。
+    let mut panel_layout = use_signal(|| (false, false, false));
+    let desktop_panel = desktop.clone();
+    use_effect(move || {
+        let now = (
+            *chat_open.read(),
+            *search_open.read(),
+            *toc_open.read(),
+        );
+        if *panel_layout.read() == now {
+            return;
+        }
+        panel_layout.set(now);
+        let session = session;
+        let desktop = desktop_panel.clone();
+        let page_loading = page_loading;
+        let zoom = zoom;
+        let current_page = current_page;
+        spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+            let page = current_page();
+            request_jump(session, desktop, page, page_loading, zoom);
+        });
+    });
 
     // 书旁对话不再与书绑定：列出来源学习计划的对话，由用户选择。
     let source_project =
@@ -4368,12 +4412,25 @@ pub fn ReaderPanel(
     });
 
     let chat_streaming_states_select = chat_streaming_states.clone();
+    let source_project_select = source_project.clone();
     let on_select_chat_conversation = Callback::new(move |cid: String| {
         let mut cid_sig = chat_active_conv;
         let mut ac_id_sig = chat_agent_config_id;
         let mut ac_list_sig = chat_agent_config;
         let runtimes = chat_runtimes;
         let ss = chat_streaming_states_select.clone();
+        let row = crate::db::with_db(|conn| {
+            crate::db::metadata::conversation::get(conn, &cid)
+                .ok()
+                .flatten()
+        });
+        let Some(row) = row else {
+            return;
+        };
+        // 阅读对话管理只允许当前学习计划的对话。
+        if row.project_id != source_project_select {
+            return;
+        }
         cid_sig.set(cid.clone());
         crate::ui::components::app::ensure_conv_loaded(
             &cid,
@@ -4381,12 +4438,7 @@ pub fn ReaderPanel(
             ss,
             reader_markdown_to_html,
         );
-        let row = crate::db::with_db(|conn| {
-            crate::db::metadata::conversation::get(conn, &cid)
-                .ok()
-                .flatten()
-        });
-        let cfg_id = row.and_then(|r| r.agent_config_id).unwrap_or_default();
+        let cfg_id = row.agent_config_id.clone().unwrap_or_default();
         ac_id_sig.set(cfg_id.clone());
         let cfg_rows = if cfg_id.is_empty() {
             Vec::new()
@@ -4431,12 +4483,45 @@ pub fn ReaderPanel(
         }
     });
 
+    let on_delete_chat_conversation = Callback::new(move |_| {
+        let cid = chat_active_conv();
+        if cid.is_empty() {
+            return;
+        }
+        if let Some(rt) = chat_runtimes.read().get(&cid) {
+            if let Some(ref token) = rt.cancel_token {
+                token.cancel();
+            }
+        }
+        crate::book_chat::delete_conversation(&cid);
+        {
+            let mut rts = chat_runtimes;
+            rts.write().remove(&cid);
+        }
+        {
+            let mut atx = chat_approval_tx;
+            atx.write().remove(&cid);
+        }
+        {
+            let mut convs_sig = chat_conversations;
+            let mut convs = convs_sig.read().clone();
+            convs.retain(|r| r.id != cid);
+            convs_sig.set(convs.clone());
+            if let Some(next) = convs.first() {
+                on_select_chat_conversation.call(next.id.clone());
+            } else {
+                on_new_chat_conversation.call(());
+            }
+        }
+    });
+
     let chat_streaming_states_send = chat_streaming_states.clone();
     let send_chat_message = Callback::new(move |input: String| {
         let input = input.trim().to_string();
         if input.is_empty() {
             return;
         }
+        let mut convs_sig = chat_conversations;
         let cid = chat_active_conv();
         if cid.is_empty() {
             error_signal.write().push(ErrorInfo::new(
@@ -4456,6 +4541,28 @@ pub fn ReaderPanel(
             segments: Vec::new(),
             content_html: reader_markdown_to_html(&input),
         };
+        // 第一条用户消息作为阅读对话标题。
+        let is_first = crate::db::with_db(|conn| {
+            crate::db::metadata::message::list_by_conversation(conn, &cid)
+                .map(|v| v.is_empty())
+                .unwrap_or(false)
+        });
+        if is_first {
+            let title = crate::model::title_from_messages(&[user_msg.clone()]);
+            crate::db::try_with_db(|conn| {
+                if let Some(mut row) =
+                    crate::db::metadata::conversation::get(conn, &cid).ok().flatten()
+                {
+                    row.title = title.clone();
+                    let _ = crate::db::metadata::conversation::update(conn, &row);
+                }
+            });
+            let mut convs = convs_sig.read().clone();
+            if let Some(row) = convs.iter_mut().find(|r| r.id == cid) {
+                row.title = title;
+            }
+            convs_sig.set(convs);
+        }
         {
             let mut rt = chat_runtimes.write();
             let rt = rt.entry(cid.clone()).or_default();
@@ -4480,9 +4587,12 @@ pub fn ReaderPanel(
         let err_sig = error_signal;
         let atx = chat_approval_tx;
         let pid = crate::db::DEFAULT_PROJECT_ID.to_string();
+        let mut env_sig = reading_env;
+        let system_preamble = env_sig.write().take_preamble();
         spawn(async move {
             crate::ui::bridge::run_agent_loop(crate::ui::bridge::BridgeContext {
                 user_input: input,
+                system_preamble,
                 action_mode: cur_action,
                 agent_mode: cur_mode,
                 runtimes: rt,
@@ -4513,10 +4623,21 @@ pub fn ReaderPanel(
             citation_target.set(None);
             let session = session;
             let desktop = desktop_citation.clone();
+            let current_page = current_page;
+            let page_input = page_input;
             let page_loading = page_loading;
             let zoom = zoom;
             spawn(async move {
-                open_citation(session, desktop, page, quote, page_loading, zoom);
+                open_citation(
+                    session,
+                    desktop,
+                    page,
+                    quote,
+                    current_page,
+                    page_input,
+                    page_loading,
+                    zoom,
+                );
             });
         }
     });
@@ -4532,6 +4653,12 @@ pub fn ReaderPanel(
         let mut session = session;
         let mut err = error_signal;
         let desktop = desktop_effect.clone();
+        let mut current_page = current_page;
+        let mut page_input = page_input;
+        let page_loading = page_loading;
+        let zoom = zoom;
+        let initial_citation = initial_citation.clone();
+        let initial_citation_start = initial_citation.clone();
         spawn(async move {
             let parse_id = book_id.clone();
             let opened = tokio::task::spawn_blocking(move || {
@@ -4542,9 +4669,14 @@ pub fn ReaderPanel(
                 let pdf_path = crate::layout::book_pdf_path(&book_dir);
                 let doc = pdfium::open(&pdf_path).map_err(|e| format!("{e:#}"))?;
                 let page_count = doc.page_count();
+                let saved_page =
+                    crate::reading_position::load(&book_dir).unwrap_or(1).clamp(1, page_count);
+                let citation_page =
+                    initial_citation_start.as_ref().map(|c| c.page).unwrap_or(saved_page);
+                let start_page = citation_page.clamp(1, page_count);
                 crate::pdf::prepare_page_cache(&book_dir);
                 let _ = crate::pdf::calibration::ensure_for_book(&book_id, &book_dir, &doc);
-                let first = render_page_with_overlay(&doc, &book_dir, 0)?;
+                let first = render_page_with_overlay(&doc, &book_dir, start_page - 1)?;
                 let mut prefix: Vec<f64> = Vec::with_capacity(page_count as usize + 1);
                 prefix.push(0.0);
                 for i in 0..page_count {
@@ -4559,21 +4691,30 @@ pub fn ReaderPanel(
                     first,
                     book_dir,
                     prefix,
+                    start_page,
                 ))
             })
             .await;
             match opened {
-                Ok(Ok((book_name, _doc, page_count, first, book_dir, page_ratio_prefix))) => {
+                Ok(Ok((
+                    book_name,
+                    _doc,
+                    page_count,
+                    first,
+                    book_dir,
+                    page_ratio_prefix,
+                    start_page,
+                ))) => {
                     let _ = desktop.set_title(&format!("UeberNeon — {book_name}"));
                     let mut cache = HashMap::new();
                     let first_warning = first.warning.clone();
-                    cache.insert(1, first);
+                    cache.insert(start_page, first);
                     session.set(Some(ReaderSession {
                         doc: _doc.clone(),
                         page_count,
                         cache,
                         page_ratio_prefix,
-                        render_target: Some(1),
+                        render_target: Some(start_page),
                         render_epoch: 0,
                         jump_lock_until: std::time::Instant::now(),
                         book_id: parse_id.clone(),
@@ -4592,6 +4733,22 @@ pub fn ReaderPanel(
                         translation_gen: 0,
                         ocr_warning_shown: false,
                     }));
+                    current_page.set(start_page);
+                    page_input.set(start_page.to_string());
+                    if let Some(cit) = initial_citation {
+                        open_citation(
+                            session,
+                            desktop,
+                            cit.page,
+                            cit.quote,
+                            current_page,
+                            page_input,
+                            page_loading,
+                            zoom,
+                        );
+                    } else {
+                        request_jump(session, desktop, start_page, page_loading, zoom);
+                    }
                     if let Some(warn) = first_warning {
                         if let Some(inner) = session.write().as_mut() {
                             inner.ocr_warning_shown = true;
@@ -4683,6 +4840,7 @@ pub fn ReaderPanel(
         let current_page = current_page;
         let page_input = page_input;
         let session = session;
+        let last_scroll_width = last_scroll_width;
         move |evt: ScrollEvent| {
             let top = evt.scroll_top();
             let ch = evt.client_height() as f64;
@@ -4694,6 +4852,7 @@ pub fn ReaderPanel(
                 session,
                 current_page,
                 page_input,
+                last_scroll_width,
                 top,
                 cw,
                 ch as i32,
@@ -5234,6 +5393,8 @@ pub fn ReaderPanel(
                                                     onclick: {
                                                         let session = session;
                                                         let desktop = desktop.clone();
+                                                        let current_page = current_page;
+                                                        let page_input = page_input;
                                                         let page_loading = page_loading;
                                                         let zoom = zoom;
                                                         let s2 = s.clone();
@@ -5243,6 +5404,8 @@ pub fn ReaderPanel(
                                                                 desktop.clone(),
                                                                 p,
                                                                 s2.clone(),
+                                                                current_page,
+                                                                page_input,
                                                                 page_loading,
                                                                 zoom,
                                                             )
@@ -5710,6 +5873,15 @@ pub fn ReaderPanel(
                             "+"
                         }
                         button {
+                            class: "reader-chat-side__delete",
+                            title: "删除对话",
+                            onclick: {
+                                let on_delete = on_delete_chat_conversation;
+                                move |_| on_delete.call(())
+                            },
+                            "删除"
+                        }
+                        button {
                             class: "reader-chat-side__close",
                             onclick: move |_| {
                                 let mut chat_open = chat_open;
@@ -5733,10 +5905,22 @@ pub fn ReaderPanel(
                                 }
                             }
                         },
-                        citation_handler: Some(Callback::new(move |c: BookCitation| {
-                            let mut citation_target = citation_target;
-                            citation_target.set(Some((c.page, c.quote)));
-                        })),
+                        citation_handler: {
+                            let book_id_handler = book_id_for_handler.clone();
+                            let project_id_handler = project_id_for_handler.clone();
+                            Some(Callback::new(move |c: BookCitation| {
+                                if c.book_id == book_id_handler {
+                                    let mut citation_target = citation_target;
+                                    citation_target.set(Some((c.page, c.quote)));
+                                } else {
+                                    crate::ui::reader_window::open_with_project_and_citation(
+                                        c.book_id.clone(),
+                                        project_id_handler.clone(),
+                                        Some(c),
+                                    );
+                                }
+                            }))
+                        },
                     }
                     InputBar {
                         is_streaming: chat_streaming,
@@ -5915,9 +6099,13 @@ fn open_citation(
     desktop: dioxus::desktop::DesktopContext,
     page: u32,
     quote: String,
+    mut current_page: Signal<u32>,
+    mut page_input: Signal<String>,
     page_loading: Signal<Option<u32>>,
     zoom: Signal<u32>,
 ) {
+    current_page.set(page);
+    page_input.set(page.to_string());
     request_jump(session, desktop, page, page_loading, zoom);
     spawn(async move {
         for _ in 0..50 {

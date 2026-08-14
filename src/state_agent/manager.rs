@@ -103,11 +103,11 @@ impl AgentManager {
 
         let registry = Registry::new();
         let pid = project_id
-            .as_deref()
-            .unwrap_or(crate::db::DEFAULT_PROJECT_ID);
+            .clone()
+            .unwrap_or_else(|| crate::db::DEFAULT_PROJECT_ID.to_string());
 
         let project_row = crate::db::with_db(|conn| {
-            crate::db::metadata::project::get(conn, pid)
+            crate::db::metadata::project::get(conn, &pid)
                 .map_err(|e| format!("db error: {e}"))?
                 .ok_or(format!("{} project not found", pid))
         })?;
@@ -170,17 +170,36 @@ impl AgentManager {
         let template = {
             if book_chat {
                 let book = crate::db::with_db(|conn| {
-                    let mapping = crate::db::metadata::book_chat::get_by_conversation(
-                        conn,
-                        &conversation_id,
-                    )
-                    .ok()
-                    .flatten()?;
-                    crate::books::get(conn, &mapping.book_id).ok().flatten()
+                    if let Some(mapping) =
+                        crate::db::metadata::book_chat::get_by_conversation(
+                            conn,
+                            &conversation_id,
+                        )
+                        .ok()
+                        .flatten()
+                    {
+                        return crate::books::get(conn, &mapping.book_id).ok().flatten();
+                    }
+                    None
+                });
+                let plan_books = crate::db::with_db(|conn| {
+                    crate::books::list_by_project(conn, &pid).unwrap_or_default()
                 });
                 match book {
-                    Some(b) => crate::book_chat::build_system_prompt(&b.name, &b.id),
-                    None => crate::book_chat::BOOK_CHAT_SYSTEM_PROMPT.to_string(),
+                    Some(b) => crate::book_chat::build_system_prompt(
+                        &b.name,
+                        &b.id,
+                        &project_row.name,
+                        &pid,
+                        &plan_books,
+                    ),
+                    None => crate::book_chat::build_system_prompt(
+                        "未知书籍",
+                        "unknown",
+                        &project_row.name,
+                        &pid,
+                        &plan_books,
+                    ),
                 }
             } else {
                 let s = cfg.system_prompt.trim().to_string();

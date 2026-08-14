@@ -14,6 +14,7 @@ use crate::ui::components::reader_panel::ReaderPanel;
 pub struct OpenBookRequest {
     pub book_id: String,
     pub project_id: Option<String>,
+    pub citation: Option<crate::model::BookCitation>,
 }
 
 /// 主窗口 → 阅读窗口的“打开书”通道。
@@ -36,11 +37,21 @@ pub fn open(book_id: String) {
 
 /// 从学习计划打开一本书（携带来源计划 id）。
 pub fn open_with_project(book_id: String, project_id: Option<String>) {
+    open_with_project_and_citation(book_id, project_id, None);
+}
+
+/// 从学习计划打开一本书，并携带一条待跳转引用。
+pub fn open_with_project_and_citation(
+    book_id: String,
+    project_id: Option<String>,
+    citation: Option<crate::model::BookCitation>,
+) {
     if let Some(tx) = tx_slot().lock().ok().and_then(|g| g.clone())
         && tx
             .send(OpenBookRequest {
                 book_id: book_id.clone(),
                 project_id: project_id.clone(),
+                citation: citation.clone(),
             })
             .is_ok()
     {
@@ -67,6 +78,7 @@ pub fn open_with_project(book_id: String, project_id: Option<String>) {
     let _ = tx.send(OpenBookRequest {
         book_id,
         project_id,
+        citation,
     });
 }
 
@@ -75,6 +87,7 @@ pub fn open_with_project(book_id: String, project_id: Option<String>) {
 pub fn ReaderWindowRoot() -> Element {
     let book_id = use_signal(String::new);
     let project_id = use_signal(|| Option::<String>::None);
+    let citation = use_signal(|| Option::<crate::model::BookCitation>::None);
     let error_signal = use_signal(ErrorSignal::new);
     use_context_provider(|| error_signal);
     let desktop = use_window();
@@ -87,9 +100,11 @@ pub fn ReaderWindowRoot() -> Element {
             };
             let mut book_id = book_id;
             let mut project_id = project_id;
+            let mut citation = citation;
             while let Some(id) = rx.recv().await {
                 book_id.set(id.book_id);
                 project_id.set(id.project_id);
+                citation.set(id.citation);
             }
         });
     });
@@ -138,6 +153,7 @@ pub fn ReaderWindowRoot() -> Element {
                     key: "{book_id}-{project_id:?}",
                     book_id: book_id(),
                     project_id: project_id(),
+                    initial_citation: citation(),
                     error_signal: error_signal,
                     on_back: move |_| {
                         desktop.close();

@@ -149,6 +149,8 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
         UiMessage::Static(cm) => cm.segments.iter().any(|s| matches!(s, StreamSegment::ToolCall(tc) if matches!(tc.status, ToolCallStatus::AwaitingApproval { .. }))),
     });
     let expanded_tc = use_signal(|| std::collections::HashSet::<String>::new());
+    let citation_preview =
+        use_signal(|| Option::<crate::model::BookCitation>::None);
     let last_user_idx = user_messages.last().map(|(i, _)| *i);
 
     let el = rsx! {
@@ -195,7 +197,7 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
                                         };
                                         rsx! { div { class: "message-content", dangerous_inner_html: "{html}" } }
                                     } else {
-                                        rsx! { {render_segments(false, &segments, markdown_to_html, on_approve, citation_handler, expanded_tc, format!("{i}")).into_iter()} }
+                                        rsx! { {render_segments(false, &segments, markdown_to_html, on_approve, citation_handler, citation_preview, expanded_tc, format!("{i}")).into_iter()} }
                                     }
                                 }
                             }
@@ -211,7 +213,7 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
                         };
                         rsx! {
                             div { key: "{streaming_key}", class: "{streaming_class}",
-                                {render_segments(true, &segs, markdown_to_html, on_approve, citation_handler, expanded_tc, "stream".into()).into_iter()}
+                                {render_segments(true, &segs, markdown_to_html, on_approve, citation_handler, citation_preview, expanded_tc, "stream".into()).into_iter()}
                             }
                         }
                     }
@@ -252,6 +254,47 @@ ob.observe(p,{childList:true,subtree:true,characterData:true});
                     })}
                 }
             }
+
+            if let Some(cit) = citation_preview.read().clone() {
+                div {
+                    class: "citation-preview",
+                    div {
+                        class: "citation-preview__head",
+                        span { class: "citation-preview__title", "引用预览" }
+                        span {
+                            class: "citation-preview__meta",
+                            "{cit.book_name} · {cit.book_id} · P{cit.page}"
+                        }
+                        button {
+                            class: "citation-preview__close",
+                            onclick: {
+                                let mut pv = citation_preview;
+                                move |_| pv.set(None)
+                            },
+                            "✕"
+                        }
+                    }
+                    div { class: "citation-preview__quote", "{cit.quote}" }
+                    div {
+                        class: "citation-preview__actions",
+                        button {
+                            class: "btn btn-send",
+                            onclick: {
+                                let handler = citation_handler;
+                                let cit = cit.clone();
+                                let mut pv = citation_preview;
+                                move |_| {
+                                    if let Some(h) = &handler {
+                                        h.call(cit.clone());
+                                    }
+                                    pv.set(None);
+                                }
+                            },
+                            "跳到原文"
+                        }
+                    }
+                }
+            }
         }
     };
     el
@@ -263,12 +306,14 @@ fn render_segments(
     markdown_to_html: fn(&str) -> String,
     on_approve: EventHandler<(String, bool)>,
     citation_handler: Option<Callback<crate::model::BookCitation>>,
+    citation_preview: Signal<Option<crate::model::BookCitation>>,
     expanded_tc: Signal<std::collections::HashSet<String>>,
     msg_key: String,
 ) -> Vec<Element> {
     let mut items: Vec<Element> = Vec::new();
     let mut tc_idx = 0usize;
     let mut buf: Vec<Element> = Vec::new();
+    let mut citation_buf: Vec<crate::model::BookCitation> = Vec::new();
 
     let flush = |buf: &mut Vec<Element>, items: &mut Vec<Element>| {
         if !buf.is_empty() {
@@ -284,16 +329,32 @@ fn render_segments(
     for seg in segments {
         match seg {
             StreamSegment::Text(t) => {
+                flush_citations(
+                    &mut items,
+                    &mut citation_buf,
+                    citation_preview,
+                );
                 flush(&mut buf, &mut items);
                 items.push(rsx! { div { class: "message-content", dangerous_inner_html: markdown_to_html(t) } });
             }
             StreamSegment::Reasoning(text) => {
+                flush_citations(
+                    &mut items,
+                    &mut citation_buf,
+                    citation_preview,
+                );
                 let html = markdown_to_html(text);
                 buf.push(rsx! { div { class: "thinking-content", dangerous_inner_html: html } });
             }
             StreamSegment::ToolCall(call) => {
                 let is_citation = call.tool_name == "CiteBook" && citation_handler.is_some();
                 if is_citation {
+                    let book_arg = call
+                        .args
+                        .get("book")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     let page = call
                         .args
                         .get("page")
@@ -306,31 +367,21 @@ fn render_segments(
                         .unwrap_or("")
                         .trim()
                         .to_string();
-                    let preview: String = quote.chars().take(42).collect();
-                    let label = if quote.chars().count() > 42 {
-                        format!("{preview}…")
-                    } else {
-                        preview
-                    };
-                    let handler = citation_handler;
-                    buf.push(rsx! {
-                        button {
-                            class: "citation-chip",
-                            title: "{quote}",
-                            onclick: move |_| {
-                                if let Some(h) = &handler {
-                                    h.call(crate::model::BookCitation {
-                                        page,
-                                        quote: quote.clone(),
-                                    });
-                                }
-                            },
-                            "P{page} · {label}"
-                        }
+                    let (book_id, book_name) = resolve_citation_book(&book_arg);
+                    citation_buf.push(crate::model::BookCitation {
+                        book_id,
+                        book_name,
+                        page,
+                        quote,
                     });
                     tc_idx += 1;
                     continue;
                 }
+                flush_citations(
+                    &mut items,
+                    &mut citation_buf,
+                    citation_preview,
+                );
                 let sc = status_class(&call.status);
                 let status_text = match &call.status {
                     ToolCallStatus::Running => "running",
@@ -427,8 +478,76 @@ fn render_segments(
             }
         }
     }
+    flush_citations(
+        &mut items,
+        &mut citation_buf,
+        citation_preview,
+    );
     flush(&mut buf, &mut items);
     items
+}
+
+/// 从 CiteBook 的 book 参数解析书 ID 与书名（ID 或书名均可）。
+fn resolve_citation_book(book: &str) -> (String, String) {
+    if book.is_empty() {
+        return (String::new(), String::new());
+    }
+    crate::db::with_db(|conn| {
+        if let Some(row) = crate::books::get(conn, book).ok().flatten() {
+            return (row.id, row.name);
+        }
+        if let Ok(row) = crate::tools::internal::read_book::ReadBook::resolve_book(book) {
+            return (row.id, row.name);
+        }
+        (book.to_string(), String::new())
+    })
+}
+
+/// 把收集到的 CiteBook 引用渲染成独立的「引用」块（不放进 think watch write）。
+fn flush_citations(
+    items: &mut Vec<Element>,
+    citation_buf: &mut Vec<crate::model::BookCitation>,
+    preview: Signal<Option<crate::model::BookCitation>>,
+) {
+    if citation_buf.is_empty() {
+        return;
+    }
+    let citations = std::mem::take(citation_buf);
+    items.push(rsx! {
+        div {
+            class: "citation-block",
+            span { class: "citation-block__label", "引用" }
+            div {
+                class: "citation-block__chips",
+                for citation in citations {
+                    {
+                        let book_name = citation.book_name.clone();
+                        let book_id = citation.book_id.clone();
+                        let page = citation.page;
+                        let quote = citation.quote.clone();
+                        let preview_text: String = quote.chars().take(42).collect();
+                        let label = if quote.chars().count() > 42 {
+                            format!("{preview_text}…")
+                        } else {
+                            preview_text
+                        };
+                        let citation = citation.clone();
+                        let mut preview_sig = preview;
+                        rsx! {
+                            button {
+                                class: "citation-chip",
+                                title: "{book_id} · P{page} · {quote}",
+                                onclick: move |_| {
+                                    preview_sig.set(Some(citation.clone()));
+                                },
+                                "《{book_name}》 P{page} · {label}"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
 }
 
 fn status_class(status: &ToolCallStatus) -> &'static str {

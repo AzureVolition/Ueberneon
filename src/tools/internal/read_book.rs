@@ -114,9 +114,11 @@ impl ReadBook {
             if query.trim().is_empty() {
                 return Err("read_book: query 不能为空".to_string());
             }
-            return Ok(ToolResult::ok(Self::search_pages(
+            return Ok(ToolResult::ok(Self::search_pages_scored(
                 &dir,
+                &book.id,
                 query,
+                SEARCH_MAX_RESULTS,
                 args.max_chars.max(200),
             )));
         }
@@ -137,8 +139,19 @@ impl ReadBook {
         Ok(ToolResult::ok(out))
     }
 
-    /// 搜索 pages/*.md,返回「第 N 页: 片段」列表(大小写不敏感)。
-    pub(crate) fn search_pages(dir: &Path, query: &str, max_chars: usize) -> String {
+    /// 评分式全书搜索：空格归一 + 去空格 OCR 兼容 + 多词评分 + 定义词加权 +
+    /// 目录页降权，返回「[书ID] 第 N 页: 上下文」列表。
+    pub(crate) fn search_pages_scored(
+        dir: &Path,
+        book_id: &str,
+        query: &str,
+        max_results: usize,
+        max_chars: usize,
+    ) -> String {
+        let (terms, q_nospace) = tokenize_query(query);
+        if terms.is_empty() && q_nospace.is_empty() {
+            return "未找到匹配内容".to_string();
+        }
         let pages_dir = crate::layout::book_pages_dir(dir);
         let mut entries: Vec<_> = std::fs::read_dir(&pages_dir)
             .ok()
@@ -147,13 +160,16 @@ impl ReadBook {
             .flatten()
             .collect();
         entries.sort_by_key(|e| e.file_name());
-        let q = query.to_lowercase();
-        let mut out: Vec<String> = Vec::new();
-        let mut total = 0usize;
-        'pages: for entry in entries {
-            if out.len() >= SEARCH_MAX_RESULTS || total >= max_chars {
-                break;
-            }
+
+        struct Hit {
+            page: u32,
+            score: i32,
+            line: usize,
+            lines: Vec<String>,
+        }
+
+        let mut hits: Vec<Hit> = Vec::new();
+        for entry in entries {
             let Ok(text) = std::fs::read_to_string(entry.path()) else {
                 continue;
             };
@@ -163,25 +179,68 @@ impl ReadBook {
                 .trim_end_matches(".md")
                 .parse::<u32>()
                 .unwrap_or(0);
-            for line in text.lines() {
-                if !line.to_lowercase().contains(&q) {
-                    continue;
-                }
-                let snippet = format!("第 {page_no} 页: {}", line.trim());
-                total += snippet.chars().count() + 1;
-                if total > max_chars {
-                    break 'pages;
-                }
-                out.push(snippet);
-                if out.len() >= SEARCH_MAX_RESULTS {
-                    break 'pages;
+            let lines: Vec<String> = text.lines().map(str::to_string).collect();
+            let page_norm = collapse_whitespace(&text.to_lowercase());
+            let page_nospace = remove_whitespace(&page_norm);
+            let phrase_hit = !q_nospace.is_empty() && page_nospace.contains(&q_nospace);
+
+            let mut matched = 0usize;
+            let mut score = 0i32;
+            for term in &terms {
+                let count = page_nospace.matches(term.as_str()).count();
+                if count > 0 {
+                    matched += 1;
+                    score += 10 * (count.min(5) as i32);
                 }
             }
+            if phrase_hit {
+                score += 50;
+            }
+            if matched == 0 && !phrase_hit {
+                continue;
+            }
+            if terms.len() > 1 && matched < 1 && !phrase_hit {
+                continue;
+            }
+            if !terms.is_empty() && matched == terms.len() {
+                score += 30; // 全词命中优先
+            }
+            score += definition_bonus(&page_nospace);
+            score -= toc_penalty(&lines);
+            if score <= 0 {
+                continue;
+            }
+            let line = best_line_index(&lines, &terms, &q_nospace);
+            hits.push(Hit {
+                page: page_no,
+                score,
+                line,
+                lines,
+            });
+        }
+
+        hits.sort_by(|a, b| b.score.cmp(&a.score).then(a.page.cmp(&b.page)));
+        let mut out: Vec<String> = Vec::new();
+        let mut total = 0usize;
+        for hit in hits {
+            if out.len() >= max_results || total >= max_chars {
+                break;
+            }
+            let lo = hit.line.saturating_sub(2);
+            let hi = (hit.line + 2).min(hit.lines.len().saturating_sub(1));
+            let ctx = hit.lines[lo..=hi]
+                .iter()
+                .map(|s| s.trim_end().to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let block = format!("[{book_id}] 第 {} 页:\n{ctx}", hit.page);
+            total += block.chars().count() + 1;
+            out.push(block);
         }
         if out.is_empty() {
             "未找到匹配内容".to_string()
         } else {
-            out.join("\n")
+            out.join("\n\n")
         }
     }
 
@@ -332,6 +391,99 @@ fn truncate(text: &str, max_chars: usize) -> String {
     out
 }
 
+// ── 评分式搜索辅助 ──────────────────────────────────────────────────────────
+
+const SEARCH_STOPWORDS: &[&str] = &[
+    "the", "of", "a", "an", "and", "or", "in", "on", "for", "to", "with", "is", "are",
+    "was", "were", "be", "by", "at", "as", "that", "this", "it", "its", "from", "which",
+    "的", "是", "一个", "一", "和", "与", "或", "在", "对", "于", "被", "把", "为",
+];
+
+const DEFINITION_KEYWORDS: &[&str] = &[
+    "definition", "define", "defined", "axiom", "theorem", "lemma", "proposition",
+    "定义", "公理", "定理", "命题", "group", "群",
+];
+
+fn collapse_whitespace(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn remove_whitespace(s: &str) -> String {
+    s.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+fn is_stopword(w: &str) -> bool {
+    SEARCH_STOPWORDS.contains(&w)
+}
+
+fn tokenize_query(query: &str) -> (Vec<String>, String) {
+    let norm = collapse_whitespace(&query.to_lowercase());
+    let terms = norm
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|s| !s.is_empty() && !is_stopword(s))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let nospace = remove_whitespace(&norm);
+    (terms, nospace)
+}
+
+fn definition_bonus(page_nospace: &str) -> i32 {
+    if DEFINITION_KEYWORDS
+        .iter()
+        .any(|k| page_nospace.contains(k))
+    {
+        8
+    } else {
+        0
+    }
+}
+
+fn toc_penalty(lines: &[String]) -> i32 {
+    let mut toc = 0usize;
+    let mut total = 0usize;
+    for line in lines {
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        total += 1;
+        let dots = t.contains("....") || t.contains("…") || t.contains(". . .");
+        let first_digit = t.chars().next().map_or(false, |c| c.is_ascii_digit());
+        let last_digit = t.chars().last().map_or(false, |c| c.is_ascii_digit());
+        let chapter_like = t.to_lowercase().starts_with("chapter") && last_digit;
+        if (dots && last_digit) || (first_digit && last_digit) || chapter_like {
+            toc += 1;
+        }
+    }
+    if total > 0 && toc * 100 / total >= 30 {
+        30
+    } else {
+        0
+    }
+}
+
+fn best_line_index(lines: &[String], terms: &[String], q_nospace: &str) -> usize {
+    let mut best = 0usize;
+    let mut best_score = -1i32;
+    for (i, line) in lines.iter().enumerate() {
+        let ln = remove_whitespace(&line.to_lowercase());
+        let mut s = 0i32;
+        if !q_nospace.is_empty() && ln.contains(q_nospace) {
+            s += 20;
+        }
+        for term in terms {
+            if ln.contains(term.as_str()) {
+                s += 5;
+            }
+        }
+        if s > best_score {
+            best_score = s;
+            best = i;
+        }
+    }
+    best
+}
+
 #[async_trait::async_trait]
 impl GenericsTool for ReadBook {
     async fn generics_execute(
@@ -362,7 +514,7 @@ mod tests {
     }
 
     #[test]
-    fn search_pages_returns_page_numbers_and_snippets() {
+    fn search_pages_scored_returns_context_and_ranks_definitions() {
         let dir =
             std::env::temp_dir().join(format!("ueberneon-readbook-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -370,20 +522,69 @@ mod tests {
         std::fs::create_dir_all(&pages).unwrap();
         std::fs::write(
             crate::layout::book_page_md_path(&pages, 1),
-            "线性代数定义\n正文内容",
+            "Chapter 7 Groups 169\n7.1 Definition and Examples of Groups 183\n7.2 Basic Properties of Groups 196",
         )
         .unwrap();
         std::fs::write(
             crate::layout::book_page_md_path(&pages, 2),
-            "另一章\n代数几何简介",
+            "Definition 11.1 A group consists of a set G along with a binary operation\nthat satisfies associativity, identity and inverse axioms.",
         )
         .unwrap();
-        let out = ReadBook::search_pages(&dir, "代数", 6000);
-        assert!(out.contains("第 1 页"), "{out}");
-        assert!(out.contains("第 2 页"), "{out}");
-        assert!(out.contains("线性代数定义"), "{out}");
-        let none = ReadBook::search_pages(&dir, "不存在词", 6000);
+        let out = ReadBook::search_pages_scored(&dir, "book-1", "definition of a group", 10, 6000);
+        let p2 = out.find("第 2 页").unwrap_or(usize::MAX);
+        let p1 = out.find("第 1 页").unwrap_or(usize::MAX);
+        assert!(p2 < p1, "定义页应排在目录页前面:\n{out}");
+        assert!(out.contains("[book-1]"), "{out}");
+        assert!(out.contains("Definition 11.1"), "{out}");
+        let none = ReadBook::search_pages_scored(&dir, "book-1", "不存在词xyz", 10, 6000);
         assert_eq!(none, "未找到匹配内容");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn search_pages_scored_matches_ocr_glued_text() {
+        let dir =
+            std::env::temp_dir().join(format!("ueberneon-readbook-ocr-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let pages = crate::layout::book_pages_dir(&dir);
+        std::fs::create_dir_all(&pages).unwrap();
+        std::fs::write(
+            crate::layout::book_page_md_path(&pages, 1),
+            "RINGSMODULESGROUPSFIELDS introduction to abstract algebra",
+        )
+        .unwrap();
+        let out = ReadBook::search_pages_scored(&dir, "b1", "groups", 5, 2000);
+        assert!(out.contains("第 1 页"), "{out}");
+        assert!(out.contains("GROUPS"), "{out}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn search_pages_scored_falls_back_to_partial_terms() {
+        let dir =
+            std::env::temp_dir().join(format!("ueberneon-readbook-partial-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let pages = crate::layout::book_pages_dir(&dir);
+        std::fs::create_dir_all(&pages).unwrap();
+        std::fs::write(
+            crate::layout::book_page_md_path(&pages, 1),
+            "The binary operation is closed on the set.",
+        )
+        .unwrap();
+        std::fs::write(
+            crate::layout::book_page_md_path(&pages, 2),
+            "Identity and inverse elements are unique.",
+        )
+        .unwrap();
+        let out = ReadBook::search_pages_scored(
+            &dir,
+            "b1",
+            "binary operation associative identity inverse",
+            10,
+            4000,
+        );
+        assert!(out.contains("第 1 页") || out.contains("第 2 页"), "{out}");
+        assert_ne!(out, "未找到匹配内容");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

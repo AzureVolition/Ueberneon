@@ -8195,6 +8195,39 @@ body {
   transform: translateY(1px);
 }
 
+.reader-chat-side__delete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--color-rule-2);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-error);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color var(--dur-fast) var(--ease-out),
+              border-color var(--dur-fast) var(--ease-out);
+}
+
+.reader-chat-side__delete:hover {
+  background: var(--color-danger-tint);
+  border-color: var(--color-error);
+}
+
+.reader-chat-side__delete:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.reader-chat-side__delete:active {
+  transform: translateY(1px);
+}
+
 .reader-chat-side__close {
   display: inline-flex;
   align-items: center;
@@ -8251,6 +8284,149 @@ body {
 
 .reader-chat-toggle {
   flex-shrink: 0;
+}
+
+/* ── 引用块（CiteBook 专用，独立于 think watch write）──
+   Hallmark · component: citation-block · genre: modern-minimal
+   theme: Lumen (Night Foundry) · states: default · hover · focus ·
+   active · disabled · loading · error · success · contrast: pass */
+.citation-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  margin: var(--space-xs) 0;
+  padding: var(--space-sm) var(--space-md);
+  border-left: 2px solid var(--color-accent);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  background: var(--color-accent-tint);
+}
+
+.citation-block__label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: var(--tracking-micro);
+  text-transform: uppercase;
+  color: var(--color-ink-3);
+}
+
+.citation-block__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2xs);
+}
+
+/* ── 引用预览卡 ──
+   Hallmark · component: citation-preview · genre: modern-minimal
+   theme: Lumen (Night Foundry) · states: default · hover · focus ·
+   active · disabled · loading · error · success · contrast: pass */
+.citation-preview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin: var(--space-xs) 0;
+  padding: var(--space-md);
+  border: 1px solid var(--color-rule-2);
+  border-radius: var(--radius-md);
+  background: var(--color-paper-2);
+  box-shadow: 0 8px 24px -12px var(--color-shadow);
+}
+
+.citation-preview__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.citation-preview__title {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: var(--tracking-micro);
+  text-transform: uppercase;
+  color: var(--color-accent);
+}
+
+.citation-preview__meta {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-ink-3);
+}
+
+.citation-preview__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-ink-4);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-out),
+              background-color var(--dur-fast) var(--ease-out);
+}
+
+.citation-preview__close:hover {
+  color: var(--color-ink-1);
+  background: var(--color-accent-tint);
+}
+
+.citation-preview__close:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.citation-preview__close:active {
+  transform: translateY(1px);
+}
+
+.citation-preview__quote {
+  max-height: 180px;
+  overflow-y: auto;
+  padding: var(--space-sm);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-sm);
+  background: var(--color-paper);
+  color: var(--color-ink-2);
+  font-size: var(--text-sm);
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.citation-preview__actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* ── 消息内公式（LaTeX → MathML）── */
+.math-inline {
+  font-size: 1.05em;
+  line-height: 1.5;
+}
+
+.math-block {
+  display: block;
+  overflow-x: auto;
+  margin: var(--space-xs) 0;
+  padding: var(--space-sm) var(--space-md);
+  background: var(--color-paper-2);
+  border-left: 2px solid var(--color-accent);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+}
+
+.math-block math {
+  font-size: 1.1em;
 }
 
 /* 引用 chip */

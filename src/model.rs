@@ -47,6 +47,8 @@ pub struct ToolCallRecord {
 /// 书内引用指针：由 CiteBook 工具调用产生，前端渲染为可点击 chip。
 #[derive(Clone, Debug, PartialEq)]
 pub struct BookCitation {
+    pub book_id: String,
+    pub book_name: String,
     pub page: u32,
     pub quote: String,
 }
