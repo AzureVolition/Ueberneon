@@ -1436,6 +1436,110 @@ body {
   border-bottom: 1px solid var(--color-rule);
 }
 
+/* ── Reader tabs ── */
+.reader-tabs-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  padding: var(--space-sm) var(--space-md) 0;
+  background: var(--color-paper);
+  border-bottom: 1px solid var(--color-rule);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+.reader-tab {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  max-width: 260px;
+  min-width: 120px;
+  height: 34px;
+  padding: 0 var(--space-2xs) 0 var(--space-sm);
+  border: 1px solid var(--color-rule);
+  border-bottom: none;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  background: var(--color-paper-2);
+  color: var(--color-ink-3);
+  cursor: pointer;
+  user-select: none;
+  transition: background-color var(--dur-fast) var(--ease-out),
+              color var(--dur-fast) var(--ease-out);
+}
+
+.reader-tab:hover {
+  background: var(--color-paper-3);
+  color: var(--color-ink-1);
+}
+
+.reader-tab.is-active {
+  background: var(--color-paper-3);
+  color: var(--color-ink-1);
+  border-color: var(--color-rule-2);
+  box-shadow: inset 0 2px 0 var(--color-accent);
+}
+
+.reader-tab-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+}
+
+.reader-tab-close {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-ink-4);
+  font-size: 12px;
+  line-height: 20px;
+  cursor: pointer;
+}
+
+.reader-tab-close:hover {
+  background: var(--color-accent-2-tint);
+  color: var(--color-accent-2);
+}
+
+.reader-panels {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
+.reader-panel-slot {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
+.reader-panel-slot.is-active {
+  z-index: 1;
+}
+
+/* 用 visibility 而不是 display:none 隐藏后台页签：
+   display:none 会销毁布局并导致切回时 scrollTop 归零/重新加载。 */
+.reader-panel-slot.is-hidden {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+
 .reader-topbar {
   display: flex;
   align-items: center;

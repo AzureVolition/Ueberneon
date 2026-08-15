@@ -3655,7 +3655,7 @@ fn page_mousedown(
     ));
     let _ = desktop
         .webview
-        .evaluate_script("var el=document.querySelector('.reader-scroll');if(el)el.focus();");
+        .evaluate_script("var el=document.querySelector('.reader-panel-slot.is-active .reader-scroll')||document.querySelector('.reader-scroll');if(el)el.focus();");
 }
 
 /// 文字层上的双击兜底(两次点击落在不同词/跨层时,用最近点过的词)。
@@ -3723,7 +3723,7 @@ fn render_layer_overlay(
                                         start_drag(session, p, layer, idx);
                                     }
                                     let _ = d.webview.evaluate_script(
-                                        "var el=document.querySelector('.reader-scroll');if(el)el.focus();",
+                                        "var el=document.querySelector('.reader-panel-slot.is-active .reader-scroll')||document.querySelector('.reader-scroll');if(el)el.focus();",
                                     );
                                 }
                             },
@@ -3960,7 +3960,7 @@ fn scroll_to_page(
     zoom: u32,
 ) {
     let js = format!(
-        r#"(function(){{var p="{page}";var n=0;(function tick(){{var sc=document.querySelector('.reader-scroll');if(!sc){{if(n++<80){{setTimeout(tick,20);}}return;}}var el=document.querySelector('[data-page="'+p+'"]');if(el){{var top=el.offsetTop-sc.offsetTop;sc.scrollTop=top;if(Math.abs(sc.scrollTop-top)<1)return;if(n++<80){{setTimeout(tick,20);return;}}}}else{{if(n++<80){{setTimeout(tick,20);return;}}}}var pw=Math.max(sc.clientWidth-48,200)*{zoom}/100;sc.scrollTop=pw*{ratio_top}+{gap_part};}})();}})()"#
+        r#"(function(){{var p="{page}";var n=0;(function tick(){{var sc=document.querySelector('.reader-panel-slot.is-active .reader-scroll')||document.querySelector('.reader-scroll');if(!sc){{if(n++<80){{setTimeout(tick,20);}}return;}}var el=document.querySelector('.reader-panel-slot.is-active [data-page="'+p+'"]')||document.querySelector('[data-page="'+p+'"]');if(el){{var top=el.offsetTop-sc.offsetTop;sc.scrollTop=top;if(Math.abs(sc.scrollTop-top)<1)return;if(n++<80){{setTimeout(tick,20);return;}}}}else{{if(n++<80){{setTimeout(tick,20);return;}}}}var pw=Math.max(sc.clientWidth-48,200)*{zoom}/100;sc.scrollTop=pw*{ratio_top}+{gap_part};}})();}})()"#
     );
     let _ = desktop.webview.evaluate_script(&js);
 }
@@ -4261,7 +4261,9 @@ pub fn ReaderPanel(
     initial_citation: Option<BookCitation>,
     error_signal: Signal<ErrorSignal>,
     on_back: Callback<()>,
+    #[props(optional)] manage_window_title: Option<bool>,
 ) -> Element {
+    let manage_window_title = manage_window_title.unwrap_or(true);
     let session = use_signal(|| Option::<ReaderSession>::None);
     let zoom = use_signal(|| 100u32);
     let desktop = use_window();
@@ -4800,7 +4802,7 @@ pub fn ReaderPanel(
         spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(80)).await;
             let _ = desktop.webview.evaluate_script(
-                "var el=document.querySelector('.citation-popup__highlight'); if(el){el.scrollIntoView({block:'center',inline:'nearest'});}",
+                "var el=document.querySelector('.reader-panel-slot.is-active .citation-popup__highlight')||document.querySelector('.citation-popup__highlight'); if(el){el.scrollIntoView({block:'center',inline:'nearest'});}",
             );
         });
     });
@@ -4868,7 +4870,9 @@ pub fn ReaderPanel(
                     page_ratio_prefix,
                     start_page,
                 ))) => {
-                    let _ = desktop.set_title(&format!("UeberNeon — {book_name}"));
+                    if manage_window_title {
+                        let _ = desktop.set_title(&format!("UeberNeon — {book_name}"));
+                    }
                     let mut cache = HashMap::new();
                     let first_warning = first.warning.clone();
                     cache.insert(start_page, first);
@@ -6147,7 +6151,7 @@ pub fn ReaderPanel(
                         let desktop = desktop.clone();
                         async move {
                         let _ = desktop.webview.evaluate_script(
-                            "var el=document.querySelector('.citation-popup'); if(el){el.focus();}",
+                            "var el=document.querySelector('.reader-panel-slot.is-active .citation-popup')||document.querySelector('.citation-popup'); if(el){el.focus();}",
                         );
                         }
                         }
