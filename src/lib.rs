@@ -20,6 +20,7 @@ pub mod onnx_runtime;
 pub mod page_ocr;
 pub mod pdf;
 pub mod permission;
+pub mod quote_locator;
 pub mod reading_position;
 pub mod settings;
 pub mod skills;

@@ -8315,30 +8315,42 @@ body {
   gap: var(--space-2xs);
 }
 
-/* ── 引用预览卡 ──
-   Hallmark · component: citation-preview · genre: modern-minimal
+/* ── 引用 PDF 浮窗 ──
+   Hallmark · component: citation-popup · genre: modern-minimal
    theme: Lumen (Night Foundry) · states: default · hover · focus ·
    active · disabled · loading · error · success · contrast: pass */
-.citation-preview {
+.citation-popup-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--z-dropdown) + 5);
+  background: transparent;
+}
+
+.citation-popup {
+  position: fixed;
+  z-index: calc(var(--z-dropdown) + 6);
+  width: min(440px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: var(--space-sm);
-  margin: var(--space-xs) 0;
   padding: var(--space-md);
   border: 1px solid var(--color-rule-2);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   background: var(--color-paper-2);
-  box-shadow: 0 8px 24px -12px var(--color-shadow);
+  box-shadow: 0 18px 60px -12px var(--color-shadow);
+  outline: none;
 }
 
-.citation-preview__head {
+.citation-popup__head {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
   min-width: 0;
 }
 
-.citation-preview__title {
+.citation-popup__title {
   flex-shrink: 0;
   font-family: var(--font-mono);
   font-size: 10px;
@@ -8347,7 +8359,7 @@ body {
   color: var(--color-accent);
 }
 
-.citation-preview__meta {
+.citation-popup__meta {
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -8358,7 +8370,7 @@ body {
   color: var(--color-ink-3);
 }
 
-.citation-preview__close {
+.citation-popup__close {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -8376,22 +8388,79 @@ body {
               background-color var(--dur-fast) var(--ease-out);
 }
 
-.citation-preview__close:hover {
+.citation-popup__close:hover {
   color: var(--color-ink-1);
   background: var(--color-accent-tint);
 }
 
-.citation-preview__close:focus-visible {
+.citation-popup__close:focus-visible {
   outline: 2px solid var(--color-focus);
   outline-offset: 2px;
 }
 
-.citation-preview__close:active {
+.citation-popup__close:active {
   transform: translateY(1px);
 }
 
-.citation-preview__quote {
-  max-height: 180px;
+.citation-popup__body {
+  flex: 0 1 auto;
+  max-height: 38vh;
+  overflow-y: auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: var(--space-sm);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-sm);
+  background: var(--color-paper);
+}
+
+.citation-popup__img {
+  display: block;
+  width: 100%;
+  height: auto;
+  position: relative;
+  z-index: 0;
+  border-radius: var(--radius-sm);
+}
+
+.citation-popup__page {
+  position: relative;
+  container-type: inline-size;
+  width: 100%;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--color-paper);
+}
+
+.citation-popup__highlight {
+  position: absolute;
+  z-index: 1;
+  background: var(--color-accent);
+  opacity: 0.35;
+  border-radius: 2px;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px var(--color-accent);
+}
+
+.citation-popup__loading,
+.citation-popup__error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-xs);
+  min-height: 120px;
+  color: var(--color-ink-2);
+  font-size: var(--text-sm);
+}
+
+.citation-popup__error {
+  color: var(--color-error);
+}
+
+.citation-popup__quote {
+  flex: 0 1 auto;
+  max-height: 90px;
   overflow-y: auto;
   padding: var(--space-sm);
   border: 1px solid var(--color-rule);
@@ -8404,9 +8473,10 @@ body {
   word-break: break-word;
 }
 
-.citation-preview__actions {
+.citation-popup__actions {
   display: flex;
   justify-content: flex-end;
+  flex-shrink: 0;
 }
 
 /* ── 消息内公式（LaTeX → MathML）── */

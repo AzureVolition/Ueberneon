@@ -26,9 +26,15 @@ pub struct CiteBookParams {
     /// 1-based 页码。
     #[schemars(description = "1-based page number being cited")]
     pub page: u32,
-    /// 被引用的原文片段（尽量短，用于跳转后高亮）。
-    #[schemars(description = "Short original quote used to highlight the citation")]
-    pub quote: String,
+    /// 文字层词序起始 id（搜索结果或选区提供）；与 end_id 成对使用。
+    #[schemars(description = "Start word id in the page text layer")]
+    pub start_id: u32,
+    /// 文字层词序结束 id（含）。
+    #[schemars(description = "End word id in the page text layer (inclusive)")]
+    pub end_id: u32,
+    /// 可选展示文本；不传时用页面原文。
+    #[schemars(description = "Optional display quote; page text is used when omitted")]
+    pub quote: Option<String>,
 }
 
 impl CiteBook {
@@ -44,8 +50,8 @@ impl CiteBook {
         if args.page == 0 {
             return Err("cite_book: page 从 1 开始".to_string());
         }
-        if args.quote.trim().is_empty() {
-            return Err("cite_book: quote 不能为空".to_string());
+        if args.start_id > args.end_id {
+            return Err("cite_book: start_id 不能大于 end_id".to_string());
         }
         let book = ReadBook::resolve_book(&args.book)?;
         if let Some(marker) = crate::pdf::read_parse_marker(Path::new(&book.path))
@@ -56,7 +62,30 @@ impl CiteBook {
                 marker.page_count
             ));
         }
-        Ok(ToolResult::ok(format!("已记录引用：第 {} 页", args.page)))
+        let located = crate::quote_locator::locate_ids_in_book(
+            &book.id,
+            args.page,
+            args.start_id,
+            args.end_id,
+        )?;
+        let rects_json: Vec<serde_json::Value> = located
+            .rects
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "left": r.left,
+                    "top": r.top,
+                    "width": r.width,
+                    "height": r.height,
+                })
+            })
+            .collect();
+        let payload = serde_json::json!({
+            "page": args.page,
+            "quote": args.quote.clone().unwrap_or(located.text),
+            "rects": rects_json,
+        });
+        Ok(ToolResult::ok(payload.to_string()))
     }
 }
 
@@ -94,7 +123,7 @@ mod tests {
         let schema = CiteBook::new().schema();
         let obj = schema.as_object().expect("schema object");
         let props = obj["properties"].as_object().expect("properties");
-        for field in ["book", "page", "quote"] {
+        for field in ["book", "page", "start_id", "end_id"] {
             assert!(props.contains_key(field), "缺少字段 {field}");
         }
     }

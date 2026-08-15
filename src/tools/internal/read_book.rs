@@ -233,7 +233,11 @@ impl ReadBook {
                 .map(|s| s.trim_end().to_string())
                 .collect::<Vec<_>>()
                 .join("\n");
-            let block = format!("[{book_id}] 第 {} 页:\n{ctx}", hit.page);
+            let ids = line_word_ids(dir, hit.page, hit.line);
+            let id_part = ids
+                .map(|(s, e)| format!(" [{s}-{e}]"))
+                .unwrap_or_default();
+            let block = format!("[{book_id}] 第 {} 页{id_part}:\n{ctx}", hit.page);
             total += block.chars().count() + 1;
             out.push(block);
         }
@@ -349,6 +353,28 @@ impl ReadBook {
             .recognize_rgba(canvas.as_raw(), canvas.width(), canvas.height())
             .map_err(|e| e.to_string())
     }
+}
+
+/// 根据 overlay 行号反查该行在页内文字层的起止词 id。
+fn line_word_ids(dir: &Path, page: u32, line_idx: usize) -> Option<(u32, u32)> {
+    let doc = crate::pdf::pdfium::open(&crate::layout::book_pdf_path(dir)).ok()?;
+    let (w, h) = doc.page_size(page - 1).ok()?;
+    let lines = crate::pdf::overlay::page_overlay_lines(&doc, dir, page - 1, w, h)
+        .ok()?
+        .unwrap_or_default();
+    let mut start: Option<u32> = None;
+    let mut end: Option<u32> = None;
+    let mut idx = 0u32;
+    for (li, line) in lines.iter().enumerate() {
+        for _ in &line.words {
+            if li == line_idx {
+                start.get_or_insert(idx);
+                end = Some(idx);
+            }
+            idx += 1;
+        }
+    }
+    Some((start?, end?))
 }
 
 /// 书名匹配:精确(大小写不敏感)→ 前缀(唯一)→ 包含(唯一,长度 ≥ 8 防误配)。

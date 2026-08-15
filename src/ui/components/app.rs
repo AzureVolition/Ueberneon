@@ -812,6 +812,7 @@ pub fn App() -> Element {
                                     is_streaming,
                                     markdown_to_html: markdown_to_html,
                                     citation_handler: None,
+                                    citation_preview_handler: None,
                                 on_approve: {
                                     let atx = approval_tx;
                                     let cid = active_conversation_id;

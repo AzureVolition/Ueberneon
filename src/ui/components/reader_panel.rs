@@ -18,7 +18,9 @@ use crate::formula_ocr::SingleSlotCache;
 use crate::agent::{ActionMode, AgentMode};
 use crate::db::metadata::agent_config::AgentConfigRow;
 use crate::db::metadata::conversation::ConversationRow;
-use crate::model::{BookCitation, ChatMessage, Role, UiMessage};
+use crate::model::{
+    BookCitation, ChatMessage, CitationPreviewRequest, CitationRect, Role, UiMessage,
+};
 use crate::pdf::pdfium::{self, PdfDocument};
 use crate::pdf::{OverlayLine, parse_book};
 use crate::ui::components::chat_panel::ChatPanel;
@@ -250,6 +252,26 @@ struct ReaderSession {
     translation_gen: u64,
     /// 是否已提示过页面 OCR 模型缺失/失败(每本书只提示一次)。
     ocr_warning_shown: bool,
+}
+
+/// 引用浮窗里缓存的 PDF 页面图。
+#[derive(Clone)]
+struct CitationPreviewImage {
+    src: String,
+    w: f32,
+    h: f32,
+    highlights: Vec<SelectionRect>,
+}
+
+/// 引用浮窗状态。
+#[derive(Clone)]
+struct CitationPopupState {
+    request: CitationPreviewRequest,
+    image: Option<CitationPreviewImage>,
+    loading: bool,
+    error: Option<String>,
+    left: f64,
+    top: f64,
 }
 
 /// 按页面宽度自适应缩放：常规页面用 RENDER_SCALE，超大页面降采样到
@@ -3165,6 +3187,8 @@ struct ExplainRequest {
     book_id: String,
     book_name: String,
     page: u32,
+    start_id: Option<u32>,
+    end_id: Option<u32>,
 }
 
 /// 收集选区内公式运行的像素裁剪框(与 selection_translation_input 同款分组)。
@@ -3290,6 +3314,8 @@ fn action_bar_explain(session: Signal<Option<ReaderSession>>, on_prompt: Callbac
             book_id: inner.book_id.clone(),
             book_name: inner.book_name.clone(),
             page: sel.steps[0].page,
+            start_id: sel.steps.first().map(|s| s.lo as u32),
+            end_id: sel.steps.first().map(|s| s.hi as u32),
         }
     };
     spawn(async move {
@@ -3348,6 +3374,8 @@ fn action_bar_explain(session: Signal<Option<ReaderSession>>, on_prompt: Callbac
             &request.book_name,
             &request.book_id,
             request.page,
+            request.start_id,
+            request.end_id,
         );
         close_action_bar(session);
         on_prompt.call(prompt);
@@ -4642,6 +4670,141 @@ pub fn ReaderPanel(
         }
     });
 
+    // ── 引用 PDF 浮窗预览 ──
+    let mut citation_popup = use_signal(|| Option::<CitationPopupState>::None);
+    let citation_preview_cache: Arc<Mutex<HashMap<(String, u32), CitationPreviewImage>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let desktop_preview = desktop.clone();
+    let desktop_popup = desktop.clone();
+    let book_id_preview = book_id.clone();
+    let session_preview = session;
+    let open_citation_preview = Callback::new(move |req: CitationPreviewRequest| {
+        let (vw, vh) = {
+            let size = desktop_preview.inner_size();
+            let scale = desktop_preview.scale_factor();
+            (size.width as f64 / scale, size.height as f64 / scale)
+        };
+        let left = (req.x + 12.0).clamp(8.0, (vw - 440.0).max(8.0));
+        let top = (req.y + 12.0).clamp(8.0, (vh - 560.0).max(8.0));
+        let key = (req.citation.book_id.clone(), req.citation.page);
+
+        // 当前书且页面已在缓存中 → 直接复用阅读器页图。
+        if req.citation.book_id == book_id_preview {
+            if let Some(r) = session_preview
+                .read()
+                .as_ref()
+                .and_then(|s| s.cache.get(&req.citation.page))
+            {
+                let highlights = if req.citation.rects.is_empty() {
+                    citation_highlights(r, req.citation.page, &req.citation.quote)
+                } else {
+                    citation_rects_to_selection(&req.citation.rects)
+                };
+                let img = CitationPreviewImage {
+                    src: r.src.clone(),
+                    w: r.w_pt,
+                    h: r.h_pt,
+                    highlights,
+                };
+                if let Ok(mut g) = citation_preview_cache.lock() {
+                    g.insert(key, img.clone());
+                }
+                citation_popup.set(Some(CitationPopupState {
+                    request: req,
+                    image: Some(img),
+                    loading: false,
+                    error: None,
+                    left,
+                    top,
+                }));
+                return;
+            }
+        }
+
+        citation_popup.set(Some(CitationPopupState {
+            request: req.clone(),
+            image: None,
+            loading: true,
+            error: None,
+            left,
+            top,
+        }));
+        if let Ok(g) = citation_preview_cache.lock()
+            && let Some(img) = g.get(&key).cloned()
+        {
+            if let Some(st) = citation_popup.write().as_mut() {
+                st.image = Some(img);
+                st.loading = false;
+            }
+            return;
+        }
+
+        let cache = citation_preview_cache.clone();
+        let bid = req.citation.book_id.clone();
+        let bid_render = bid.clone();
+        let page = req.citation.page;
+        let quote_render = req.citation.quote.clone();
+        let rects_render = req.citation.rects.clone();
+        let mut popup = citation_popup;
+        spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                render_citation_preview_image(&bid_render, page, &quote_render, &rects_render)
+            })
+            .await;
+            match result {
+                Ok(Ok(img)) => {
+                    if let Ok(mut g) = cache.lock() {
+                        g.insert((bid, page), img.clone());
+                    }
+                    if let Some(st) = popup.write().as_mut() {
+                        st.image = Some(img);
+                        st.loading = false;
+                    }
+                }
+                Ok(Err(e)) => {
+                    if let Some(st) = popup.write().as_mut() {
+                        st.error = Some(e);
+                        st.loading = false;
+                    }
+                }
+                Err(e) => {
+                    if let Some(st) = popup.write().as_mut() {
+                        st.error = Some(format!("渲染任务失败:{e}"));
+                        st.loading = false;
+                    }
+                }
+            }
+        });
+    });
+    let close_citation_preview = Callback::new(move |_| {
+        citation_popup.set(None);
+    });
+
+    // 预览图加载后，自动把高亮区域滚动到浮窗可视范围内。
+    let desktop_scroll = desktop.clone();
+    use_effect(move || {
+        let should = citation_popup
+            .read()
+            .as_ref()
+            .map(|s| {
+                !s.loading
+                    && s.image
+                        .as_ref()
+                        .map_or(false, |i| !i.highlights.is_empty())
+            })
+            .unwrap_or(false);
+        if !should {
+            return;
+        }
+        let desktop = desktop_scroll.clone();
+        spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+            let _ = desktop.webview.evaluate_script(
+                "var el=document.querySelector('.citation-popup__highlight'); if(el){el.scrollIntoView({block:'center',inline:'nearest'});}",
+            );
+        });
+    });
+
     let mut opened = use_signal(|| false);
     let desktop_effect = desktop.clone();
     use_effect(move || {
@@ -4736,16 +4899,25 @@ pub fn ReaderPanel(
                     current_page.set(start_page);
                     page_input.set(start_page.to_string());
                     if let Some(cit) = initial_citation {
-                        open_citation(
-                            session,
-                            desktop,
-                            cit.page,
-                            cit.quote,
-                            current_page,
-                            page_input,
-                            page_loading,
-                            zoom,
-                        );
+                        let session = session;
+                        let desktop = desktop.clone();
+                        let current_page = current_page;
+                        let page_input = page_input;
+                        let page_loading = page_loading;
+                        let zoom = zoom;
+                        spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+                            open_citation(
+                                session,
+                                desktop,
+                                cit.page,
+                                cit.quote,
+                                current_page,
+                                page_input,
+                                page_loading,
+                                zoom,
+                            );
+                        });
                     } else {
                         request_jump(session, desktop, start_page, page_loading, zoom);
                     }
@@ -5905,6 +6077,11 @@ pub fn ReaderPanel(
                                 }
                             }
                         },
+                        citation_preview_handler: Some(Callback::new(
+                            move |req: CitationPreviewRequest| {
+                                open_citation_preview.call(req);
+                            },
+                        )),
                         citation_handler: {
                             let book_id_handler = book_id_for_handler.clone();
                             let project_id_handler = project_id_for_handler.clone();
@@ -5948,6 +6125,110 @@ pub fn ReaderPanel(
                                 }
                             }
                         },
+                    }
+                }
+            }
+
+            if let Some(state) = citation_popup.read().clone() {
+                div {
+                    class: "citation-popup-backdrop",
+                    onclick: {
+                        let close = close_citation_preview;
+                        move |_| close.call(())
+                    },
+                }
+                div {
+                    class: "citation-popup",
+                    tabindex: "-1",
+                    style: "left: {state.left}px; top: {state.top}px",
+                    onmounted: {
+                        let desktop = desktop_popup.clone();
+                        move |_| {
+                        let desktop = desktop.clone();
+                        async move {
+                        let _ = desktop.webview.evaluate_script(
+                            "var el=document.querySelector('.citation-popup'); if(el){el.focus();}",
+                        );
+                        }
+                        }
+                    },
+                    onkeydown: {
+                        let close = close_citation_preview;
+                        move |evt: KeyboardEvent| {
+                            if evt.key().to_string() == "Escape" {
+                                close.call(());
+                            }
+                        }
+                    },
+                    div {
+                        class: "citation-popup__head",
+                        span { class: "citation-popup__title", "引用预览" }
+                        span {
+                            class: "citation-popup__meta",
+                            "{crate::model::truncate_book_name(&state.request.citation.book_name)} · {state.request.citation.book_id} · P{state.request.citation.page}"
+                        }
+                        button {
+                            class: "citation-popup__close",
+                            onclick: {
+                                let close = close_citation_preview;
+                                move |_| close.call(())
+                            },
+                            "✕"
+                        }
+                    }
+                    div {
+                        class: "citation-popup__body",
+                        if state.loading {
+                            div {
+                                class: "citation-popup__loading",
+                                span { class: "reader-spinner reader-spinner--sm" }
+                                "正在渲染 PDF 页面…"
+                            }
+                        } else if let Some(ref err) = state.error {
+                            div { class: "citation-popup__error", "{err}" }
+                        } else if let Some(img) = state.image.clone() {
+                            div {
+                                class: "citation-popup__page",
+                                style: "aspect-ratio: {img.w} / {img.h}",
+                                img {
+                                    class: "citation-popup__img",
+                                    src: "{img.src}",
+                                }
+                                for rect in &img.highlights {
+                                    div {
+                                        class: "citation-popup__highlight",
+                                        style: "left: {rect.left_cqw}%; top: {rect.top_cqw}cqw; width: {rect.width_cqw}cqw; height: {rect.height_cqw}cqw",
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    div { class: "citation-popup__quote", "{state.request.citation.quote}" }
+                    div {
+                        class: "citation-popup__actions",
+                        button {
+                            class: "btn btn-send",
+                            onclick: {
+                                let cit = state.request.citation.clone();
+                                let book_id_jump = book_id_for_handler.clone();
+                                let project_id_jump = project_id_for_handler.clone();
+                                let mut target = citation_target;
+                                let close = close_citation_preview;
+                                move |_| {
+                                    if cit.book_id == book_id_jump {
+                                        target.set(Some((cit.page, cit.quote.clone())));
+                                    } else {
+                                        crate::ui::reader_window::open_with_project_and_citation(
+                                            cit.book_id.clone(),
+                                            project_id_jump.clone(),
+                                            Some(cit.clone()),
+                                        );
+                                    }
+                                    close.call(());
+                                }
+                            },
+                            "跳到原文"
+                        }
                     }
                 }
             }
@@ -6039,21 +6320,30 @@ fn run_book_search(
 
 // ── 引用指针：跳页 + 原文高亮 ───────────────────────────────────────────────
 
-/// 归一化文本：去掉空白并转小写，便于模糊匹配引用片段。
+/// 归一化文本：只保留字母/数字并转小写，去掉空白与标点符号，
+/// 兼容 LLM 引用与 OCR 文本在 ∀/∈/·/括号等符号上的差异。
 fn normalize_quote(text: &str) -> String {
     text.chars()
-        .filter(|c| !c.is_whitespace())
+        .filter(|c| c.is_alphanumeric())
         .flat_map(|c| c.to_lowercase())
         .collect()
 }
 
 /// 在某一页正文/小字层中查找 quote，构造高亮选区。
 fn find_quote_selection(inner: &ReaderSession, page: u32, quote: &str) -> Option<Selection> {
+    let rendered = inner.cache.get(&page)?;
+    find_quote_selection_in_page(rendered, page, quote)
+}
+
+fn find_quote_selection_in_page(
+    rendered: &RenderedPage,
+    page: u32,
+    quote: &str,
+) -> Option<Selection> {
     let q = normalize_quote(quote);
     if q.is_empty() {
         return None;
     }
-    let rendered = inner.cache.get(&page)?;
     for layer in [Layer::Body, Layer::Small] {
         let flat = layer_flat(rendered, layer);
         if flat.is_empty() {
@@ -6093,6 +6383,40 @@ fn find_quote_selection(inner: &ReaderSession, page: u32, quote: &str) -> Option
     None
 }
 
+/// 把 quote 转成高亮矩形（cqw 百分比坐标，浮窗预览用）。
+fn citation_highlights(rendered: &RenderedPage, page: u32, quote: &str) -> Vec<SelectionRect> {
+    let Some(sel) = find_quote_selection_in_page(rendered, page, quote) else {
+        return Vec::new();
+    };
+    let flat = layer_flat(rendered, sel.layer);
+    let mut out = Vec::new();
+    for step in &sel.steps {
+        out.extend(selection_rects_filtered(
+            flat,
+            step.lo.min(flat.len().saturating_sub(1)),
+            step.hi.min(flat.len().saturating_sub(1)),
+            step.column_left,
+        ));
+    }
+    if out.is_empty() {
+        return Vec::new();
+    }
+    out
+}
+
+fn citation_rects_to_selection(rects: &[CitationRect]) -> Vec<SelectionRect> {
+    rects
+        .iter()
+        .map(|r| SelectionRect {
+            left_cqw: r.left,
+            top_cqw: r.top,
+            width_cqw: r.width,
+            height_cqw: r.height,
+        })
+        .collect()
+}
+
+
 /// 点击引用 chip：跳转到目标页并等待渲染完成后高亮原文。
 fn open_citation(
     mut session: Signal<Option<ReaderSession>>,
@@ -6130,6 +6454,37 @@ fn open_citation(
     });
 }
 
+/// 独立渲染某书某页为 data URI（浮窗预览用，不依赖当前阅读器会话）。
+fn render_citation_preview_image(
+    book_id: &str,
+    page: u32,
+    quote: &str,
+    rects: &[CitationRect],
+) -> Result<CitationPreviewImage, String> {
+    if page == 0 {
+        return Err("页码从 1 开始".to_string());
+    }
+    let book = crate::db::with_db(|conn| crate::books::get(conn, book_id))
+        .map_err(|e| format!("查询书失败:{e}"))?
+        .ok_or_else(|| format!("书不存在:{book_id}"))?;
+    let book_dir = std::path::Path::new(&book.path);
+    let doc =
+        crate::pdf::pdfium::open(&crate::layout::book_pdf_path(book_dir))
+            .map_err(|e| format!("打开 PDF 失败:{e:#}"))?;
+    let rendered = render_page_with_overlay(&doc, book_dir, page - 1)?;
+    let highlights = if rects.is_empty() {
+        citation_highlights(&rendered, page, quote)
+    } else {
+        citation_rects_to_selection(rects)
+    };
+    Ok(CitationPreviewImage {
+        src: rendered.src,
+        w: rendered.w_pt,
+        h: rendered.h_pt,
+        highlights,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6161,6 +6516,45 @@ mod tests {
         assert_eq!(out[1].0, 2);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn citation_highlights_finds_quote_rects() {
+        let body = vec![
+            fw(0, "A", 0.0, 0.0, 2.0),
+            fw(0, "group", 3.0, 0.0, 2.0),
+            fw(0, "is", 8.0, 0.0, 2.0),
+            fw(0, "a", 11.0, 0.0, 2.0),
+            fw(0, "nonempty", 14.0, 0.0, 2.0),
+            fw(0, "set", 22.0, 0.0, 2.0),
+        ];
+        let page = RenderedPage {
+            src: "data:image/png;base64,x".into(),
+            body,
+            small: Vec::new(),
+            w_pt: 100.0,
+            h_pt: 100.0,
+            warning: None,
+        };
+        let rects = citation_highlights(&page, 1, "group is a nonempty");
+        assert!(!rects.is_empty(), "应找到引用高亮矩形");
+    }
+
+    #[test]
+    fn citation_highlights_rejects_unmatched_quote() {
+        let header = fw(0, "group", 0.0, 1.0, 2.0);
+        let body = fw(1, "group", 0.0, 30.0, 2.0);
+        let footer = fw(2, "group", 0.0, 99.0, 2.0);
+        let page = RenderedPage {
+            src: "data:image/png;base64,x".into(),
+            body: vec![header, body, footer],
+            small: Vec::new(),
+            w_pt: 100.0,
+            h_pt: 100.0,
+            warning: None,
+        };
+        let rects = citation_highlights(&page, 1, "abelian group");
+        assert!(rects.is_empty(), "未精确匹配时不应返回猜测高亮");
     }
 
     fn fw(line: usize, text: &str, left: f64, top: f64, height: f64) -> FlatWord {

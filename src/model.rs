@@ -51,6 +51,37 @@ pub struct BookCitation {
     pub book_name: String,
     pub page: u32,
     pub quote: String,
+    /// CiteBook 执行时定位到的页面坐标（left %, top/width/height cqw）。
+    pub rects: Vec<CitationRect>,
+}
+
+/// 引用矩形坐标。
+#[derive(Clone, Debug, PartialEq)]
+pub struct CitationRect {
+    pub left: f64,
+    pub top: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// 展示用书名：尽量完整，超过 200 字符时截断。
+pub fn truncate_book_name(name: &str) -> String {
+    let chars: Vec<char> = name.chars().collect();
+    if chars.len() <= 200 {
+        name.to_string()
+    } else {
+        let mut s: String = chars[..200].iter().collect();
+        s.push('…');
+        s
+    }
+}
+
+/// 引用预览请求：携带引用与鼠标位置（阅读器浮窗用）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct CitationPreviewRequest {
+    pub citation: BookCitation,
+    pub x: f64,
+    pub y: f64,
 }
 
 /// 一条聊天消息
@@ -671,5 +702,34 @@ mod tests {
         for (t, q) in sorted_tree.iter().zip(sorted_queue.iter()) {
             assert_eq!(t, q);
         }
+    }
+
+    #[test]
+    fn citation_preview_request_roundtrip() {
+        let citation = BookCitation {
+            book_id: "book-1".into(),
+            book_name: "代数".into(),
+            page: 42,
+            quote: "群的定义".into(),
+            rects: Vec::new(),
+        };
+        let req = CitationPreviewRequest {
+            citation: citation.clone(),
+            x: 120.0,
+            y: 80.0,
+        };
+        assert_eq!(req.citation, citation);
+        assert_eq!(req.x, 120.0);
+        assert_eq!(req.y, 80.0);
+    }
+
+    #[test]
+    fn truncate_book_name_caps_at_200() {
+        let short = "Algebra".to_string();
+        assert_eq!(truncate_book_name(&short), short);
+        let long = "x".repeat(300);
+        let out = truncate_book_name(&long);
+        assert_eq!(out.chars().count(), 201);
+        assert!(out.ends_with('…'));
     }
 }

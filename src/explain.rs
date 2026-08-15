@@ -29,9 +29,22 @@ pub fn explain_agent() -> Option<AgentConfigRow> {
 
 /// 构造解释请求的用户消息:包含书名、书 ID、页码与选中文本。
 /// 附上书 ID 让子 Agent 调 ReadBook 时能精确命中,不受长书名截断影响。
-pub fn build_prompt(source: &str, book_name: &str, book_id: &str, page: u32) -> String {
+pub fn build_prompt(
+    source: &str,
+    book_name: &str,
+    book_id: &str,
+    page: u32,
+    start_id: Option<u32>,
+    end_id: Option<u32>,
+) -> String {
+    let ids = match (start_id, end_id) {
+        (Some(s), Some(e)) => format!(
+            "\n\n这段文字在本页文字层的词序 id 范围是 {s}..={e}；如果引用这段内容，请在 CiteBook 中直接传 start_id={s} 和 end_id={e}，不要用文本匹配。"
+        ),
+        _ => String::new(),
+    };
     format!(
-        "请解释下面这段选自《{book_name}》(书 ID:{book_id})第 {page} 页的文本(公式已用 LaTeX 表示):\n\n{source}"
+        "请解释下面这段选自《{book_name}》(书 ID:{book_id})第 {page} 页的文本(公式已用 LaTeX 表示):\n\n{source}{ids}"
     )
 }
 
@@ -41,10 +54,12 @@ mod tests {
 
     #[test]
     fn build_prompt_includes_source_book_and_page() {
-        let prompt = build_prompt("E = mc²\n\n定义……", "相对论", "book-123", 42);
+        let prompt = build_prompt("E = mc²\n\n定义……", "相对论", "book-123", 42, Some(3), Some(7));
         assert!(prompt.contains("相对论"), "{prompt}");
         assert!(prompt.contains("book-123"), "{prompt}");
         assert!(prompt.contains("第 42 页"), "{prompt}");
         assert!(prompt.contains("E = mc²"), "{prompt}");
+        assert!(prompt.contains("start_id=3"), "{prompt}");
+        assert!(prompt.contains("end_id=7"), "{prompt}");
     }
 }
